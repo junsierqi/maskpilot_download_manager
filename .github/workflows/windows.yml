@@ -1,0 +1,25 @@
+name: Windows
+on: [push, pull_request]
+jobs:
+  verify:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.11.3'
+          arch: win64_msvc2022_64
+          aqtsource: 'git+https://github.com/miurahr/aqtinstall.git@5a49f2b391ae8ee1d3c0dd87f8b33c1d49a4deb7'
+          archives: 'qtbase qtsvg qttools qttranslations'
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Build and test
+        shell: pwsh
+        run: |
+          $env:VCPKG_ROOT = 'C:/vcpkg'
+          ./scripts/verify.ps1 -Configuration Release

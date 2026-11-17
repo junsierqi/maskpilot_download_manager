@@ -1,0 +1,3 @@
+add_library(maskpilot_domain src/task.cpp)
+target_include_directories(maskpilot_domain PUBLIC include)
+target_link_libraries(maskpilot_domain PUBLIC maskpilot_options)

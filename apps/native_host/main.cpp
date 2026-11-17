@@ -1,0 +1,148 @@
+#include <QCoreApplication>
+#include <QCryptographicHash>
+#include <QDir>
+#include <QElapsedTimer>
+#include <QFile>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QLocalSocket>
+#include <QProcess>
+#include <QStandardPaths>
+#include <QThread>
+#include <QtEndian>
+#include <array>
+#include <iostream>
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#endif
+
+namespace {
+constexpr quint32 kMaxMessage = 1024 * 1024;
+void respond(QJsonObject message) {
+    const auto bytes = QJsonDocument(message).toJson(QJsonDocument::Compact);
+    auto length = qToLittleEndian(static_cast<quint32>(bytes.size()));
+    std::cout.write(reinterpret_cast<const char*>(&length), 4);
+    std::cout.write(bytes.constData(), bytes.size());
+    std::cout.flush();
+}
+QString pipeName(const QString& data) {
+    return "maskpilot-" +
+           QCryptographicHash::hash(QDir(data).absolutePath().toUtf8(), QCryptographicHash::Sha256)
+               .toHex()
+               .left(24);
+}
+} // namespace
+int main(int argc, char** argv) {
+#ifdef _WIN32
+    _setmode(_fileno(stdin), _O_BINARY);
+    _setmode(_fileno(stdout), _O_BINARY);
+#endif
+    QCoreApplication application(argc, argv);
+    QCoreApplication::setOrganizationName("MaskPilot");
+    QCoreApplication::setApplicationName("MaskPilot");
+    QFile configFile(QDir(QCoreApplication::applicationDirPath()).filePath("native-bridge.json"));
+    QJsonObject config;
+    if (configFile.open(QIODevice::ReadOnly) && configFile.size() < 65536)
+        config = QJsonDocument::fromJson(configFile.readAll()).object();
+    bool allowed = false;
+    const auto origin = argc > 1 ? QString::fromLocal8Bit(argv[1]) : QString();
+    for (const auto& entry : config.value("allowedOrigins").toArray())
+        if (entry.toString() == origin)
+            allowed = true;
+    if (!allowed) {
+        respond({{"version", 1},
+                 {"requestId", ""},
+                 {"ok", false},
+                 {"error", "Browser origin is not registered. Run browser integration setup."}});
+        return 1;
+    }
+    std::array<char, 4> header{};
+    if (!std::cin.read(header.data(), header.size()))
+        return 2;
+    const auto length = qFromLittleEndian<quint32>(reinterpret_cast<const uchar*>(header.data()));
+    if (length == 0 || length > kMaxMessage) {
+        respond(
+            {{"version", 1}, {"requestId", ""}, {"ok", false}, {"error", "Native message size is invalid."}});
+        return 2;
+    }
+    QByteArray payload(static_cast<qsizetype>(length), '\0');
+    if (!std::cin.read(payload.data(), length))
+        return 2;
+    QJsonParseError parseError;
+    auto document = QJsonDocument::fromJson(payload, &parseError);
+    auto request = document.object();
+    const auto requestId = request.value("requestId").toString();
+    auto fail = [&](const QString& text) {
+        respond({{"version", 1}, {"requestId", requestId}, {"ok", false}, {"error", text}});
+        return 1;
+    };
+    if (parseError.error != QJsonParseError::NoError || !document.isObject() ||
+        request.value("version").toInt() != 1)
+        return fail("Invalid native protocol message.");
+    const auto data =
+        QDir(config.value("dataDirectory")
+                 .toString(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)))
+            .absolutePath();
+    const auto desktop =
+        config.value("desktopPath")
+            .toString(QDir(QCoreApplication::applicationDirPath()).filePath("maskpilot.exe"));
+    QLocalSocket socket;
+    bool launched = false;
+    QElapsedTimer timeout;
+    timeout.start();
+    while (timeout.elapsed() < 9500) {
+        socket.abort();
+        socket.connectToServer(pipeName(data));
+        if (socket.waitForConnected(200))
+            break;
+        if (!launched) {
+            if (!QProcess::startDetached(desktop, {"--background", "--data-dir", data}))
+                return fail("Cannot start MaskPilot desktop.");
+            launched = true;
+        }
+        QThread::msleep(100);
+    }
+    if (socket.state() != QLocalSocket::ConnectedState)
+        return fail("Cannot connect to MaskPilot desktop.");
+    QFile tokenFile(QDir(data).filePath("ipc.token"));
+    if (!tokenFile.open(QIODevice::ReadOnly))
+        return fail("Desktop authentication token is unavailable.");
+    const auto token = tokenFile.readAll().trimmed();
+    if (token.size() != 64)
+        return fail("Desktop authentication token is invalid.");
+    request.insert("token", QString::fromLatin1(token));
+    auto body = QJsonDocument(request).toJson(QJsonDocument::Compact);
+    auto size = qToLittleEndian(static_cast<quint32>(body.size()));
+    socket.write(reinterpret_cast<const char*>(&size), 4);
+    socket.write(body);
+    if (!socket.waitForBytesWritten(2000))
+        return fail("Cannot send request to desktop.");
+    QByteArray response;
+    QElapsedTimer replyTimeout;
+    replyTimeout.start();
+    while (replyTimeout.elapsed() < 10000) {
+        if (socket.bytesAvailable() == 0)
+            socket.waitForReadyRead(200);
+        response += socket.readAll();
+        if (response.size() > static_cast<qsizetype>(kMaxMessage) + 4)
+            return fail("Desktop response exceeded size limit.");
+        if (response.size() >= 4) {
+            const auto expected =
+                qFromLittleEndian<quint32>(reinterpret_cast<const uchar*>(response.constData()));
+            if (expected == 0 || expected > kMaxMessage)
+                return fail("Invalid desktop response size.");
+            if (response.size() >= static_cast<qsizetype>(expected) + 4) {
+                auto parsed = QJsonDocument::fromJson(response.mid(4, expected));
+                if (!parsed.isObject())
+                    return fail("Invalid desktop response.");
+                respond(parsed.object());
+                return parsed.object().value("ok").toBool() ? 0 : 1;
+            }
+        }
+        if (socket.state() == QLocalSocket::UnconnectedState && socket.bytesAvailable() == 0)
+            break;
+    }
+    return fail("Desktop acknowledgement timed out. Original browser download can be resumed.");
+}

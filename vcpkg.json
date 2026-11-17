@@ -1,0 +1,9 @@
+{
+  "name": "maskpilot",
+  "version-string": "0.1.0",
+  "dependencies": [
+    { "name": "curl", "default-features": false, "features": ["ssl", "http2"] },
+    "sqlite3",
+    "gtest"
+  ]
+}

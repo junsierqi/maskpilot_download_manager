@@ -1,0 +1,713 @@
+#include "main_window_p.h"
+namespace maskpilot {
+MainWindow::Impl::Impl(MainWindow* w, DownloadService& s)
+    : window(w), service(s),
+      chinese(settings.value("language", QLocale::system().language() == QLocale::Chinese ? "zh" : "en")
+                  .toString() == "zh") {}
+
+QString MainWindow::Impl::t(const char* en, const char* zh) const {
+    return QString::fromUtf8(chinese ? zh : en);
+}
+
+std::vector<Task> MainWindow::Impl::selected() const {
+    std::vector<Task> result;
+    for (const auto& index : table->selectionModel()->selectedRows())
+        if (index.row() < static_cast<int>(model->rows.size()))
+            result.push_back(model->rows[static_cast<size_t>(index.row())]);
+    return result;
+}
+
+void MainWindow::Impl::notify(const QString& title, const QString& text) {
+    window->statusBar()->showMessage(text, 8000);
+    if (tray && tray->isVisible())
+        tray->showMessage(title, text, QSystemTrayIcon::Information, 4000);
+}
+
+void MainWindow::Impl::updateActions() {
+    auto tasks = selected();
+    bool any = !tasks.empty();
+    resumeAction->setEnabled(std::any_of(tasks.begin(), tasks.end(), [](const auto& task) {
+        return !isActive(task.state) && !isTerminal(task.state);
+    }));
+    pauseAction->setEnabled(std::any_of(tasks.begin(), tasks.end(), [](const auto& task) {
+        return isActive(task.state) || task.state == TaskState::Queued ||
+               task.state == TaskState::Scheduled || task.state == TaskState::RetryWaiting;
+    }));
+    cancelAction->setEnabled(
+        std::any_of(tasks.begin(), tasks.end(), [](const auto& task) { return !isTerminal(task.state); }));
+    removeAction->setEnabled(any && std::none_of(tasks.begin(), tasks.end(),
+                                                 [](const auto& task) { return isActive(task.state); }));
+    detailAction->setEnabled(tasks.size() == 1);
+}
+
+void MainWindow::Impl::refresh() {
+    if (refreshing)
+        return;
+    QScopedValueRollback<bool> refreshGuard(refreshing, true);
+    std::vector<Pending> ready;
+    for (auto it = pending.begin(); it != pending.end();) {
+        if (it->result.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+            ++it;
+            continue;
+        }
+        ready.push_back(std::move(*it));
+        it = pending.erase(it);
+    }
+    for (auto& item : ready) {
+        QString id, error;
+        try {
+            id = qs(item.result.get());
+        } catch (const std::exception& e) {
+            error = QString::fromUtf8(e.what());
+        }
+        if (item.completion)
+            item.completion(id, error);
+        else if (!error.isEmpty())
+            QMessageBox::warning(window, t("Unable to add download", "无法添加下载"), error);
+    }
+    const auto previous = selected();
+    all = service.snapshot();
+    std::set<std::string> existingIds;
+    for (const auto& task : all)
+        existingIds.insert(task.id);
+    std::erase_if(seenCompleted, [&](const auto& id) { return !existingIds.contains(id); });
+    std::vector<Task> visible;
+    const auto filter =
+        sidebar->currentItem() ? sidebar->currentItem()->data(Qt::UserRole).toString() : "all";
+    auto query = search->text().trimmed();
+    int active = 0, complete = 0;
+    std::int64_t speed = 0;
+    bool busy = false;
+    for (const auto& task : all) {
+        if (isActive(task.state)) {
+            ++active;
+            speed += task.bytesPerSecond;
+        }
+        if (task.state == TaskState::Completed)
+            ++complete;
+        if (task.state == TaskState::Completed && seenCompleted.insert(task.id).second && completionPrimed) {
+            batchIds.insert(task.id);
+            wasBusy = true;
+        }
+        busy = busy || isActive(task.state) || task.state == TaskState::Queued ||
+               task.state == TaskState::Scheduled || task.state == TaskState::RetryWaiting;
+        if (isActive(task.state) || task.state == TaskState::Queued || task.state == TaskState::Scheduled ||
+            task.state == TaskState::RetryWaiting)
+            batchIds.insert(task.id);
+        bool match = filter == "all" ||
+                     (filter == "active" && (isActive(task.state) || task.state == TaskState::Queued ||
+                                             task.state == TaskState::RetryWaiting)) ||
+                     (filter == "paused" && task.state == TaskState::Paused) ||
+                     (filter == "scheduled" && task.state == TaskState::Scheduled) ||
+                     (filter == "completed" && task.state == TaskState::Completed) ||
+                     (filter == "attention" &&
+                      (task.state == TaskState::Failed || task.state == TaskState::NeedsAttention)) ||
+                     (filter.startsWith("category:") && qs(task.spec.category) == filter.mid(9));
+        if (match && (query.isEmpty() ||
+                      pathString(task.spec.destination.filename()).contains(query, Qt::CaseInsensitive) ||
+                      qs(task.spec.category).contains(query, Qt::CaseInsensitive)))
+            visible.push_back(task);
+    }
+    const auto scroll = table->verticalScrollBar()->value();
+    completionPrimed = true;
+    model->setRows(std::move(visible));
+    for (int row = 0; row < model->rowCount(); ++row)
+        if (std::any_of(previous.begin(), previous.end(), [&](const auto& task) {
+                return task.id == model->rows[static_cast<size_t>(row)].id;
+            }))
+            table->selectionModel()->select(model->index(row, 0),
+                                            QItemSelectionModel::Select | QItemSelectionModel::Rows);
+    table->verticalScrollBar()->setValue(scroll);
+    empty->setVisible(model->rows.empty());
+    table->setVisible(!model->rows.empty());
+    summary->setText(t("%1 downloads · %2 active · %3 completed", "%1 个任务 · %2 个正在下载 · %3 个已完成")
+                         .arg(all.size())
+                         .arg(active)
+                         .arg(complete));
+    window->statusBar()->showMessage(t("Download speed  ", "下载速度  ") + bytes(speed) + "/s");
+    updateActions();
+    const auto storageError = qs(service.lastError());
+    if (!storageError.isEmpty()) {
+        timer->stop();
+        QMessageBox::critical(window, t("Storage error", "存储错误"), storageError);
+    }
+    if (completionDialog && (busy || !pending.empty()))
+        completionDialog->reject();
+    if (wasBusy && !busy && !batchIds.empty()) {
+        auto stateFor = [&](const std::string& id) {
+            auto it = std::find_if(all.begin(), all.end(), [&](const auto& task) { return task.id == id; });
+            return it == all.end() ? TaskState::Cancelled : it->state;
+        };
+        const bool successful = std::all_of(batchIds.begin(), batchIds.end(), [&](const auto& id) {
+            return stateFor(id) == TaskState::Completed;
+        });
+        if (successful)
+            completion();
+        if (std::all_of(batchIds.begin(), batchIds.end(),
+                        [&](const auto& id) { return isTerminal(stateFor(id)); }))
+            batchIds.clear();
+    }
+    wasBusy = busy;
+}
+
+void MainWindow::Impl::completion() {
+    notify("MaskPilot", t("All downloads are complete.", "所有下载任务已完成。"));
+    const auto action = settings.value("completionAction", 0).toInt();
+    if (action != 1 && action != 2)
+        return;
+    auto* dialog = new QDialog(window);
+    completionDialog = dialog;
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setWindowTitle(t("Queue complete", "队列完成"));
+    auto* layout = new QVBoxLayout(dialog);
+    auto* label = new QLabel;
+    layout->addWidget(label);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Cancel);
+    layout->addWidget(buttons);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+    auto remaining = std::make_shared<int>(60);
+    auto* countdown = new QTimer(dialog);
+    QObject::connect(countdown, &QTimer::timeout, dialog, [this, dialog, label, remaining, action] {
+        if (!dialog->isVisible())
+            return;
+        const auto current = service.snapshot();
+        if (!pending.empty() || std::any_of(current.begin(), current.end(),
+                                            [](const auto& task) { return !isTerminal(task.state); })) {
+            dialog->reject();
+            return;
+        }
+        label->setText(
+            t("%1 in %2 seconds. Cancel to keep downloading.", "将在 %2 秒后%1。可取消此操作。")
+                .arg(action == 1 ? t("Exit MaskPilot", "退出程序") : t("Shut down computer", "关闭计算机"))
+                .arg(*remaining));
+        if (--*remaining < 0) {
+            dialog->accept();
+            if (action == 1)
+                window->requestQuit();
+            else
+                QProcess::startDetached(systemExecutable(L"shutdown.exe"), {"/s", "/t", "0"});
+        }
+    });
+    countdown->start(1000);
+    dialog->show();
+}
+
+MainWindow::MainWindow(DownloadService& service, QWidget* parent)
+    : QMainWindow(parent), impl_(std::make_unique<Impl>(this, service)) {
+    auto& p = *impl_;
+    setWindowTitle("MaskPilot");
+    setWindowIcon(QIcon(":/icons/app.svg"));
+    resize(1180, 750);
+    setMinimumSize(850, 560);
+    setAcceptDrops(true);
+    setStyleSheet(
+        "QMainWindow,QDialog{background:#f5f7fb;color:#263247;} QWidget{font-family:'Segoe UI','Microsoft "
+        "YaHei UI';font-size:13px;} "
+        "QLineEdit,QComboBox,QSpinBox,QDateTimeEdit,QPlainTextEdit{background:white;border:1px solid "
+        "#dce2ec;border-radius:5px;padding:7px;} QPushButton{background:white;border:1px solid "
+        "#d6deeb;border-radius:6px;padding:8px 14px;} "
+        "QPushButton:hover{background:#edf3ff;border-color:#96b7ff;} "
+        "QPushButton:default{background:#2864ed;color:white;border-color:#2864ed;} "
+        "QTabWidget::pane{border:1px solid #e0e5ee;background:white;} QTabBar::tab{padding:9px 18px;} "
+        "QTableView{background:white;border:0;gridline-color:#eff2f7;selection-background-color:#eaf1ff;"
+        "selection-color:#1f4d99;} QHeaderView::section{background:#f9fafc;border:0;border-bottom:1px solid "
+        "#e8edf4;padding:11px 8px;color:#768299;font-size:12px;} "
+        "QListWidget{background:#eef2f8;border:0;outline:0;padding:12px 8px;} QListWidget::item{padding:11px "
+        "14px;border-radius:6px;color:#65718a;} "
+        "QListWidget::item:selected{background:#dfe9ff;color:#2459c8;font-weight:600;} "
+        "QToolBar{background:white;border-bottom:1px solid #e7ecf3;spacing:9px;padding:9px;} "
+        "QToolButton{padding:7px;border-radius:5px;} QToolButton:hover{background:#edf3ff;} "
+        "QStatusBar{background:white;color:#78859a;border-top:1px solid #e6ebf3;}");
+    auto* container = new QWidget;
+    auto* outer = new QVBoxLayout(container);
+    outer->setContentsMargins(0, 0, 0, 0);
+    outer->setSpacing(0);
+    setCentralWidget(container);
+    auto* header = new QWidget;
+    header->setObjectName("appHeader");
+    header->setStyleSheet("#appHeader { background:white; }");
+    auto* headerLayout = new QHBoxLayout(header);
+    headerLayout->setContentsMargins(25, 18, 25, 18);
+    auto* logo = new QLabel;
+    logo->setPixmap(QIcon(":/icons/app.svg").pixmap(36, 36));
+    headerLayout->addWidget(logo);
+    auto* title = new QLabel("MaskPilot");
+    title->setStyleSheet("font-size:23px;font-weight:650;color:#21304d;");
+    headerLayout->addWidget(title);
+    headerLayout->addStretch();
+    p.search = new QLineEdit;
+    p.search->setObjectName("taskSearch");
+    p.search->setPlaceholderText(p.t("Search downloads…", "搜索下载任务…"));
+    p.search->setFixedWidth(255);
+    headerLayout->addWidget(p.search);
+    auto* newButton = new QPushButton(p.t("＋  New download", "＋  新建下载"));
+    newButton->setDefault(true);
+    newButton->setObjectName("newDownloadButton");
+    headerLayout->addWidget(newButton);
+    outer->addWidget(header);
+    auto* toolbar = new QToolBar;
+    toolbar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    outer->addWidget(toolbar);
+    auto addAction = [&](const QString& text, QStyle::StandardPixmap icon) {
+        return toolbar->addAction(style()->standardIcon(icon), text);
+    };
+    p.resumeAction = addAction(p.t("Start", "开始"), QStyle::SP_MediaPlay);
+    p.pauseAction = addAction(p.t("Pause", "暂停"), QStyle::SP_MediaPause);
+    p.cancelAction = addAction(p.t("Cancel", "取消"), QStyle::SP_DialogCancelButton);
+    toolbar->addSeparator();
+    p.removeAction = addAction(p.t("Remove", "移除"), QStyle::SP_TrashIcon);
+    p.detailAction = addAction(p.t("Details", "详情"), QStyle::SP_FileDialogDetailedView);
+    toolbar->addSeparator();
+    auto* batch = addAction(p.t("Batch", "批量"), QStyle::SP_FileDialogListView);
+    auto* settings = addAction(p.t("Settings", "设置"), QStyle::SP_FileDialogContentsView);
+    auto* body = new QHBoxLayout;
+    body->setContentsMargins(0, 0, 0, 0);
+    body->setSpacing(0);
+    outer->addLayout(body, 1);
+    p.sidebar = new QListWidget;
+    p.sidebar->setFixedWidth(190);
+    body->addWidget(p.sidebar);
+    auto addFilter = [&](QString label, QString key) {
+        auto* item = new QListWidgetItem(label, p.sidebar);
+        item->setData(Qt::UserRole, key);
+    };
+    addFilter(p.t("All downloads", "全部下载"), "all");
+    addFilter(p.t("Downloading", "正在下载"), "active");
+    addFilter(p.t("Paused", "已暂停"), "paused");
+    addFilter(p.t("Scheduled", "计划任务"), "scheduled");
+    addFilter(p.t("Completed", "已完成"), "completed");
+    addFilter(p.t("Needs attention", "需要处理"), "attention");
+    for (auto category : {"Documents", "Software", "Video", "Music", "Archives"})
+        addFilter(category, "category:" + QString(category));
+    p.sidebar->setCurrentRow(0);
+    auto* content = new QWidget;
+    auto* contentLayout = new QVBoxLayout(content);
+    contentLayout->setContentsMargins(22, 20, 22, 18);
+    contentLayout->setSpacing(15);
+    body->addWidget(content, 1);
+    p.summary = new QLabel;
+    p.summary->setStyleSheet("color:#7a879d;font-size:12px;");
+    contentLayout->addWidget(p.summary);
+    p.model = new TaskModel(this);
+    p.model->chinese = p.chinese;
+    p.table = new QTableView;
+    p.table->setObjectName("downloadTable");
+    p.table->setModel(p.model);
+    p.table->setItemDelegate(new ProgressDelegate(p.table));
+    p.table->setSelectionBehavior(QAbstractItemView::SelectRows);
+    p.table->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    p.table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    p.table->setShowGrid(false);
+    p.table->verticalHeader()->hide();
+    p.table->verticalHeader()->setDefaultSectionSize(49);
+    p.table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    for (int col = 1; col < 7; ++col)
+        p.table->setColumnWidth(col, col == 2 ? 150 : 100);
+    p.table->setContextMenuPolicy(Qt::CustomContextMenu);
+    contentLayout->addWidget(p.table, 1);
+    p.empty = new QLabel(p.t("Your downloads, organized.\n\nAdd a link, paste a batch, or drop a URL here.",
+                             "让每一次下载井然有序。\n\n添加链接、批量导入，或将下载地址拖到这里。"));
+    p.empty->setAlignment(Qt::AlignCenter);
+    p.empty->setStyleSheet(
+        "background:white;border:1px solid #e6ebf3;border-radius:10px;color:#8491a7;font-size:16px;");
+    contentLayout->addWidget(p.empty, 1);
+    auto* file = menuBar()->addMenu(p.t("File", "文件"));
+    auto* add = file->addAction(p.t("New download…", "新建下载…"));
+    add->setShortcut(QKeySequence("Ctrl+N"));
+    connect(add, &QAction::triggered, this, [this] { newDownload(); });
+    file->addAction(p.t("Import tasks…", "导入任务…"), this, [&p] { p.importTasks(); });
+    file->addAction(p.t("Export tasks…", "导出任务…"), this, [&p] { p.exportTasks(); });
+    file->addSeparator();
+    file->addAction(p.t("Quit", "退出"), QKeySequence("Ctrl+Q"), this, &MainWindow::requestQuit);
+    auto* tools = menuBar()->addMenu(p.t("Tools", "工具"));
+    tools->addAction(p.t("New media download…", "新建媒体下载…"), this, [this, &p] {
+        AddDownloadDialog dialog(p.chinese, this);
+        auto spec = defaultSpec("https://");
+        spec.media = true;
+        spec.destination.replace_extension(L".mkv");
+        dialog.setSpecification(spec);
+        if (dialog.exec() == QDialog::Accepted)
+            enqueue(dialog.specification());
+    });
+    tools->addAction(p.t("Media support…", "媒体支持…"), this, [&p] { p.mediaSupport(); });
+    tools->addAction(p.t("Start all", "全部开始"), this, [&p] {
+        for (const auto& task : p.service.snapshot())
+            if (!isTerminal(task.state) && task.state != TaskState::Scheduled)
+                p.service.resume(task.id);
+    });
+    tools->addAction(p.t("Pause all", "全部暂停"), this, [&p] {
+        for (const auto& task : p.service.snapshot())
+            p.service.pause(task.id);
+    });
+    tools->addAction(p.t("Settings…", "设置…"), this, [&p] { p.settingsDialog(); });
+    auto* help = menuBar()->addMenu(p.t("Help", "帮助"));
+    help->addAction(p.t("About MaskPilot", "关于 MaskPilot"), this, [this, &p] {
+        QMessageBox::about(this, "MaskPilot",
+                           p.t("MaskPilot 0.1\nOpen-source native download manager.\nC++ · Qt\n\nSource and "
+                               "runtime support are documented with this build.",
+                               "MaskPilot 0.1\n开源原生下载管理器\nC++ · Qt\n\n实际支持范围见随包文档。"));
+    });
+    connect(newButton, &QPushButton::clicked, this, [this] { newDownload(); });
+    connect(batch, &QAction::triggered, this, [&p] { p.batch(); });
+    connect(settings, &QAction::triggered, this, [&p] { p.settingsDialog(); });
+    connect(p.resumeAction, &QAction::triggered, this, [&p] {
+        for (const auto& task : p.selected())
+            p.service.resume(task.id);
+    });
+    connect(p.pauseAction, &QAction::triggered, this, [&p] {
+        for (const auto& task : p.selected())
+            p.service.pause(task.id);
+    });
+    connect(p.cancelAction, &QAction::triggered, this, [&p] {
+        for (const auto& task : p.selected())
+            p.service.cancel(task.id);
+    });
+    connect(p.removeAction, &QAction::triggered, this, [this, &p] {
+        if (QMessageBox::question(this, p.t("Remove task records", "移除任务记录"),
+                                  p.t("Remove selected records? Downloaded files will be preserved.",
+                                      "移除选中的任务记录？已下载的文件将保留。")) == QMessageBox::Yes)
+            for (const auto& task : p.selected())
+                p.service.remove(task.id);
+    });
+    connect(p.detailAction, &QAction::triggered, this, [&p] { p.details(); });
+    connect(p.table, &QTableView::doubleClicked, this, [&p](const QModelIndex&) { p.details(); });
+    connect(p.table->selectionModel(), &QItemSelectionModel::selectionChanged, this,
+            [&p] { p.updateActions(); });
+    connect(p.sidebar, &QListWidget::currentRowChanged, this, [&p] { p.refresh(); });
+    connect(p.search, &QLineEdit::textChanged, this, [&p] { p.refresh(); });
+    connect(p.table, &QTableView::customContextMenuRequested, this, [this, &p](const QPoint& point) {
+        auto tasks = p.selected();
+        if (tasks.empty())
+            return;
+        QMenu menu;
+        menu.addAction(p.resumeAction);
+        menu.addAction(p.pauseAction);
+        menu.addAction(p.cancelAction);
+        menu.addSeparator();
+        auto task = tasks.front();
+        menu.addAction(p.t("Open file", "打开文件"), this,
+                       [task] {
+                           if (task.state == TaskState::Completed)
+                               QDesktopServices::openUrl(
+                                   QUrl::fromLocalFile(pathString(task.spec.destination)));
+                       })
+            ->setEnabled(task.state == TaskState::Completed);
+        menu.addAction(p.t("Open folder", "打开目录"), this, [task] {
+            QDesktopServices::openUrl(QUrl::fromLocalFile(pathString(task.spec.destination.parent_path())));
+        });
+        menu.addAction(p.detailAction);
+        menu.addSeparator();
+        menu.addAction(p.t("Edit request / sign-in…", "编辑请求 / 登录信息…"), this,
+                       [this, &p, task] {
+                           AddDownloadDialog dialog(p.chinese, this);
+                           dialog.setSpecification(task.spec);
+                           dialog.setWindowTitle(p.t("Edit request", "编辑下载请求"));
+                           if (auto* destination = dialog.findChild<QLineEdit*>("downloadDestination"))
+                               destination->setReadOnly(true);
+                           if (auto* button = dialog.findChild<QPushButton*>("confirmDownload"))
+                               button->setText(p.t("Save request", "保存请求"));
+                           if (dialog.exec() == QDialog::Accepted)
+                               p.service.updateRequest(task.id, dialog.specification());
+                       })
+            ->setEnabled(!isActive(task.state) && !isTerminal(task.state));
+        menu.addAction(p.t("Update URL…", "更新下载地址…"), this,
+                       [this, &p, task] {
+                           bool ok;
+                           auto url =
+                               QInputDialog::getText(this, p.t("Update URL", "更新下载地址"),
+                                                     p.t("New URL (request credentials will be cleared)",
+                                                         "新地址（将清除旧请求凭据）"),
+                                                     QLineEdit::Normal, qs(task.spec.url), &ok);
+                           if (ok && !url.isEmpty())
+                               p.service.updateUrl(task.id, url.toStdString());
+                       })
+            ->setEnabled(!isActive(task.state) && !isTerminal(task.state));
+        menu.addAction(
+                p.t("Restart from beginning", "从头重新下载"), this,
+                [this, &p, task] {
+                    if (QMessageBox::question(this, "MaskPilot",
+                                              p.t("Discard this task's cached parts and download again?",
+                                                  "丢弃此任务缓存的分段，并重新下载？")) == QMessageBox::Yes)
+                        p.service.restart(task.id);
+                })
+            ->setEnabled(!isActive(task.state) && !isTerminal(task.state));
+        menu.addAction(p.t("Set priority…", "设置优先级…"), this, [this, &p, task] {
+            bool ok;
+            auto priority =
+                QInputDialog::getInt(this, "MaskPilot", p.t("Priority (-10 to 10)", "优先级（-10 至 10）"),
+                                     task.spec.priority, -10, 10, 1, &ok);
+            if (ok)
+                p.service.setPriority(task.id, priority);
+        });
+        menu.addAction(p.t("Schedule…", "计划时间…"), this,
+                       [this, &p, task] {
+                           QDialog dialog(this);
+                           dialog.setWindowTitle(p.t("Schedule download", "计划下载"));
+                           auto* layout = new QVBoxLayout(&dialog);
+                           auto* time = new QDateTimeEdit(QDateTime::currentDateTime().addSecs(3600));
+                           time->setCalendarPopup(true);
+                           time->setDisplayFormat("yyyy-MM-dd HH:mm:ss t");
+                           layout->addWidget(time);
+                           auto* buttons =
+                               new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+                           layout->addWidget(buttons);
+                           connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+                           connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+                           if (dialog.exec() == QDialog::Accepted)
+                               p.service.schedule(task.id, time->dateTime().toSecsSinceEpoch(), 0);
+                       })
+            ->setEnabled(!isActive(task.state) && !isTerminal(task.state));
+        menu.exec(p.table->viewport()->mapToGlobal(point));
+    });
+    p.tray = new QSystemTrayIcon(windowIcon(), this);
+    auto* trayMenu = new QMenu(this);
+    trayMenu->addAction(p.t("Show MaskPilot", "显示 MaskPilot"), this, [this] {
+        showNormal();
+        raise();
+        activateWindow();
+    });
+    trayMenu->addAction(p.t("New download…", "新建下载…"), this, [this] {
+        showNormal();
+        newDownload();
+    });
+    trayMenu->addAction(p.t("Quit", "退出"), this, &MainWindow::requestQuit);
+    p.tray->setContextMenu(trayMenu);
+    p.tray->setToolTip("MaskPilot");
+    if (QSystemTrayIcon::isSystemTrayAvailable())
+        p.tray->show();
+    connect(p.tray, &QSystemTrayIcon::activated, this, [this](QSystemTrayIcon::ActivationReason reason) {
+        if (reason == QSystemTrayIcon::DoubleClick) {
+            showNormal();
+            raise();
+            activateWindow();
+        }
+    });
+    p.service.setLimits(p.settings.value("concurrentTasks", 3).toInt(),
+                        p.settings.value("globalLimit", 0).toLongLong() * 1024);
+    p.timer = new QTimer(this);
+    connect(p.timer, &QTimer::timeout, this, [&p] { p.refresh(); });
+    p.timer->start(400);
+    restoreGeometry(p.settings.value("geometry").toByteArray());
+    p.refresh();
+}
+MainWindow::~MainWindow() = default;
+DownloadSpec MainWindow::defaultSpec(const QString& url) const {
+    DownloadSpec spec;
+    spec.url = url.toStdString();
+    spec.connections = impl_->settings.value("connections", 4).toInt();
+    spec.proxy = impl_->settings.value("proxy").toString().toStdString();
+    spec.mediaDownloader =
+        std::filesystem::path(impl_->settings.value("mediaDownloader").toString().toStdWString());
+    spec.mediaMuxer = std::filesystem::path(impl_->settings.value("mediaMuxer").toString().toStdWString());
+    auto folder =
+        impl_->settings
+            .value("downloadDirectory", QStandardPaths::writableLocation(QStandardPaths::DownloadLocation))
+            .toString();
+    const auto extension = QFileInfo(filenameFor(url)).suffix().toLower();
+    const auto rules =
+        impl_->settings
+            .value("categoryRules",
+                   "Documents=pdf,doc,docx,xls,xlsx,ppt,pptx,txt\nSoftware=exe,msi,msix\nVideo=mp4,mkv,webm,"
+                   "mov\nMusic=mp3,flac,wav,m4a\nArchives=zip,7z,rar,tar,gz")
+            .toString();
+    for (const auto& rule : rules.split('\n', Qt::SkipEmptyParts)) {
+        auto equal = rule.indexOf('=');
+        if (equal > 0 && rule.mid(equal + 1).toLower().split(',', Qt::SkipEmptyParts).contains(extension))
+            spec.category = rule.left(equal).trimmed().toStdString();
+    }
+    if (impl_->settings.value("categorySubfolders", false).toBool()) {
+        auto category = qs(spec.category);
+        category.replace(QRegularExpression(R"([<>:"/\\|?*\x00-\x1f])"), "_");
+        if (category == "." || category == ".." || category.isEmpty())
+            category = "General";
+        folder = QDir(folder).filePath(category);
+    }
+    spec.destination = std::filesystem::path(QDir(folder).filePath(filenameFor(url)).toStdWString());
+    return spec;
+}
+void MainWindow::handleNative(const QJsonObject& request, std::function<void(QJsonObject)> respond) {
+    const auto requestId = request.value("requestId").toString();
+    auto answer = [respond = std::move(respond), requestId](
+                      bool success, QString error = {}, QString taskId = {}, QJsonArray tasks = {}) mutable {
+        QJsonObject result{{"version", 1}, {"requestId", requestId}, {"ok", success}};
+        if (!error.isEmpty())
+            result.insert("error", error);
+        if (!taskId.isEmpty())
+            result.insert("taskId", taskId);
+        if (!tasks.isEmpty())
+            result.insert("tasks", tasks);
+        respond(std::move(result));
+    };
+    if (request.value("version").toInt() != 1 ||
+        !QRegularExpression("^[a-f0-9]{32}$").match(requestId).hasMatch()) {
+        answer(false, "Invalid protocol version or request ID.");
+        return;
+    }
+    const auto command = request.value("command").toString();
+    if (command == "ping") {
+        answer(true);
+        return;
+    }
+    if (command == "list") {
+        QJsonArray tasks;
+        for (const auto& task : impl_->service.snapshot()) {
+            if (tasks.size() >= 1000)
+                break;
+            tasks.append(QJsonObject{{"id", qs(task.id)},
+                                     {"name", pathString(task.spec.destination.filename())},
+                                     {"state", stateText(task.state, impl_->chinese)},
+                                     {"downloaded", static_cast<double>(task.downloaded)},
+                                     {"total", static_cast<double>(task.total)}});
+        }
+        answer(true, {}, {}, tasks);
+        return;
+    }
+    if (command == "add" || command == "prepare") {
+        const auto raw = request.value("url").toString();
+        auto url = QUrl::fromEncoded(raw.toUtf8(), QUrl::StrictMode);
+        if (!request.value("url").isString() || raw.size() > 32768 ||
+            raw.contains(QRegularExpression("[\\x00-\\x1f\\x7f]")) || !url.isValid() ||
+            url.host().isEmpty() || (url.scheme() != "http" && url.scheme() != "https") ||
+            !url.userName().isEmpty() || !url.password().isEmpty()) {
+            answer(false, "Invalid download URL.");
+            return;
+        }
+        url.setFragment(QString());
+        auto spec = defaultSpec(QString::fromUtf8(url.toEncoded()));
+        for (const auto& field : {QString("referrer"), QString("cookie"), QString("userAgent")}) {
+            if (!request.contains(field))
+                continue;
+            const auto value = request.value(field).toString();
+            const auto limit = field == "cookie" ? 16384 : (field == "userAgent" ? 1024 : 32768);
+            if (!request.value(field).isString() || value.size() > limit ||
+                value.contains(QRegularExpression("[\\x00-\\x1f\\x7f]"))) {
+                answer(false, "Invalid request metadata.");
+                return;
+            }
+            if (field == "referrer")
+                spec.referrer = value.toStdString();
+            else if (field == "cookie")
+                spec.cookie = value.toStdString();
+            else
+                spec.userAgent = value.toStdString();
+        }
+        if (request.contains("filename")) {
+            const auto name = request.value("filename").toString();
+            if (!request.value("filename").isString() || name.size() > 180 ||
+                name.contains(QRegularExpression(R"([<>:"/\\|?*\x00-\x1f])")) || name == "." ||
+                name == ".." || name.endsWith('.') || name.endsWith(' ')) {
+                answer(false, "Invalid destination filename.");
+                return;
+            }
+            if (!name.isEmpty())
+                spec.destination =
+                    spec.destination.parent_path() / std::filesystem::path(name.toStdWString());
+        }
+        if (request.contains("media") && !request.value("media").isBool()) {
+            answer(false, "Invalid media flag.");
+            return;
+        }
+        spec.media = request.value("media").toBool();
+        if (request.contains("audioOnly") && !request.value("audioOnly").isBool()) {
+            answer(false, "Invalid audio mode.");
+            return;
+        }
+        spec.audioOnly = request.value("audioOnly").toBool();
+        spec.startPaused = command == "prepare";
+        if (spec.media) {
+            spec.category = spec.audioOnly ? "Music" : "Video";
+            spec.destination.replace_extension(spec.audioOnly ? L".m4a" : L".mkv");
+            if (!QFileInfo(pathString(spec.mediaDownloader)).isExecutable() ||
+                !QFileInfo(pathString(spec.mediaMuxer)).isExecutable()) {
+                answer(false,
+                       impl_->t("Media components are missing. Open Tools → Media support in MaskPilot.",
+                                "缺少媒体组件，请在 MaskPilot 的“工具 → 媒体支持”中安装。"));
+                return;
+            }
+        }
+        if (auto error = validateSpec(spec); !error.empty()) {
+            answer(false, qs(error));
+            return;
+        }
+        enqueue(std::move(spec), requestId, [answer = std::move(answer)](QString id, QString error) mutable {
+            answer(error.isEmpty(), error, id);
+        });
+        return;
+    }
+    const auto id = request.value("taskId").toString();
+    if (!QRegularExpression("^[a-f0-9]{32}$").match(id).hasMatch()) {
+        answer(false, "Invalid task ID.");
+        return;
+    }
+    const auto tasks = impl_->service.snapshot();
+    if (std::none_of(tasks.begin(), tasks.end(), [&](const auto& task) { return qs(task.id) == id; })) {
+        answer(false, "Task was not found.");
+        return;
+    }
+    if (command == "resume") {
+        if (impl_->completionDialog)
+            impl_->completionDialog->reject();
+        impl_->service.resume(id.toStdString());
+    } else if (command == "pause")
+        impl_->service.pause(id.toStdString());
+    else if (command == "cancel")
+        impl_->service.cancel(id.toStdString());
+    else if (command == "remove") {
+        auto task =
+            std::find_if(tasks.begin(), tasks.end(), [&](const auto& value) { return qs(value.id) == id; });
+        if (task != tasks.end() && isActive(task->state)) {
+            answer(false, "Pause or cancel an active task before removing its record.");
+            return;
+        }
+        impl_->service.remove(id.toStdString());
+    } else {
+        answer(false, "Unsupported command.");
+        return;
+    }
+    answer(true, {}, id);
+}
+void MainWindow::newDownload(QString url) {
+    if (url.isEmpty()) {
+        auto clipboard = QApplication::clipboard()->text().trimmed();
+        if (clipboard.startsWith("http://") || clipboard.startsWith("https://"))
+            url = clipboard;
+    }
+    AddDownloadDialog dialog(impl_->chinese, this, url);
+    if (dialog.exec() == QDialog::Accepted)
+        enqueue(dialog.specification());
+}
+void MainWindow::enqueue(DownloadSpec spec, QString requestId,
+                         std::function<void(QString, QString)> completion) {
+    if (impl_->completionDialog)
+        impl_->completionDialog->reject();
+    impl_->pending.push_back(
+        {impl_->service.add(std::move(spec), requestId.toStdString()), std::move(completion)});
+}
+void MainWindow::requestQuit() {
+    impl_->quitting = true;
+    close();
+}
+void MainWindow::closeEvent(QCloseEvent* event) {
+    impl_->settings.setValue("geometry", saveGeometry());
+    if (!impl_->quitting && impl_->settings.value("closeToTray", true).toBool() && impl_->tray->isVisible()) {
+        hide();
+        event->ignore();
+        return;
+    }
+    event->accept();
+    QApplication::quit();
+}
+void MainWindow::dragEnterEvent(QDragEnterEvent* event) {
+    if (event->mimeData()->hasUrls() || event->mimeData()->hasText())
+        event->acceptProposedAction();
+}
+void MainWindow::dropEvent(QDropEvent* event) {
+    auto text = event->mimeData()->hasUrls() && !event->mimeData()->urls().isEmpty()
+                    ? event->mimeData()->urls().first().toString()
+                    : event->mimeData()->text().trimmed();
+    if (text.startsWith("https://") || text.startsWith("http://")) {
+        newDownload(text);
+        event->acceptProposedAction();
+    }
+}
+} // namespace maskpilot

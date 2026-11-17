@@ -1,0 +1,6 @@
+add_library(maskpilot_infrastructure src/network/curl_transfer.cpp src/persistence/sqlite_repository.cpp src/media/media_tools.cpp)
+target_include_directories(maskpilot_infrastructure PUBLIC include)
+target_link_libraries(maskpilot_infrastructure PUBLIC maskpilot_application Qt6::Core PRIVATE CURL::libcurl unofficial::sqlite3::sqlite3)
+if(WIN32)
+  target_link_libraries(maskpilot_infrastructure PRIVATE bcrypt)
+endif()

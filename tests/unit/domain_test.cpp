@@ -1,0 +1,66 @@
+#include <gtest/gtest.h>
+#include <limits>
+#include <maskpilot/domain/task.h>
+
+TEST(Segments, PartitionsLargeFilesWithoutGapsOrOverflow) {
+    for (auto length : {0LL, 1LL, 7LL, 4294967301LL, std::numeric_limits<long long>::max()}) {
+        auto parts = maskpilot::splitSegments(length, 8);
+        ASSERT_FALSE(parts.empty());
+        EXPECT_EQ(parts.front().begin, 0);
+        EXPECT_EQ(parts.back().end, length);
+        for (size_t i = 1; i < parts.size(); ++i)
+            EXPECT_EQ(parts[i - 1].end, parts[i].begin);
+    }
+}
+TEST(Segments, RejectsInvalidArguments) {
+    EXPECT_TRUE(maskpilot::splitSegments(-1, 2).empty());
+    EXPECT_TRUE(maskpilot::splitSegments(100, 0).empty());
+}
+TEST(Validation, RejectsProtocolAndHeaderInjection) {
+    maskpilot::DownloadSpec s;
+    s.url = "https://example.test/file";
+    s.destination = "file.bin";
+    EXPECT_TRUE(maskpilot::validateSpec(s).empty());
+    s.cookie = "x\r\nInjected: 1";
+    EXPECT_FALSE(maskpilot::validateSpec(s).empty());
+    s.cookie.clear();
+    s.headers = {{"Range", "bytes=1-"}};
+    EXPECT_FALSE(maskpilot::validateSpec(s).empty());
+    s.headers.clear();
+    s.url = "file:///etc/passwd";
+    EXPECT_FALSE(maskpilot::validateSpec(s).empty());
+}
+TEST(Validation, RejectsEmbeddedPathTerminatorsAndInvalidHeaderNames) {
+    maskpilot::DownloadSpec spec;
+    spec.url = "https://example.test/file";
+    spec.destination = std::filesystem::path(std::u8string(u8"existing.bin\0suffix", 19));
+    EXPECT_FALSE(maskpilot::validateSpec(spec).empty());
+    spec.destination = std::filesystem::path(u8"parent\nfolder/file.bin");
+    EXPECT_FALSE(maskpilot::validateSpec(spec).empty());
+#ifdef _WIN32
+    spec.destination = std::filesystem::path(std::wstring(1, static_cast<wchar_t>(0xd800)));
+    EXPECT_FALSE(maskpilot::validateSpec(spec).empty());
+#endif
+    for (const auto* reserved : {u8"COM\u00b9.bin", u8"LPT\u00b2.txt", u8"CONOUT$.bin"}) {
+        spec.destination = std::filesystem::path(reserved);
+        EXPECT_FALSE(maskpilot::validateSpec(spec).empty());
+    }
+    spec.destination = "file.bin";
+    spec.headers = {{std::string("X-Name\0suffix", 13), "value"}};
+    EXPECT_FALSE(maskpilot::validateSpec(spec).empty());
+    spec.headers = {{"X_Custom-Token", "value"}};
+    EXPECT_TRUE(maskpilot::validateSpec(spec).empty());
+}
+TEST(Identity, GeneratesPathSafeDistinctIds) {
+    auto a = maskpilot::newTaskId(), b = maskpilot::newTaskId();
+    EXPECT_EQ(a.size(), 32);
+    EXPECT_NE(a, b);
+}
+TEST(Validation, RejectsProxySecretsAndAcceptsQueryAtSign) {
+    maskpilot::DownloadSpec s;
+    s.destination = "file";
+    s.url = "https://example.test?email=a@b";
+    EXPECT_TRUE(maskpilot::validateSpec(s).empty());
+    s.proxy = "http://user:password@proxy.test:8080";
+    EXPECT_FALSE(maskpilot::validateSpec(s).empty());
+}

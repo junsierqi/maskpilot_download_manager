@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "MaskPilot 下载助手",
+  "version": "0.1.0",
+  "description": "将下载交给 MaskPilot，发现页面文件与媒体。自动接管默认关闭。",
+  "minimum_chrome_version": "127",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage",
+    "contextMenus",
+    "downloads",
+    "nativeMessaging",
+    "cookies"
+  ],
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "MaskPilot 下载助手",
+    "default_popup": "popup.html"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  },
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwJG9tu8thOV3Fz655VVsCJU/N7xVN6v/qB1zIlAaQ3DNvwJkziwxCodo64qO3pR0MdgNn+XxAw3IsUN6TyhMS8bHQ8Xb6zrooA10Sc3MhPlz0vFbxk4/EOngrDVANc7zkTdTzHGErzlzs3wG6ABtcQB9Ny9z4MEQnf8+ZGCfdV2dZH9dSPgo5PXU87sTovf73YMnzzi/VLiux+3psaba/qzdYet4ueCGpAf3NGW68ry9lSDAjNkfunYlPIAA8y01r7/YNEpYNdxkVHBJQkM1SNn09Ldxp8z1GqKeeHkfBJ0/pqDBMcDCy6YUQVwMtfwTx14dLsaiDqVsEa+3PMkb5wIDAQAB"
+}

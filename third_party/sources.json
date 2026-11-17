@@ -1,0 +1,22 @@
+{
+  "qtVersion": "6.11.3",
+  "archives": [
+    {
+      "file": "qtbase-everywhere-src-6.11.3.tar.xz",
+      "sha256": "46de0710b594945a5d446ae44354daa386141c6903c53781b2ca547bc62f8f8f",
+      "size": 50715968
+    },
+    {
+      "file": "qtsvg-everywhere-src-6.11.3.tar.xz",
+      "sha256": "9bdf6fa4b5a2d91c3eaa2edd12263fdff0ae19d0ac25d3c99946cd4189a07123",
+      "size": 2341756
+    },
+    {
+      "file": "qttranslations-everywhere-src-6.11.3.tar.xz",
+      "sha256": "499e3067b91e53675eead7a54a3cd771c30939d04d03b4e67f12167484e290f2",
+      "size": 1744396
+    }
+  ],
+  "baseUrl": "https://download.qt.io/archive/qt/6.11/6.11.3/submodules/",
+  "mirrorUrl": "https://qt.mirror.constant.com/archive/qt/6.11/6.11.3/submodules/"
+}

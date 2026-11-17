@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MaskPilot</title><link rel="stylesheet" href="popup.css"></head>
+<body>
+  <header><div class="brand-mark" aria-hidden="true">↓</div><div><h1>MaskPilot</h1><p>让下载井然有序</p></div><button id="connection" class="status" title="检查桌面连接">检测中</button></header>
+  <main>
+    <section class="composer"><label for="url">发送下载地址</label><div class="url-row"><input id="url" type="url" autocomplete="off" placeholder="https://example.com/file.zip" maxlength="32768"><button id="send" class="primary">发送</button></div><label class="media-choice"><input id="media-url" type="checkbox"> 按网页媒体解析此地址</label></section>
+    <div id="feedback" class="feedback" role="status" aria-live="polite" hidden></div>
+    <nav aria-label="内容切换"><button class="tab selected" id="resources-tab" aria-selected="true">页面资源</button><button class="tab" id="tasks-tab" aria-selected="false">桌面任务</button></nav>
+    <section id="resources-panel"><div class="section-heading"><span id="resources-caption">仅在点击后读取当前页面</span><button id="discover" class="text-button">查找资源</button></div><div id="resources" class="items"><div class="empty"><span class="empty-icon">↧</span><strong>发现当前页面的下载</strong><p>查找公开的文件链接、音视频和播放清单。<br>受保护或临时媒体可能无法下载。</p></div></div><div class="selection-row" hidden id="selection-row"><label><input id="select-all" type="checkbox">全选</label><button id="send-selected" class="primary">发送所选</button></div></section>
+    <section id="tasks-panel" hidden><div class="section-heading"><span>桌面程序中的最近任务</span><button id="refresh-tasks" class="text-button">刷新</button></div><div id="tasks" class="items"></div></section>
+    <section class="preferences"><label class="toggle-row"><span><strong>自动接管下载</strong><small>确认桌面已保存后，才取消浏览器下载</small></span><input id="auto-capture" type="checkbox" role="switch"></label><label class="toggle-row"><span><strong>携带当前地址的登录信息</strong><small>仅针对你发送或已启用接管的地址读取 Cookie</small></span><input id="include-cookies" type="checkbox" role="switch"></label></section>
+  </main><footer>本机处理 · 自动接管默认关闭 · 无遥测</footer><script type="module" src="popup.js"></script>
+</body></html>

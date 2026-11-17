@@ -1,0 +1,3 @@
+add_library(maskpilot_application src/download_service.cpp)
+target_include_directories(maskpilot_application PUBLIC include)
+target_link_libraries(maskpilot_application PUBLIC maskpilot_domain)
