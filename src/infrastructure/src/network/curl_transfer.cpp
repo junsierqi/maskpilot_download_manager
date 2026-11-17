@@ -1,3 +1,4 @@
+#include "../filesystem/transfer_files.h"
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -27,53 +28,10 @@ std::string pathText(const std::filesystem::path& p) {
     auto s = p.u8string();
     return {s.begin(), s.end()};
 }
-FILE* openFile(const std::filesystem::path& path, const wchar_t* mode) {
-#ifdef _WIN32
-    FILE* file = nullptr;
-    _wfopen_s(&file, path.c_str(), mode);
-    return file;
-#else
-    return fopen(path.c_str(), mode[0] == L'a' ? "ab" : "wb");
-#endif
-}
-void syncFile(FILE* f) {
-    if (fflush(f) != 0)
-        throw std::runtime_error("Cannot flush downloaded data.");
-#ifdef _WIN32
-    if (_commit(_fileno(f)) != 0)
-        throw std::runtime_error("Cannot synchronize downloaded data.");
-#else
-    if (fsync(fileno(f)) != 0)
-        throw std::runtime_error("Cannot synchronize downloaded data.");
-#endif
-}
-void replaceOwnedFile(const std::filesystem::path& from, const std::filesystem::path& to) {
-#ifdef _WIN32
-    if (!MoveFileExW(from.c_str(), to.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
-        throw std::runtime_error("Cannot commit recovery metadata.");
-#else
-    std::filesystem::rename(from, to);
-#endif
-}
-void atomicText(const std::filesystem::path& path, const std::string& data) {
-    auto temp = path;
-    temp += L".new";
-    auto* file = openFile(temp, L"wb");
-    if (!file)
-        throw std::runtime_error("Cannot write recovery metadata.");
-    try {
-        if (fwrite(data.data(), 1, data.size(), file) != data.size())
-            throw std::runtime_error("Cannot write recovery metadata.");
-        syncFile(file);
-        fclose(file);
-        file = nullptr;
-        replaceOwnedFile(temp, path);
-    } catch (...) {
-        if (file)
-            fclose(file);
-        throw;
-    }
-}
+using transfer_files::atomicText;
+using transfer_files::openFile;
+using transfer_files::replaceOwnedFile;
+using transfer_files::syncFile;
 std::string trim(std::string value) {
     while (!value.empty() &&
            (value.back() == '\r' || value.back() == '\n' || value.back() == ' ' || value.back() == '\t'))
@@ -421,6 +379,10 @@ class CurlTransfer final : public ITransferTransport {
     void run(const Task& task, const std::filesystem::path& work, TransferControl& control,
              const std::function<void(TransferEvent)>& callback) override {
         static CurlGlobal global;
+        if (isFtpUrl(task.spec.url)) {
+            makeFtpTransfer()->run(task, work, control, callback);
+            return;
+        }
         TransferEvent event;
         event.phase = TaskState::Probing;
         auto emit = [&](TransferOutcome result, std::string error = {}, bool retry = false) {

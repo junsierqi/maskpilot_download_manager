@@ -64,3 +64,30 @@ TEST(Validation, RejectsProxySecretsAndAcceptsQueryAtSign) {
     s.proxy = "http://user:password@proxy.test:8080";
     EXPECT_FALSE(maskpilot::validateSpec(s).empty());
 }
+
+TEST(Validation, SeparatesFtpCredentialsFromHttpAndMediaOptions) {
+    maskpilot::DownloadSpec spec;
+    spec.url = "ftp://example.test/file.bin";
+    spec.destination = "file.bin";
+    spec.ftpUsername = "user";
+    spec.ftpPassword = "password";
+    spec.ftpExplicitTls = true;
+    spec.ftpActiveMode = true;
+    spec.ftpCaBundle = "private-ca.pem";
+    EXPECT_TRUE(maskpilot::validateSpec(spec).empty());
+    spec.url = "ftps://example.test/file.bin";
+    EXPECT_TRUE(maskpilot::validateSpec(spec).empty());
+    spec.cookie = "session=value";
+    EXPECT_FALSE(maskpilot::validateSpec(spec).empty());
+    spec.cookie.clear();
+    spec.media = true;
+    EXPECT_FALSE(maskpilot::validateSpec(spec).empty());
+    spec.media = false;
+    spec.url = "ftp://user:password@example.test/file.bin";
+    EXPECT_FALSE(maskpilot::validateSpec(spec).empty());
+    spec.url = "https://example.test/file.bin";
+    EXPECT_FALSE(maskpilot::validateSpec(spec).empty());
+    spec.url = "ftp://example.test/file.bin";
+    spec.ftpPassword += '\n';
+    EXPECT_FALSE(maskpilot::validateSpec(spec).empty());
+}

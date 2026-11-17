@@ -55,7 +55,10 @@ void MainWindow::Impl::exportTasks() {
                                  {"media", task.spec.media},
                                  {"audioOnly", task.spec.audioOnly},
                                  {"mediaFormat", qs(task.spec.mediaFormat)},
-                                 {"sha256", qs(task.spec.expectedSha256)}});
+                                 {"sha256", qs(task.spec.expectedSha256)},
+                                 {"ftpTls", task.spec.ftpExplicitTls},
+                                 {"ftpActive", task.spec.ftpActiveMode},
+                                 {"ftpCa", pathString(task.spec.ftpCaBundle)}});
     QSaveFile file(path);
     if (!file.open(QIODevice::WriteOnly) ||
         file.write(QJsonDocument(QJsonObject{{"version", 1}, {"downloads", array}}).toJson()) < 0 ||
@@ -101,8 +104,14 @@ void MainWindow::Impl::importTasks() {
         spec.media = value.value("media").toBool();
         spec.audioOnly = value.value("audioOnly").toBool();
         spec.mediaFormat = value.value("mediaFormat").toString(qs(spec.mediaFormat)).toStdString();
+        spec.ftpExplicitTls = value.value("ftpTls").toBool();
+        spec.ftpActiveMode = value.value("ftpActive").toBool();
+        spec.ftpCaBundle = std::filesystem::path(value.value("ftpCa").toString().toStdWString());
+        const bool invalidFtpFields = (value.contains("ftpTls") && !value.value("ftpTls").isBool()) ||
+                                      (value.contains("ftpActive") && !value.value("ftpActive").isBool()) ||
+                                      (value.contains("ftpCa") && !value.value("ftpCa").isString());
         spec.startPaused = true;
-        if (invalidMediaFields || !validateSpec(spec).empty()) {
+        if (invalidMediaFields || invalidFtpFields || !validateSpec(spec).empty()) {
             QMessageBox::warning(window, "MaskPilot",
                                  t("Task list validation failed. Nothing was imported.",
                                    "任务列表校验失败，未导入任何任务。"));
@@ -155,7 +164,7 @@ void MainWindow::Impl::batch() {
                     links.append(expanded.trimmed());
                 }
             } else {
-                auto matches = QRegularExpression(R"(https?://[^\s<>"']+)").globalMatch(line);
+                auto matches = QRegularExpression(R"((?:https?|ftps?)://[^\s<>"']+)").globalMatch(line);
                 while (matches.hasNext() && links.size() < 1000)
                     links.append(matches.next().captured());
             }

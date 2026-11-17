@@ -24,14 +24,34 @@ std::vector<Segment> splitSegments(std::int64_t length, int count) {
     }
     return result;
 }
+bool isFtpUrl(const std::string& url) { return url.starts_with("ftp://") || url.starts_with("ftps://"); }
 std::string validateSpec(const DownloadSpec& spec) {
+    const bool ftp = isFtpUrl(spec.url);
+    if (ftp && (spec.media || !spec.cookie.empty() || !spec.authorization.empty() || !spec.headers.empty() ||
+                !spec.referrer.empty()))
+        return "FTP tasks cannot use media mode or HTTP request credentials and headers.";
+    if (!ftp && (!spec.ftpUsername.empty() || !spec.ftpPassword.empty() || spec.ftpExplicitTls ||
+                 spec.ftpActiveMode || !spec.ftpCaBundle.empty()))
+        return "FTP options require an FTP or FTPS address.";
+    if (spec.ftpUsername.size() > 1024 || spec.ftpPassword.size() > 16384)
+        return "FTP credentials are too long.";
+    for (const auto& value : {spec.ftpUsername, spec.ftpPassword})
+        if (value.find_first_of("\r\n\0", 0, 3) != std::string::npos)
+            return "FTP credentials cannot contain control characters.";
+    try {
+        const auto ca = spec.ftpCaBundle.u8string();
+        if (std::any_of(ca.begin(), ca.end(), [](char8_t c) { return c < 0x20 || c == 0x7f; }))
+            return "Invalid FTP CA bundle path.";
+    } catch (const std::system_error&) {
+        return "FTP CA bundle path contains invalid Unicode.";
+    }
     if (spec.media && (!spec.cookie.empty() || !spec.authorization.empty() || !spec.headers.empty()))
         return "Origin-bound login headers are supported for direct file downloads only. For media, use a "
                "public URL or download the direct file without media mode.";
     if (spec.mediaFormat.size() > 1000 || spec.mediaFormat.find_first_of("\r\n\0", 0, 3) != std::string::npos)
         return "Invalid media format selection.";
-    if (!(spec.url.starts_with("https://") || spec.url.starts_with("http://")))
-        return "Only HTTP and HTTPS URLs are supported.";
+    if (!(spec.url.starts_with("https://") || spec.url.starts_with("http://") || ftp))
+        return "Only HTTP, HTTPS, FTP and FTPS URLs are supported.";
     if (spec.url.size() > 32768 || spec.url.find_first_of("\r\n\0", 0, 3) != std::string::npos)
         return "Invalid URL.";
     auto hostBegin = spec.url.find("://") + 3;

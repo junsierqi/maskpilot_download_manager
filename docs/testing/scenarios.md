@@ -5,6 +5,7 @@
 | 场景 | 命令／证据 |
 |---|---|
 | 原生文件故障矩阵 | CTest `local_http_product_path`：Range、降级、空／未知长度、身份变化、重定向清除凭据、代理、登录、重试、重名和 SHA 失败 |
+| FTP/FTPS | CTest `ftp_product_path`，或 `python tests/support/ftp_fixture.py --exercise <cli.exe>`：实际匿名／认证、主动／被动、显式／隐式 TLS、CA／主机名拒绝、摘要、远端变化、REST 回退及强制退出恢复；只对受控本地服务器作保证 |
 | 强制退出恢复 | 同一实际 CLI 进程被终止，读取持久化 offset，再续传并比对完整文件；不是仅测分段计算 |
 | 大文件 | `python tests/support/http_fixture.py --exercise out/build/windows-msvc-release/maskpilot_cli.exe --large`，实际下载 4 GiB+257 字节并验证 SHA-256 |
 | 原生消息 | CTest `native_bridge_product_path`：来源／大小限制、持久化后 ACK、恢复、记录移除保留最终文件 |
@@ -17,6 +18,8 @@
 某些自动化测试浏览器环境无法启用沙箱，只有明确传入 `--allow-unsandboxed-fixture` 才关闭测试实例沙箱；该结果不证明生产沙箱兼容，产品启动不使用此参数。
 
 测试隔离应用数据、下载目录和本地服务。正常测试不修改实际用户下载或浏览器 profile。禁止实际触发关机来验证倒计时。截图须使用原生 Windows 渲染；offscreen 平台适合控制测试，不能证明字体／DPI 视觉正确。
+
+FTP TLS 夹具每次生成短期证书，不修改系统证书库。测试环境需提供 Python `cryptography` 或 PATH 中的 OpenSSL 命令；缺少两者时测试失败，不静默跳过 TLS。它们仅用于测试，产品运行不需要 Python 或 OpenSSL 命令行程序。
 
 混合压力测试先在 `out/qa/media-fixtures/` 准备自有小型 `source.mp4`，或用以下命令生成合成样例。默认 300 秒只是短检查，完整计时传入 `--duration 28800`：
 

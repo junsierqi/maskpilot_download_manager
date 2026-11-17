@@ -386,3 +386,51 @@ TEST(DesktopFlow, ExportImportPreservesMediaModeWithoutExportingLoginHeaders) {
         }
     }
 }
+
+TEST(DesktopFlow, FtpCredentialsReachPausedTaskWithoutHttpHeaders) {
+    qputenv("QT_QPA_PLATFORM", "offscreen");
+    int argc = 1;
+    char program[] = "MaskPilotFtpWidgetTest";
+    char* argv[] = {program, nullptr};
+    QApplication application(argc, argv);
+    QCoreApplication::setOrganizationName("MaskPilotTests");
+    QCoreApplication::setApplicationName("FtpWidgetFlow");
+    QTemporaryDir temporary;
+    ASSERT_TRUE(temporary.isValid());
+    QSettings::setDefaultFormat(QSettings::IniFormat);
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, temporary.path());
+    maskpilot::DownloadService service(
+        std::make_unique<MemoryRepository>(), [] { return std::make_unique<ControlledTransport>(); },
+        std::filesystem::path(temporary.path().toStdWString()) / "parts");
+    maskpilot::MainWindow window(service);
+    window.show();
+    bool exercised = false;
+    QTimer::singleShot(50, &window, [&] {
+        auto* modal = QApplication::activeModalWidget();
+        ASSERT_NE(modal, nullptr);
+        auto* username = modal->findChild<QLineEdit*>("ftpUsername");
+        auto* password = modal->findChild<QLineEdit*>("ftpPassword");
+        ASSERT_NE(username, nullptr);
+        ASSERT_NE(password, nullptr);
+        EXPECT_EQ(password->echoMode(), QLineEdit::Password);
+        username->setText("fixture-user");
+        password->setText("fixture-password");
+        modal->findChild<QLineEdit*>("downloadDestination")->setText(temporary.filePath("ftp.bin"));
+        modal->findChild<QCheckBox*>("addPaused")->setChecked(true);
+        exercised = true;
+        modal->findChild<QPushButton*>("confirmDownload")->click();
+    });
+    window.newDownload("ftps://example.test/ftp.bin");
+    for (int n = 0; n < 100 && service.snapshot().empty(); ++n) {
+        QApplication::processEvents();
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    EXPECT_TRUE(exercised);
+    const auto tasks = service.snapshot();
+    ASSERT_EQ(tasks.size(), 1);
+    EXPECT_EQ(tasks[0].state, maskpilot::TaskState::Paused);
+    EXPECT_EQ(tasks[0].spec.ftpUsername, "fixture-user");
+    EXPECT_EQ(tasks[0].spec.ftpPassword, "fixture-password");
+    EXPECT_TRUE(tasks[0].spec.headers.empty());
+    EXPECT_FALSE(tasks[0].spec.media);
+}

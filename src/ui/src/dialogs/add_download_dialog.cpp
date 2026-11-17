@@ -49,6 +49,8 @@ struct AddDownloadDialog::Impl {
     QCheckBox* media;
     QComboBox *mode, *quality;
     QLineEdit *downloader, *muxer;
+    QLineEdit *ftpUsername, *ftpPassword, *ftpCa;
+    QCheckBox *ftpTls, *ftpActive;
 };
 AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString initialUrl)
     : QDialog(parent), impl_(std::make_unique<Impl>()) {
@@ -69,7 +71,7 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
     form->setSpacing(14);
     impl_->url = new QLineEdit(initialUrl);
     impl_->url->setObjectName("downloadUrl");
-    impl_->url->setPlaceholderText("https://example.com/file.zip");
+    impl_->url->setPlaceholderText("https://example.com/file.zip / ftp://example.com/file.zip");
     form->addRow(t("URL", "下载地址"), impl_->url);
     QSettings settings;
     const auto folder =
@@ -183,6 +185,45 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
     impl_->headers->setMaximumHeight(70);
     options->addRow(t("Extra headers", "附加请求头"), impl_->headers);
     tabs->addTab(advanced, t("Advanced", "高级"));
+    auto* ftpTab = new QWidget;
+    auto* ftpForm = new QFormLayout(ftpTab);
+    ftpForm->setSpacing(12);
+    impl_->ftpUsername = new QLineEdit;
+    impl_->ftpUsername->setObjectName("ftpUsername");
+    impl_->ftpUsername->setPlaceholderText(t("Empty for anonymous login", "留空使用匿名登录"));
+    impl_->ftpPassword = new QLineEdit;
+    impl_->ftpPassword->setObjectName("ftpPassword");
+    impl_->ftpPassword->setEchoMode(QLineEdit::Password);
+    ftpForm->addRow(t("Username", "用户名"), impl_->ftpUsername);
+    ftpForm->addRow(t("Password", "密码"), impl_->ftpPassword);
+    impl_->ftpTls =
+        new QCheckBox(t("Require explicit TLS for ftp:// (AUTH TLS)", "ftp:// 必须使用显式 TLS（AUTH TLS）"));
+    impl_->ftpActive = new QCheckBox(t("Active mode (default: passive)", "主动模式（默认被动）"));
+    ftpForm->addRow(impl_->ftpTls);
+    ftpForm->addRow(impl_->ftpActive);
+    auto* caRow = new QWidget;
+    auto* caLayout = new QHBoxLayout(caRow);
+    caLayout->setContentsMargins(0, 0, 0, 0);
+    impl_->ftpCa = new QLineEdit;
+    impl_->ftpCa->setPlaceholderText(t("Optional private CA bundle", "可选：私有 CA 证书文件"));
+    auto* caBrowse = new QPushButton(t("Browse…", "浏览…"));
+    caLayout->addWidget(impl_->ftpCa);
+    caLayout->addWidget(caBrowse);
+    connect(caBrowse, &QPushButton::clicked, this, [this] {
+        const auto file = QFileDialog::getOpenFileName(this, "CA", {}, "Certificates (*.pem *.crt);;All (*)");
+        if (!file.isEmpty())
+            impl_->ftpCa->setText(file);
+    });
+    ftpForm->addRow(t("CA bundle", "CA 证书"), caRow);
+    auto* ftpNote = new QLabel(
+        t("ftps:// uses implicit TLS. Certificates are always checked. FTP uses one data connection. "
+          "Credentials are not saved; enter them again after restart. Without an expected SHA-256, "
+          "resuming safely restarts the file. Plain FTP does not encrypt credentials.",
+          "ftps:// 使用隐式 TLS，始终校验证书。FTP 使用单数据连接。账号密码不保存，重启后需重新输入。"
+          "未提供预期 SHA-256 时，恢复任务会安全地重新下载。普通 FTP 不加密账号密码。"));
+    ftpNote->setWordWrap(true);
+    ftpForm->addRow(ftpNote);
+    const auto ftpIndex = tabs->addTab(ftpTab, "FTP / FTPS");
     auto* mediaTab = new QWidget;
     auto* mediaForm = new QFormLayout(mediaTab);
     mediaForm->setSpacing(12);
@@ -225,6 +266,19 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
     note->setWordWrap(true);
     mediaForm->addRow(note);
     tabs->addTab(mediaTab, t("Media", "媒体"));
+    auto updateProtocol = [this, tabs, ftpIndex] {
+        const bool ftp = isFtpUrl(impl_->url->text().trimmed().toStdString());
+        tabs->setTabEnabled(ftpIndex, ftp);
+        impl_->media->setEnabled(!ftp);
+        impl_->connections->setEnabled(!ftp);
+        impl_->referrer->setEnabled(!ftp);
+        impl_->cookie->setEnabled(!ftp);
+        impl_->authorization->setEnabled(!ftp);
+        impl_->headers->setEnabled(!ftp);
+    };
+    connect(impl_->url, &QLineEdit::textChanged, this,
+            [updateProtocol](const QString&) { updateProtocol(); });
+    updateProtocol();
     auto updateMedia = [this] {
         if (!impl_->media->isChecked())
             return;
@@ -301,6 +355,18 @@ DownloadSpec AddDownloadDialog::specification() const {
         s.headers.emplace_back(line.left(colon).trimmed().toStdString(),
                                line.mid(colon + 1).trimmed().toStdString());
     }
+    if (isFtpUrl(s.url)) {
+        s.media = false;
+        s.referrer.clear();
+        s.cookie.clear();
+        s.authorization.clear();
+        s.headers.clear();
+        s.ftpUsername = impl_->ftpUsername->text().toStdString();
+        s.ftpPassword = impl_->ftpPassword->text().toStdString();
+        s.ftpExplicitTls = impl_->ftpTls->isChecked();
+        s.ftpActiveMode = impl_->ftpActive->isChecked();
+        s.ftpCaBundle = nativePath(impl_->ftpCa->text().trimmed());
+    }
     return s;
 }
 void AddDownloadDialog::setSpecification(const DownloadSpec& spec) {
@@ -322,6 +388,11 @@ void AddDownloadDialog::setSpecification(const DownloadSpec& spec) {
     impl_->cookie->setText(QString::fromStdString(spec.cookie));
     impl_->authorization->setText(QString::fromStdString(spec.authorization));
     impl_->checksum->setText(QString::fromStdString(spec.expectedSha256));
+    impl_->ftpUsername->setText(QString::fromStdString(spec.ftpUsername));
+    impl_->ftpPassword->setText(QString::fromStdString(spec.ftpPassword));
+    impl_->ftpTls->setChecked(spec.ftpExplicitTls);
+    impl_->ftpActive->setChecked(spec.ftpActiveMode);
+    impl_->ftpCa->setText(QString::fromStdWString(spec.ftpCaBundle.wstring()));
     QStringList headers;
     for (const auto& [name, value] : spec.headers)
         headers << QString::fromStdString(name + ": " + value);

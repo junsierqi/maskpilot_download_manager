@@ -429,13 +429,20 @@ void DownloadService::updateUrl(const std::string& id, std::string url) {
             return;
         auto spec = it->second.spec;
         spec.url = url;
+        spec.cookie.clear();
+        spec.authorization.clear();
+        spec.headers.clear();
+        spec.referrer.clear();
+        spec.ftpUsername.clear();
+        spec.ftpPassword.clear();
+        if (!isFtpUrl(url)) {
+            spec.ftpExplicitTls = false;
+            spec.ftpActiveMode = false;
+            spec.ftpCaBundle.clear();
+        }
         if (!validateSpec(spec).empty())
             return;
-        it->second.spec.url = url;
-        it->second.spec.cookie.clear();
-        it->second.spec.authorization.clear();
-        it->second.spec.headers.clear();
-        it->second.spec.referrer.clear();
+        it->second.spec = std::move(spec);
         it->second.state = TaskState::Paused;
         p->save(it->second);
     });

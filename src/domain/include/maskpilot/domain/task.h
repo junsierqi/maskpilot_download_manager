@@ -32,6 +32,10 @@ struct DownloadSpec {
     std::string authorization;
     std::string proxy;
     std::string expectedSha256;
+    // Credentials are process-local; only transport options are persisted.
+    std::string ftpUsername, ftpPassword;
+    bool ftpExplicitTls = false, ftpActiveMode = false;
+    std::filesystem::path ftpCaBundle;
     std::vector<std::pair<std::string, std::string>> headers;
     int connections = 4;
     int priority = 0;
@@ -66,6 +70,7 @@ struct Segment {
 };
 std::vector<Segment> splitSegments(std::int64_t length, int count);
 std::string validateSpec(const DownloadSpec& spec);
+bool isFtpUrl(const std::string& url);
 bool isActive(TaskState state);
 bool isTerminal(TaskState state);
 const char* stateName(TaskState state);

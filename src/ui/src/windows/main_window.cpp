@@ -669,7 +669,8 @@ void MainWindow::handleNative(const QJsonObject& request, std::function<void(QJs
 void MainWindow::newDownload(QString url) {
     if (url.isEmpty()) {
         auto clipboard = QApplication::clipboard()->text().trimmed();
-        if (clipboard.startsWith("http://") || clipboard.startsWith("https://"))
+        if (clipboard.startsWith("http://") || clipboard.startsWith("https://") ||
+            isFtpUrl(clipboard.toStdString()))
             url = clipboard;
     }
     AddDownloadDialog dialog(impl_->chinese, this, url);
@@ -705,7 +706,7 @@ void MainWindow::dropEvent(QDropEvent* event) {
     auto text = event->mimeData()->hasUrls() && !event->mimeData()->urls().isEmpty()
                     ? event->mimeData()->urls().first().toString()
                     : event->mimeData()->text().trimmed();
-    if (text.startsWith("https://") || text.startsWith("http://")) {
+    if (text.startsWith("https://") || text.startsWith("http://") || isFtpUrl(text.toStdString())) {
         newDownload(text);
         event->acceptProposedAction();
     }

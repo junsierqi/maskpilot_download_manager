@@ -50,13 +50,14 @@ class Repository final : public ITaskRepository {
             int schemaVersion = 0;
             {
                 Statement version(db_, "PRAGMA user_version");
-                if (sqlite3_step(version.value) != SQLITE_ROW || sqlite3_column_int(version.value, 0) > 2)
+                if (sqlite3_step(version.value) != SQLITE_ROW || sqlite3_column_int(version.value, 0) > 3)
                     throw std::runtime_error("Database was created by a newer version.");
                 schemaVersion = sqlite3_column_int(version.value, 0);
             }
-            if (schemaVersion == 1) {
+            if (schemaVersion > 0 && schemaVersion < 3) {
                 auto backupPath = path;
-                backupPath += L".before-v2-" + std::filesystem::path(newTaskId()).wstring() + L".db";
+                backupPath += (schemaVersion == 1 ? L".before-v2-" : L".before-v3-") +
+                              std::filesystem::path(newTaskId()).wstring() + L".db";
                 sqlite3* backupDb = nullptr;
                 if (sqlite3_open(utf8(backupPath).c_str(), &backupDb) != SQLITE_OK) {
                     sqlite3_close(backupDb);
@@ -86,6 +87,11 @@ class Repository final : public ITaskRepository {
                     "COLUMN media_format TEXT NOT NULL DEFAULT 'bestvideo+bestaudio/best'; ALTER TABLE tasks "
                     "ADD COLUMN media_downloader TEXT NOT NULL DEFAULT ''; ALTER TABLE tasks ADD COLUMN "
                     "media_muxer TEXT NOT NULL DEFAULT ''; PRAGMA user_version=2; COMMIT;");
+            if (schemaVersion < 3)
+                execute("BEGIN IMMEDIATE; ALTER TABLE tasks ADD COLUMN ftp_tls INTEGER NOT NULL DEFAULT 0; "
+                        "ALTER TABLE tasks ADD COLUMN ftp_active INTEGER NOT NULL DEFAULT 0; "
+                        "ALTER TABLE tasks ADD COLUMN ftp_ca TEXT NOT NULL DEFAULT ''; "
+                        "PRAGMA user_version=3; COMMIT;");
         } catch (...) {
             sqlite3_close(db_);
             db_ = nullptr;
@@ -138,6 +144,10 @@ class Repository final : public ITaskRepository {
             t.spec.mediaDownloader =
                 std::filesystem::path(std::u8string(downloader.begin(), downloader.end()));
             t.spec.mediaMuxer = std::filesystem::path(std::u8string(muxer.begin(), muxer.end()));
+            t.spec.ftpExplicitTls = sqlite3_column_int(q.value, 27) != 0;
+            t.spec.ftpActiveMode = sqlite3_column_int(q.value, 28) != 0;
+            const auto ca = text(29);
+            t.spec.ftpCaBundle = std::filesystem::path(std::u8string(ca.begin(), ca.end()));
             if (t.id.size() != 32 || !std::all_of(t.id.begin(), t.id.end(), [](unsigned char c) {
                     return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
                 }))
@@ -149,9 +159,8 @@ class Repository final : public ITaskRepository {
         return result;
     }
     void save(const Task& t) override {
-        Statement q(
-            db_,
-            "INSERT OR REPLACE INTO tasks VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+        Statement q(db_, "INSERT OR REPLACE INTO tasks "
+                         "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
         q.text(1, t.id);
         q.text(2, t.spec.url);
         q.text(3, utf8(t.spec.destination));
@@ -179,6 +188,9 @@ class Repository final : public ITaskRepository {
         q.text(25, t.spec.mediaFormat);
         q.text(26, utf8(t.spec.mediaDownloader));
         q.text(27, utf8(t.spec.mediaMuxer));
+        q.number(28, t.spec.ftpExplicitTls);
+        q.number(29, t.spec.ftpActiveMode);
+        q.text(30, utf8(t.spec.ftpCaBundle));
         if (sqlite3_step(q.value) != SQLITE_DONE)
             throw std::runtime_error("Cannot save task database.");
     }

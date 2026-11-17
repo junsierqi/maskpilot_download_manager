@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <chrono>
 #include <iostream>
 #include <maskpilot/application/download_service.h>
@@ -7,10 +8,43 @@
 #include <windows.h>
 #endif
 
+namespace {
+void readOptions(maskpilot::DownloadSpec& spec, int argc, char** argv, int start) {
+    for (int n = start; n < argc; ++n) {
+        const std::string option = argv[n];
+        if (option == "--ftp-explicit-tls")
+            spec.ftpExplicitTls = true;
+        else if (option == "--ftp-active")
+            spec.ftpActiveMode = true;
+        else {
+            if (++n >= argc)
+                throw std::invalid_argument("Missing option value.");
+            const std::string value = argv[n];
+            if (option == "--connections")
+                spec.connections = std::stoi(value);
+            else if (option == "--sha256")
+                spec.expectedSha256 = value;
+            else if (option == "--proxy")
+                spec.proxy = value;
+            else if (option == "--ftp-user")
+                spec.ftpUsername = value;
+            else if (option == "--ftp-password")
+                spec.ftpPassword = value;
+            else if (option == "--ftp-ca")
+                spec.ftpCaBundle = std::filesystem::path(std::u8string(value.begin(), value.end()));
+            else
+                throw std::invalid_argument("Unknown option.");
+        }
+    }
+}
+} // namespace
 int runClient(int argc, char** argv) {
     if (argc < 4) {
-        std::cout << "MaskPilot verification client\nUsage: maskpilot_cli URL DESTINATION DATA_DIRECTORY "
-                     "[connections] [sha256]\n       maskpilot_cli --resume TASK_ID DATA_DIRECTORY\n";
+        std::cout
+            << "MaskPilot verification client\nUsage: maskpilot_cli URL DESTINATION DATA_DIRECTORY "
+               "[connections] [sha256]\n       maskpilot_cli --resume TASK_ID DATA_DIRECTORY [options]\n"
+               "Options: --connections N --sha256 HEX --proxy URL --ftp-user USER --ftp-password PASS\n"
+               "         --ftp-explicit-tls --ftp-active --ftp-ca PEM_FILE\n";
         return argc == 1 ? 0 : 2;
     }
     try {
@@ -20,27 +54,50 @@ int runClient(int argc, char** argv) {
         std::string id;
         if (std::string(argv[1]) == "--resume" || std::string(argv[1]) == "--change-url") {
             id = argv[2];
+            const auto tasks = service.snapshot();
+            const auto existing =
+                std::find_if(tasks.begin(), tasks.end(), [&](const auto& task) { return task.id == id; });
+            if (existing == tasks.end())
+                throw std::invalid_argument("Task was not found.");
+            auto spec = existing->spec;
+            int start = 4;
             if (std::string(argv[1]) == "--change-url") {
                 if (argc < 5)
                     return 2;
-                service.updateUrl(id, argv[4]);
+                spec.url = argv[4];
+                start = 5;
+                spec.cookie.clear();
+                spec.authorization.clear();
+                spec.headers.clear();
+                spec.referrer.clear();
+                spec.ftpUsername.clear();
+                spec.ftpPassword.clear();
+                if (!maskpilot::isFtpUrl(spec.url)) {
+                    spec.ftpExplicitTls = false;
+                    spec.ftpActiveMode = false;
+                    spec.ftpCaBundle.clear();
+                }
             }
+            readOptions(spec, argc, argv, start);
+            if (const auto error = maskpilot::validateSpec(spec); !error.empty())
+                throw std::invalid_argument(error);
+            service.updateRequest(id, std::move(spec));
             service.resume(id);
         } else {
             maskpilot::DownloadSpec spec;
             spec.url = argv[1];
             spec.destination =
                 std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(argv[2])));
-            if (argc > 4)
-                spec.connections = std::stoi(argv[4]);
-            if (argc > 5)
-                spec.expectedSha256 = argv[5];
-            if (argc > 6)
-                spec.proxy = argv[6];
-            if (argc > 7)
-                spec.cookie = argv[7];
-            if (argc > 8)
-                spec.authorization = argv[8];
+            int next = 4;
+            if (next < argc && !std::string(argv[next]).starts_with("--")) {
+                spec.connections = std::stoi(argv[next++]);
+                for (auto* value : {&spec.expectedSha256, &spec.proxy, &spec.cookie, &spec.authorization}) {
+                    if (next >= argc || std::string(argv[next]).starts_with("--"))
+                        break;
+                    *value = argv[next++];
+                }
+            }
+            readOptions(spec, argc, argv, next);
             id = service.add(spec).get();
         }
         std::cout << "TASK_ID " << id << std::endl;
