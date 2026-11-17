@@ -1,11 +1,13 @@
 #pragma once
 #include <cstdint>
 #include <filesystem>
+#include <maskpilot/domain/torrent.h>
 #include <string>
 #include <utility>
 #include <vector>
 
 namespace maskpilot {
+enum class TransferKind { Http, Ftp, Media, BitTorrent };
 enum class TaskState {
     Queued,
     Scheduled,
@@ -20,7 +22,11 @@ enum class TaskState {
     Failed,
     Cancelling,
     Cancelled,
-    NeedsAttention
+    NeedsAttention,
+    FetchingMetadata,
+    Seeding,
+    AwaitingSelection,
+    Count
 };
 struct DownloadSpec {
     std::string url;
@@ -44,7 +50,8 @@ struct DownloadSpec {
     std::int64_t scheduledAt = 0;
     std::int64_t stopAt = 0;
     bool startPaused = false;
-    bool media = false;
+    TransferKind kind = TransferKind::Http;
+    TorrentOptions torrent;
     bool audioOnly = false;
     std::string mediaFormat = "bestvideo+bestaudio/best";
     std::filesystem::path mediaDownloader;
@@ -64,6 +71,10 @@ struct Task {
     int retries = 0;
     bool resumable = false;
     std::string error;
+    TransferDescription torrent;
+    std::int64_t uploaded = 0, uploadSpeed = 0;
+    int peers = 0, seeds = 0;
+    bool torrentPublished = false;
 };
 struct Segment {
     std::int64_t begin = 0, end = 0;
@@ -71,6 +82,8 @@ struct Segment {
 std::vector<Segment> splitSegments(std::int64_t length, int count);
 std::string validateSpec(const DownloadSpec& spec);
 bool isFtpUrl(const std::string& url);
+bool isTorrentUrl(const std::string& url);
+TransferKind sourceKind(const DownloadSpec& spec);
 bool isActive(TaskState state);
 bool isTerminal(TaskState state);
 const char* stateName(TaskState state);

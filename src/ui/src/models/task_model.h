@@ -47,6 +47,7 @@
 #include <QTableView>
 #include <QTimer>
 #include <QToolBar>
+#include <QUrlQuery>
 #include <QVBoxLayout>
 #include <algorithm>
 #include <maskpilot/ui/add_download_dialog.h>
@@ -70,7 +71,12 @@ inline QString bytes(std::int64_t value) {
     return QString::number(number, 'f', unit ? 1 : 0) + " " + units[unit];
 }
 inline QString filenameFor(const QString& url) {
-    auto name = QFileInfo(QUrl(url).path()).fileName();
+    auto name = url.startsWith("torrent:") ? QFileInfo(url.mid(8)).completeBaseName()
+                                           : QFileInfo(QUrl(url).path()).fileName();
+    if (url.startsWith("magnet:?"))
+        name = QUrlQuery(QUrl(url)).queryItemValue("dn");
+    if (isTorrentUrl(url.toStdString()) && name.isEmpty())
+        name = "Torrent download";
     name.replace(QRegularExpression(R"([<>:"/\\|?*\x00-\x1f])"), "_");
     while (name.endsWith(' ') || name.endsWith('.'))
         name.chop(1);
@@ -84,9 +90,13 @@ inline QString filenameFor(const QString& url) {
     return name.left(180);
 }
 inline QString stateText(TaskState state, bool chinese) {
-    static const char* zh[] = {"排队中", "已计划",   "连接中", "下载中", "正在暂停", "已暂停", "等待重试",
-                               "校验中", "正在完成", "已完成", "失败",   "正在取消", "已取消", "需要处理"};
-    return chinese ? QString::fromUtf8(zh[static_cast<int>(state)]) : QString::fromUtf8(stateName(state));
+    static const char* zh[] = {"排队中",   "已计划",   "连接中",     "下载中",   "正在暂停",    "已暂停",
+                               "等待重试", "校验中",   "正在完成",   "已完成",   "失败",        "正在取消",
+                               "已取消",   "需要处理", "获取元数据", "正在做种", "等待选择文件"};
+    const auto index = static_cast<int>(state);
+    return chinese && index >= 0 && index < static_cast<int>(std::size(zh))
+               ? QString::fromUtf8(zh[index])
+               : QString::fromUtf8(stateName(state));
 }
 class TaskModel final : public QAbstractTableModel {
   public:
@@ -96,12 +106,14 @@ class TaskModel final : public QAbstractTableModel {
     int rowCount(const QModelIndex& parent = {}) const override {
         return parent.isValid() ? 0 : static_cast<int>(rows.size());
     }
-    int columnCount(const QModelIndex& parent = {}) const override { return parent.isValid() ? 0 : 7; }
+    int columnCount(const QModelIndex& parent = {}) const override { return parent.isValid() ? 0 : 8; }
     QVariant headerData(int section, Qt::Orientation orientation, int role) const override {
-        if (orientation != Qt::Horizontal || role != Qt::DisplayRole)
+        if (orientation != Qt::Horizontal || role != Qt::DisplayRole || section < 0 ||
+            section >= columnCount())
             return {};
-        static const char* en[] = {"Name", "Size", "Progress", "Speed", "Status", "Category", "Remaining"};
-        static const char* zh[] = {"文件名", "大小", "进度", "速度", "状态", "分类", "剩余时间"};
+        static const char* en[] = {"Name",   "Size",     "Progress",  "Speed",
+                                   "Status", "Category", "Remaining", "Upload"};
+        static const char* zh[] = {"文件名", "大小", "进度", "速度", "状态", "分类", "剩余时间", "上传"};
         return QString::fromUtf8(chinese ? zh[section] : en[section]);
     }
     QVariant data(const QModelIndex& index, int role) const override {
@@ -113,7 +125,7 @@ class TaskModel final : public QAbstractTableModel {
         if (role == Qt::UserRole + 1)
             return task.total > 0 ? static_cast<int>(std::clamp<long double>(
                                         static_cast<long double>(task.downloaded) * 100 / task.total, 0, 100))
-                                  : (task.state == TaskState::Completed ? 100 : -1);
+                                  : (task.state == TaskState::Completed || task.torrentPublished ? 100 : -1);
         if (role == Qt::ToolTipRole)
             return pathString(task.spec.destination) +
                    (task.error.empty() ? QString() : "\n" + qs(task.error));
@@ -128,7 +140,9 @@ class TaskModel final : public QAbstractTableModel {
             return {};
         switch (index.column()) {
         case 0:
-            return pathString(task.spec.destination.filename());
+            return task.spec.kind == TransferKind::BitTorrent && !task.torrent.name.empty()
+                       ? qs(task.torrent.name)
+                       : pathString(task.spec.destination.filename());
         case 1:
             return bytes(task.total);
         case 2:
@@ -145,6 +159,9 @@ class TaskModel final : public QAbstractTableModel {
                 return QString::number(secs / 60) + "m " + QString::number(secs % 60) + "s";
             }
             return QStringLiteral("—");
+        case 7:
+            return task.spec.kind == TransferKind::BitTorrent ? bytes(task.uploadSpeed) + "/s"
+                                                              : QStringLiteral("—");
         default:
             return {};
         }
@@ -160,7 +177,7 @@ class TaskModel final : public QAbstractTableModel {
         if (same) {
             rows = std::move(value);
             if (!rows.empty())
-                emit dataChanged(index(0, 0), index(rowCount() - 1, 6));
+                emit dataChanged(index(0, 0), index(rowCount() - 1, columnCount() - 1));
         } else {
             beginResetModel();
             rows = std::move(value);

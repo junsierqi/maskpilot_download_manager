@@ -1,14 +1,23 @@
 #include <algorithm>
+#include <charconv>
 #include <chrono>
 #include <iostream>
 #include <maskpilot/application/download_service.h>
 #include <maskpilot/infrastructure/adapters.h>
+#include <maskpilot/infrastructure/torrent_engine.h>
 #include <thread>
 #ifdef _WIN32
 #include <windows.h>
 #endif
 
 namespace {
+std::int64_t integerValue(const std::string& text) {
+    std::int64_t value = 0;
+    const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (parsed.ec != std::errc() || parsed.ptr != text.data() + text.size())
+        throw std::invalid_argument("Expected an integer option value.");
+    return value;
+}
 void readOptions(maskpilot::DownloadSpec& spec, int argc, char** argv, int start) {
     for (int n = start; n < argc; ++n) {
         const std::string option = argv[n];
@@ -16,13 +25,26 @@ void readOptions(maskpilot::DownloadSpec& spec, int argc, char** argv, int start
             spec.ftpExplicitTls = true;
         else if (option == "--ftp-active")
             spec.ftpActiveMode = true;
-        else {
+        else if (option == "--seed")
+            spec.torrent.seedAfterDownload = true;
+        else if (option == "--no-seed")
+            spec.torrent.seedAfterDownload = false;
+        else if (option == "--choose-files") {
+            spec.torrent.allFiles = false;
+            spec.torrent.selectedFiles.clear();
+        } else if (option == "--all-files") {
+            spec.torrent.allFiles = true;
+            spec.torrent.selectedFiles.clear();
+        } else {
             if (++n >= argc)
                 throw std::invalid_argument("Missing option value.");
             const std::string value = argv[n];
-            if (option == "--connections")
-                spec.connections = std::stoi(value);
-            else if (option == "--sha256")
+            if (option == "--connections") {
+                const auto count = integerValue(value);
+                if (count < 1 || count > 8)
+                    throw std::invalid_argument("Connections must be between 1 and 8.");
+                spec.connections = static_cast<int>(count);
+            } else if (option == "--sha256")
                 spec.expectedSha256 = value;
             else if (option == "--proxy")
                 spec.proxy = value;
@@ -32,25 +54,58 @@ void readOptions(maskpilot::DownloadSpec& spec, int argc, char** argv, int start
                 spec.ftpPassword = value;
             else if (option == "--ftp-ca")
                 spec.ftpCaBundle = std::filesystem::path(std::u8string(value.begin(), value.end()));
-            else
+            else if (option == "--upload-limit")
+                spec.torrent.uploadLimit = integerValue(value);
+            else if (option == "--select-files") {
+                spec.torrent.allFiles = false;
+                spec.torrent.selectedFiles.clear();
+                std::size_t begin = 0;
+                do {
+                    const auto end = value.find(',', begin);
+                    const auto index =
+                        integerValue(value.substr(begin, end == std::string::npos ? end : end - begin));
+                    if (index < 0 || index >= static_cast<std::int64_t>(maskpilot::maxTorrentFiles))
+                        throw std::invalid_argument("Invalid torrent file index.");
+                    spec.torrent.selectedFiles.push_back(static_cast<int>(index));
+                    if (end == std::string::npos)
+                        break;
+                    begin = end + 1;
+                } while (begin <= value.size());
+            } else
                 throw std::invalid_argument("Unknown option.");
         }
     }
 }
 } // namespace
 int runClient(int argc, char** argv) {
+    maskpilot::TorrentRuntimeOptions torrentRuntime;
+    // Runtime options precede the command, so strings used as task option values are never reinterpreted.
+    if (argc > 1 && std::string(argv[1]) == "--bt-no-discovery") {
+        torrentRuntime.enableDiscovery = false;
+        --argc;
+        ++argv;
+    }
     if (argc < 4) {
         std::cout
-            << "MaskPilot verification client\nUsage: maskpilot_cli URL DESTINATION DATA_DIRECTORY "
+            << "MaskPilot verification client\nUsage: maskpilot_cli [--bt-no-discovery] URL DESTINATION "
+               "DATA_DIRECTORY "
                "[connections] [sha256]\n       maskpilot_cli --resume TASK_ID DATA_DIRECTORY [options]\n"
                "Options: --connections N --sha256 HEX --proxy URL --ftp-user USER --ftp-password PASS\n"
                "         --ftp-explicit-tls --ftp-active --ftp-ca PEM_FILE\n";
+        std::cout << "Torrent: local.torrent or magnet:? URI, destination is a new directory.\n"
+                     "         --choose-files --select-files 0,2 --all-files --seed --no-seed --upload-limit "
+                     "BYTES\n"
+                     "Global --bt-no-discovery disables DHT, local discovery and automatic port mapping; "
+                     "explicit trackers and peers remain enabled.\n"
+                     "This verification client pauses unfinished transfers after 180 seconds.\n";
         return argc == 1 ? 0 : 2;
     }
     try {
         auto data = std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(argv[3])));
-        maskpilot::DownloadService service(maskpilot::makeSqliteRepository(data / "tasks.db"),
-                                           maskpilot::makeCurlTransfer, data / "parts");
+        maskpilot::DownloadService service(
+            maskpilot::makeSqliteRepository(data / "tasks.db"),
+            maskpilot::makeUnifiedTransferFactory(maskpilot::makeTorrentTransferFactory(torrentRuntime)),
+            data / "parts");
         std::string id;
         if (std::string(argv[1]) == "--resume" || std::string(argv[1]) == "--change-url") {
             id = argv[2];
@@ -64,6 +119,9 @@ int runClient(int argc, char** argv) {
             if (std::string(argv[1]) == "--change-url") {
                 if (argc < 5)
                     return 2;
+                if (existing->spec.kind == maskpilot::TransferKind::BitTorrent ||
+                    maskpilot::isTorrentUrl(argv[4]))
+                    throw std::invalid_argument("Create a new task when changing a torrent source.");
                 spec.url = argv[4];
                 start = 5;
                 spec.cookie.clear();
@@ -86,11 +144,21 @@ int runClient(int argc, char** argv) {
         } else {
             maskpilot::DownloadSpec spec;
             spec.url = argv[1];
+            if (!maskpilot::isTorrentUrl(spec.url) && spec.url.find("://") == std::string::npos) {
+                const std::filesystem::path source(std::u8string(spec.url.begin(), spec.url.end()));
+                // Normalize syntax only. The adapter validates and captures local bytes without first
+                // querying a potentially untrusted UNC/device source here.
+                const auto path = std::filesystem::absolute(source).lexically_normal().generic_u8string();
+                spec.url = "torrent:" + std::string(path.begin(), path.end());
+            }
             spec.destination =
                 std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(argv[2])));
             int next = 4;
             if (next < argc && !std::string(argv[next]).starts_with("--")) {
-                spec.connections = std::stoi(argv[next++]);
+                const auto count = integerValue(argv[next++]);
+                if (count < 1 || count > 8)
+                    throw std::invalid_argument("Connections must be between 1 and 8.");
+                spec.connections = static_cast<int>(count);
                 for (auto* value : {&spec.expectedSha256, &spec.proxy, &spec.cookie, &spec.authorization}) {
                     if (next >= argc || std::string(argv[next]).starts_with("--"))
                         break;
@@ -104,6 +172,15 @@ int runClient(int argc, char** argv) {
         for (int i = 0; i < 1800; ++i) {
             for (const auto& task : service.snapshot())
                 if (task.id == id) {
+                    if (task.state == maskpilot::TaskState::AwaitingSelection) {
+                        std::cout
+                            << "Select files with --resume TASK_ID DATA_DIRECTORY --select-files INDEX,...\n";
+                        if (task.torrent.files)
+                            for (const auto& file : *task.torrent.files)
+                                if (!file.padding)
+                                    std::cout << file.index << '\t' << file.size << '\t' << file.path << '\n';
+                        return 4;
+                    }
                     if (task.state == maskpilot::TaskState::Completed) {
                         std::cout << "Completed " << task.downloaded << " bytes\n";
                         return 0;

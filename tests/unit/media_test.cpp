@@ -13,7 +13,7 @@
 TEST(MediaArguments, IsolatesSecretsAndPassesUrlAsData) {
     maskpilot::Task task;
     task.spec.url = "https://example.test/video?x=1&y=2";
-    task.spec.media = true;
+    task.spec.kind = maskpilot::TransferKind::Media;
     task.spec.cookie = "private-cookie";
     task.spec.authorization = "secret-auth";
     task.spec.mediaMuxer = L"C:/Program Files/processor.exe";
@@ -31,7 +31,7 @@ TEST(MediaArguments, IsolatesSecretsAndPassesUrlAsData) {
 TEST(MediaArguments, AudioAndVideoHaveExplicitContainers) {
     maskpilot::Task task;
     task.spec.url = "https://example.test/video";
-    task.spec.media = true;
+    task.spec.kind = maskpilot::TransferKind::Media;
     task.spec.audioOnly = true;
     auto args = maskpilot::mediaArguments(task, std::filesystem::temp_directory_path(), 0);
     EXPECT_TRUE(args.contains("--extract-audio"));
@@ -71,11 +71,11 @@ TEST(Migration, PreservesVersionOneTasksAndCreatesBackup) {
         auto tasks = repository->load();
         ASSERT_EQ(tasks.size(), 1);
         EXPECT_EQ(tasks[0].downloaded, 10);
-        EXPECT_FALSE(tasks[0].spec.media);
-        tasks[0].spec.media = true;
+        EXPECT_FALSE(tasks[0].spec.kind == maskpilot::TransferKind::Media);
+        tasks[0].spec.kind = maskpilot::TransferKind::Media;
         tasks[0].spec.mediaFormat = "best";
         repository->save(tasks[0]);
-        EXPECT_TRUE(repository->load()[0].spec.media);
+        EXPECT_TRUE(repository->load()[0].spec.kind == maskpilot::TransferKind::Media);
     }
     int backups = 0;
     for (const auto& entry : std::filesystem::directory_iterator(folder))
@@ -124,7 +124,7 @@ TEST(MediaPublication, HonorsStopAtFinalizingBeforePublishing) {
         task.id = maskpilot::newTaskId();
         task.spec.url = "https://example.test/media";
         task.spec.destination = root / (cancel ? "cancel.mkv" : "pause.mkv");
-        task.spec.media = true;
+        task.spec.kind = maskpilot::TransferKind::Media;
         task.spec.mediaDownloader = std::filesystem::path(executable, executable + length);
         task.spec.mediaMuxer = task.spec.mediaDownloader;
         maskpilot::TransferControl control;

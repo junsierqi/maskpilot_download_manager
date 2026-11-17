@@ -1,7 +1,9 @@
 #include <algorithm>
 #include <cctype>
+#include <charconv>
 #include <maskpilot/infrastructure/adapters.h>
 #include <sqlite3.h>
+#include <sstream>
 #include <stdexcept>
 
 namespace maskpilot {
@@ -27,6 +29,15 @@ class Statement {
         if (sqlite3_bind_int64(value, index, data) != SQLITE_OK)
             throw std::runtime_error("Database binding failed.");
     }
+    void blob(int index, const TorrentMetadata& data) {
+        if (data && data->size() > maxTorrentMetadataBytes)
+            throw std::invalid_argument("Torrent metadata exceeds the supported limit.");
+        const auto result = data ? sqlite3_bind_blob(value, index, data->data(),
+                                                     static_cast<int>(data->size()), SQLITE_TRANSIENT)
+                                 : sqlite3_bind_zeroblob(value, index, 0);
+        if (result != SQLITE_OK)
+            throw std::runtime_error("Database metadata binding failed.");
+    }
 };
 class Repository final : public ITaskRepository {
     sqlite3* db_ = nullptr;
@@ -50,13 +61,13 @@ class Repository final : public ITaskRepository {
             int schemaVersion = 0;
             {
                 Statement version(db_, "PRAGMA user_version");
-                if (sqlite3_step(version.value) != SQLITE_ROW || sqlite3_column_int(version.value, 0) > 3)
+                if (sqlite3_step(version.value) != SQLITE_ROW || sqlite3_column_int(version.value, 0) > 4)
                     throw std::runtime_error("Database was created by a newer version.");
                 schemaVersion = sqlite3_column_int(version.value, 0);
             }
-            if (schemaVersion > 0 && schemaVersion < 3) {
+            if (schemaVersion > 0 && schemaVersion < 4) {
                 auto backupPath = path;
-                backupPath += (schemaVersion == 1 ? L".before-v2-" : L".before-v3-") +
+                backupPath += L".before-v" + std::to_wstring(schemaVersion + 1) + L"-" +
                               std::filesystem::path(newTaskId()).wstring() + L".db";
                 sqlite3* backupDb = nullptr;
                 if (sqlite3_open(utf8(backupPath).c_str(), &backupDb) != SQLITE_OK) {
@@ -92,6 +103,19 @@ class Repository final : public ITaskRepository {
                         "ALTER TABLE tasks ADD COLUMN ftp_active INTEGER NOT NULL DEFAULT 0; "
                         "ALTER TABLE tasks ADD COLUMN ftp_ca TEXT NOT NULL DEFAULT ''; "
                         "PRAGMA user_version=3; COMMIT;");
+            if (schemaVersion < 4)
+                execute("BEGIN IMMEDIATE; "
+                        "ALTER TABLE tasks ADD COLUMN kind INTEGER NOT NULL DEFAULT 0; "
+                        "ALTER TABLE tasks ADD COLUMN bt_all INTEGER NOT NULL DEFAULT 1; "
+                        "ALTER TABLE tasks ADD COLUMN bt_selection TEXT NOT NULL DEFAULT ''; "
+                        "ALTER TABLE tasks ADD COLUMN bt_seed INTEGER NOT NULL DEFAULT 0; "
+                        "ALTER TABLE tasks ADD COLUMN bt_upload_limit INTEGER NOT NULL DEFAULT 0; "
+                        "ALTER TABLE tasks ADD COLUMN bt_metadata BLOB NOT NULL DEFAULT X''; "
+                        "ALTER TABLE tasks ADD COLUMN bt_published INTEGER NOT NULL DEFAULT 0; "
+                        "ALTER TABLE tasks ADD COLUMN bt_uploaded INTEGER NOT NULL DEFAULT 0; "
+                        "UPDATE tasks SET kind=CASE WHEN media<>0 THEN 2 "
+                        "WHEN url LIKE 'ftp://%' OR url LIKE 'ftps://%' THEN 1 ELSE 0 END; "
+                        "PRAGMA user_version=4; COMMIT;");
         } catch (...) {
             sqlite3_close(db_);
             db_ = nullptr;
@@ -129,7 +153,8 @@ class Repository final : public ITaskRepository {
             t.spec.scheduledAt = sqlite3_column_int64(q.value, 12);
             t.spec.stopAt = sqlite3_column_int64(q.value, 13);
             const auto state = sqlite3_column_int(q.value, 14);
-            t.state = state >= 0 && state < 14 ? static_cast<TaskState>(state) : TaskState::NeedsAttention;
+            t.state = state >= 0 && state < static_cast<int>(TaskState::Count) ? static_cast<TaskState>(state)
+                                                                               : TaskState::NeedsAttention;
             t.downloaded = sqlite3_column_int64(q.value, 15);
             t.total = sqlite3_column_int64(q.value, 16);
             t.createdAt = sqlite3_column_int64(q.value, 17);
@@ -137,7 +162,7 @@ class Repository final : public ITaskRepository {
             t.retries = sqlite3_column_int(q.value, 19);
             t.resumable = sqlite3_column_int(q.value, 20) != 0;
             t.error = text(21);
-            t.spec.media = sqlite3_column_int(q.value, 22) != 0;
+            t.spec.kind = static_cast<TransferKind>(sqlite3_column_int(q.value, 30));
             t.spec.audioOnly = sqlite3_column_int(q.value, 23) != 0;
             t.spec.mediaFormat = text(24);
             const auto downloader = text(25), muxer = text(26);
@@ -148,6 +173,37 @@ class Repository final : public ITaskRepository {
             t.spec.ftpActiveMode = sqlite3_column_int(q.value, 28) != 0;
             const auto ca = text(29);
             t.spec.ftpCaBundle = std::filesystem::path(std::u8string(ca.begin(), ca.end()));
+            t.spec.torrent.allFiles = sqlite3_column_int(q.value, 31) != 0;
+            const auto selection = text(32);
+            std::size_t begin = 0;
+            while (begin < selection.size()) {
+                const auto end = selection.find(',', begin);
+                const auto* first = selection.data() + begin;
+                const auto* last = selection.data() + (end == std::string::npos ? selection.size() : end);
+                int index = -1;
+                const auto parsed = std::from_chars(first, last, index);
+                if (parsed.ec != std::errc() || parsed.ptr != last ||
+                    t.spec.torrent.selectedFiles.size() >= maxTorrentFiles)
+                    throw std::runtime_error("Invalid saved torrent file selection.");
+                t.spec.torrent.selectedFiles.push_back(index);
+                if (end == std::string::npos)
+                    break;
+                begin = end + 1;
+            }
+            t.spec.torrent.seedAfterDownload = sqlite3_column_int(q.value, 33) != 0;
+            t.spec.torrent.uploadLimit = sqlite3_column_int64(q.value, 34);
+            const auto metadataSize = sqlite3_column_bytes(q.value, 35);
+            if (metadataSize < 0 || static_cast<std::size_t>(metadataSize) > maxTorrentMetadataBytes)
+                throw std::runtime_error("Saved torrent metadata exceeds the supported limit.");
+            if (metadataSize > 0) {
+                const auto* metadata = static_cast<const char*>(sqlite3_column_blob(q.value, 35));
+                if (!metadata)
+                    throw std::runtime_error("Cannot read saved torrent metadata.");
+                t.spec.torrent.metadata =
+                    std::make_shared<const std::vector<char>>(metadata, metadata + metadataSize);
+            }
+            t.torrentPublished = sqlite3_column_int(q.value, 36) != 0;
+            t.uploaded = sqlite3_column_int64(q.value, 37);
             if (t.id.size() != 32 || !std::all_of(t.id.begin(), t.id.end(), [](unsigned char c) {
                     return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
                 }))
@@ -159,8 +215,9 @@ class Repository final : public ITaskRepository {
         return result;
     }
     void save(const Task& t) override {
-        Statement q(db_, "INSERT OR REPLACE INTO tasks "
-                         "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+        Statement q(db_,
+                    "INSERT OR REPLACE INTO tasks "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
         q.text(1, t.id);
         q.text(2, t.spec.url);
         q.text(3, utf8(t.spec.destination));
@@ -183,7 +240,7 @@ class Repository final : public ITaskRepository {
         q.number(20, t.retries);
         q.number(21, t.resumable);
         q.text(22, t.error);
-        q.number(23, t.spec.media);
+        q.number(23, (t.spec.kind == maskpilot::TransferKind::Media));
         q.number(24, t.spec.audioOnly);
         q.text(25, t.spec.mediaFormat);
         q.text(26, utf8(t.spec.mediaDownloader));
@@ -191,6 +248,20 @@ class Repository final : public ITaskRepository {
         q.number(28, t.spec.ftpExplicitTls);
         q.number(29, t.spec.ftpActiveMode);
         q.text(30, utf8(t.spec.ftpCaBundle));
+        q.number(31, static_cast<int>(sourceKind(t.spec)));
+        q.number(32, t.spec.torrent.allFiles);
+        std::ostringstream selection;
+        for (std::size_t n = 0; n < t.spec.torrent.selectedFiles.size(); ++n) {
+            if (n)
+                selection << ',';
+            selection << t.spec.torrent.selectedFiles[n];
+        }
+        q.text(33, selection.str());
+        q.number(34, t.spec.torrent.seedAfterDownload);
+        q.number(35, t.spec.torrent.uploadLimit);
+        q.blob(36, t.spec.torrent.metadata);
+        q.number(37, t.torrentPublished);
+        q.number(38, t.uploaded);
         if (sqlite3_step(q.value) != SQLITE_DONE)
             throw std::runtime_error("Cannot save task database.");
     }

@@ -80,14 +80,43 @@ TEST(Validation, SeparatesFtpCredentialsFromHttpAndMediaOptions) {
     spec.cookie = "session=value";
     EXPECT_FALSE(maskpilot::validateSpec(spec).empty());
     spec.cookie.clear();
-    spec.media = true;
+    spec.kind = maskpilot::TransferKind::Media;
     EXPECT_FALSE(maskpilot::validateSpec(spec).empty());
-    spec.media = false;
+    spec.kind = maskpilot::TransferKind::Http;
     spec.url = "ftp://user:password@example.test/file.bin";
     EXPECT_FALSE(maskpilot::validateSpec(spec).empty());
     spec.url = "https://example.test/file.bin";
     EXPECT_FALSE(maskpilot::validateSpec(spec).empty());
     spec.url = "ftp://example.test/file.bin";
     spec.ftpPassword += '\n';
+    EXPECT_FALSE(maskpilot::validateSpec(spec).empty());
+}
+
+TEST(TorrentPaths, RejectsTraversalDevicesAndReservedInternalNames) {
+    for (const auto* path :
+         {"../file", "root/../file", "/absolute", "C:/file", "root\\..\\file", "root/NUL.txt",
+          "root/COM1.bin", "root/file:stream", "root/file.", "root/.maskpilot-owner", "root//file", "root/"})
+        EXPECT_FALSE(maskpilot::validateTorrentPath(path).empty()) << path;
+    EXPECT_TRUE(maskpilot::validateTorrentPath("bundle/subfolder/file.bin").empty());
+}
+TEST(Validation, TorrentSourceValidationNeverAccessesNetworkPaths) {
+    maskpilot::DownloadSpec spec;
+    spec.destination = "torrent-output";
+    for (const auto* source : {R"(torrent:\\untrusted.invalid\share\fixture.torrent)",
+                               R"(torrent:\\?\UNC\untrusted.invalid\share\fixture.torrent)",
+                               R"(torrent:/\untrusted.invalid\share\fixture.torrent)",
+                               "torrent://untrusted.invalid/share/fixture.torrent"}) {
+        spec.url = source;
+        EXPECT_FALSE(maskpilot::validateSpec(spec).empty());
+    }
+    spec.url = "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567";
+    spec.torrent.allFiles = false;
+    EXPECT_TRUE(maskpilot::validateSpec(spec).empty());
+    spec.torrent.selectedFiles = {1, 1};
+    EXPECT_FALSE(maskpilot::validateSpec(spec).empty());
+    spec.torrent.selectedFiles = {-1};
+    EXPECT_FALSE(maskpilot::validateSpec(spec).empty());
+    spec.torrent.selectedFiles.clear();
+    spec.torrent.uploadLimit = -1;
     EXPECT_FALSE(maskpilot::validateSpec(spec).empty());
 }

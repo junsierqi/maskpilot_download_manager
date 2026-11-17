@@ -1,8 +1,12 @@
 #include <QProcess>
+#include <algorithm>
 #include <fstream>
 #include <gtest/gtest.h>
 #include <maskpilot/application/download_service.h>
 #include <maskpilot/infrastructure/adapters.h>
+#include <maskpilot/infrastructure/media_tools.h>
+#include <memory>
+#include <sqlite3.h>
 #include <thread>
 
 namespace {
@@ -247,4 +251,141 @@ TEST(TaskControl, UpdatingProtocolClearsOriginCredentialsBeforeValidation) {
     EXPECT_FALSE(updated.ftpExplicitTls);
     EXPECT_FALSE(updated.ftpActiveMode);
     EXPECT_TRUE(updated.ftpCaBundle.empty());
+}
+
+TEST(Storage, PreservesBinaryTorrentMetadataSelectionAndPublishedState) {
+    TempDirectory temporary;
+    auto repository = maskpilot::makeSqliteRepository(temporary.path / "tasks.db");
+    maskpilot::Task task;
+    task.id = maskpilot::newTaskId();
+    task.spec.url = "torrent:C:/missing-original.torrent";
+    task.spec.kind = maskpilot::TransferKind::BitTorrent;
+    task.spec.destination = temporary.path / "payload";
+    task.spec.torrent.metadata =
+        std::make_shared<const std::vector<char>>(std::initializer_list<char>{'d', char{0}, 'e'});
+    task.spec.torrent.allFiles = false;
+    task.spec.torrent.selectedFiles = {0, 2};
+    task.spec.torrent.seedAfterDownload = true;
+    task.spec.torrent.uploadLimit = 65536;
+    task.state = maskpilot::TaskState::Seeding;
+    task.torrentPublished = true;
+    task.uploaded = 12345;
+    repository->save(task);
+    const auto loaded = repository->load();
+    ASSERT_EQ(loaded.size(), 1);
+    ASSERT_NE(loaded[0].spec.torrent.metadata, nullptr);
+    EXPECT_EQ(*loaded[0].spec.torrent.metadata, *task.spec.torrent.metadata);
+    EXPECT_EQ(loaded[0].spec.kind, maskpilot::TransferKind::BitTorrent);
+    EXPECT_EQ(loaded[0].spec.torrent.selectedFiles, task.spec.torrent.selectedFiles);
+    EXPECT_FALSE(loaded[0].spec.torrent.allFiles);
+    EXPECT_TRUE(loaded[0].spec.torrent.seedAfterDownload);
+    EXPECT_EQ(loaded[0].spec.torrent.uploadLimit, 65536);
+    EXPECT_EQ(loaded[0].state, maskpilot::TaskState::Seeding);
+    EXPECT_TRUE(loaded[0].torrentPublished);
+    EXPECT_EQ(loaded[0].uploaded, 12345);
+}
+TEST(Storage, MigratesPreviousSchemaWithoutChangingExistingProtocolsOrFiles) {
+    TempDirectory temporary;
+    const auto database = temporary.path / "tasks.db";
+    std::vector<maskpilot::Task> originals;
+    {
+        auto repository = maskpilot::makeSqliteRepository(database);
+        for (const auto kind :
+             {maskpilot::TransferKind::Http, maskpilot::TransferKind::Ftp, maskpilot::TransferKind::Media}) {
+            maskpilot::Task task;
+            task.id = maskpilot::newTaskId();
+            task.spec.kind = kind;
+            task.spec.url = kind == maskpilot::TransferKind::Ftp ? "ftps://example.test/file.bin"
+                                                                 : "https://example.test/file.bin";
+            task.spec.destination = temporary.path / task.id;
+            task.spec.ftpExplicitTls = kind == maskpilot::TransferKind::Ftp;
+            task.state = maskpilot::TaskState::Paused;
+            task.downloaded = 123;
+            task.createdAt = static_cast<std::int64_t>(originals.size());
+            repository->save(task);
+            originals.push_back(task);
+        }
+    }
+    // Reconstruct the previous on-disk shape, retaining its real task rows and legacy media field.
+    sqlite3* connection = nullptr;
+    ASSERT_EQ(sqlite3_open(database.string().c_str(), &connection), SQLITE_OK);
+    std::unique_ptr<sqlite3, decltype(&sqlite3_close)> close(connection, sqlite3_close);
+    for (const auto* column : {"kind", "bt_all", "bt_selection", "bt_seed", "bt_upload_limit", "bt_metadata",
+                               "bt_published", "bt_uploaded"}) {
+        const auto sql = std::string("ALTER TABLE tasks DROP COLUMN ") + column;
+        ASSERT_EQ(sqlite3_exec(connection, sql.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
+    }
+    ASSERT_EQ(sqlite3_exec(connection, "PRAGMA user_version=3", nullptr, nullptr, nullptr), SQLITE_OK);
+    close.reset();
+    auto repository = maskpilot::makeSqliteRepository(database);
+    const auto migrated = repository->load();
+    ASSERT_EQ(migrated.size(), originals.size());
+    for (std::size_t i = 0; i < migrated.size(); ++i) {
+        EXPECT_EQ(migrated[i].id, originals[i].id);
+        EXPECT_EQ(migrated[i].spec.kind, originals[i].spec.kind);
+        EXPECT_EQ(migrated[i].spec.url, originals[i].spec.url);
+        EXPECT_EQ(migrated[i].spec.destination, originals[i].spec.destination);
+        EXPECT_EQ(migrated[i].spec.ftpExplicitTls, originals[i].spec.ftpExplicitTls);
+        EXPECT_EQ(migrated[i].state, maskpilot::TaskState::Paused);
+        EXPECT_EQ(migrated[i].downloaded, 123);
+        EXPECT_FALSE(migrated[i].torrentPublished);
+        EXPECT_EQ(migrated[i].spec.torrent.metadata, nullptr);
+    }
+    EXPECT_TRUE(std::any_of(std::filesystem::directory_iterator(temporary.path),
+                            std::filesystem::directory_iterator(), [](const auto& file) {
+                                return file.path().filename().string().find(".before-v4-") !=
+                                       std::string::npos;
+                            }));
+}
+TEST(Service, PersistsTorrentPublicationBeforeSeedingStops) {
+    struct PublishingTransport final : maskpilot::ITransferTransport {
+        void run(const maskpilot::Task&, const std::filesystem::path&, maskpilot::TransferControl& control,
+                 const std::function<void(maskpilot::TransferEvent)>& callback) override {
+            maskpilot::TransferEvent event;
+            event.phase = maskpilot::TaskState::Seeding;
+            event.torrentPublished = true;
+            callback(event);
+            while (!control.pause && !control.cancel)
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            event.outcome = maskpilot::TransferOutcome::Paused;
+            callback(event);
+        }
+    };
+    TempDirectory temporary;
+    const auto database = temporary.path / "tasks.db";
+    maskpilot::DownloadService service(
+        maskpilot::makeSqliteRepository(database), [] { return std::make_unique<PublishingTransport>(); },
+        temporary.path / "parts");
+    maskpilot::DownloadSpec spec;
+    spec.url = "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567";
+    spec.destination = temporary.path / "payload";
+    const auto id = service.add(spec).get();
+    bool seeding = false;
+    for (int n = 0; n < 200 && !seeding; ++n) {
+        const auto tasks = service.snapshot();
+        seeding = tasks.size() == 1 && tasks[0].state == maskpilot::TaskState::Seeding;
+        if (!seeding)
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    ASSERT_TRUE(seeding);
+    auto observer = maskpilot::makeSqliteRepository(database);
+    const auto durable = observer->load();
+    ASSERT_EQ(durable.size(), 1);
+    EXPECT_TRUE(durable[0].torrentPublished);
+    EXPECT_EQ(durable[0].state, maskpilot::TaskState::Seeding);
+    service.pause(id);
+}
+TEST(Service, ImportPrevalidationRejectsBadMetadataBeforeCreatingAnyTask) {
+    TempDirectory temporary;
+    maskpilot::DownloadService service(maskpilot::makeSqliteRepository(temporary.path / "tasks.db"),
+                                       maskpilot::makeUnifiedTransferFactory(), temporary.path / "parts");
+    maskpilot::DownloadSpec file;
+    file.url = "https://example.test/file.bin";
+    file.destination = temporary.path / "file.bin";
+    auto torrent = file;
+    torrent.url = "torrent:C:/unused.torrent";
+    torrent.kind = maskpilot::TransferKind::BitTorrent;
+    torrent.torrent.metadata = std::make_shared<const std::vector<char>>(1, 'x');
+    EXPECT_THROW(service.prepareImport({file, torrent}).get(), std::exception);
+    EXPECT_TRUE(service.snapshot().empty());
 }

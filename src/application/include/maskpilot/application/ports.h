@@ -12,7 +12,7 @@ class ITaskRepository {
     virtual void save(const Task& task) = 0;
     virtual void erase(const std::string& id) = 0;
 };
-enum class TransferOutcome { Progress, Complete, Paused, Cancelled, Failed, Attention };
+enum class TransferOutcome { Progress, Complete, Paused, Cancelled, Failed, Attention, SelectionRequired };
 struct TransferEvent {
     TransferOutcome outcome = TransferOutcome::Progress;
     TaskState phase = TaskState::Downloading;
@@ -21,14 +21,27 @@ struct TransferEvent {
     bool retryable = false;
     int retryAfter = 0;
     std::string error;
+    std::shared_ptr<const TransferDescription> description;
+    TorrentMetadata torrentMetadata;
+    std::int64_t uploaded = 0, uploadSpeed = 0;
+    int peers = 0, seeds = 0;
+    bool torrentPublished = false;
 };
 struct TransferControl {
     std::atomic_bool pause{false}, cancel{false};
     std::atomic<std::int64_t> speedLimit{0};
+    std::atomic<std::int64_t> uploadLimit{0};
+    std::atomic_bool finish{false};
 };
 class ITransferTransport {
   public:
     virtual ~ITransferTransport() = default;
+    // Bounded local metadata inspection only; must never start network activity.
+    virtual TransferDescription describe(const DownloadSpec&) { return {}; }
+    // Capture a bounded local source without network access; protocol adapter owns platform checks.
+    virtual TorrentMetadata captureMetadata(const DownloadSpec& spec) { return spec.torrent.metadata; }
+    // Called only after the worker releases its resources. Preserve all published/user files.
+    virtual void discard(const Task&, const std::filesystem::path&) {}
     virtual void run(const Task& task, const std::filesystem::path& workDirectory, TransferControl& control,
                      const std::function<void(TransferEvent)>& callback) = 0;
 };

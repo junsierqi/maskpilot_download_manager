@@ -1,20 +1,26 @@
 #include <QAction>
 #include <QApplication>
 #include <QCheckBox>
+#include <QDir>
 #include <QEventLoop>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QSettings>
+#include <QTableView>
 #include <QTemporaryDir>
 #include <QTimer>
+#include <QTreeWidget>
 #include <condition_variable>
 #include <fstream>
 #include <gtest/gtest.h>
 #include <map>
 #include <maskpilot/application/download_service.h>
+#include <maskpilot/infrastructure/torrent_engine.h>
 #include <maskpilot/ui/main_window.h>
 #include <mutex>
 #include <thread>
@@ -200,7 +206,7 @@ TEST(TaskControl, ReducingConcurrencyKeepsCombinedMediaAndNativeBudgetBounded) {
         maskpilot::DownloadSpec spec;
         spec.url = "https://example.test/budget";
         spec.destination = std::filesystem::temp_directory_path() / (maskpilot::newTaskId() + ".bin");
-        spec.media = n < 4;
+        spec.kind = n < 4 ? maskpilot::TransferKind::Media : maskpilot::TransferKind::Http;
         service.add(spec).get();
     }
     for (int n = 0; n < 200; ++n) {
@@ -222,6 +228,69 @@ TEST(TaskControl, ReducingConcurrencyKeepsCombinedMediaAndNativeBudgetBounded) {
         combined += rate;
     }
     EXPECT_LE(combined, 800 * 1024);
+}
+TEST(TaskControl, TorrentUploadBudgetRespectsGlobalAndTaskLimitsAndRebalancesAfterPause) {
+    struct Observations {
+        std::mutex mutex;
+        std::map<std::string, std::int64_t> rates;
+    } observed;
+    struct UploadTransport final : maskpilot::ITransferTransport {
+        Observations& observed;
+        explicit UploadTransport(Observations& value) : observed(value) {}
+        void run(const maskpilot::Task& task, const std::filesystem::path&,
+                 maskpilot::TransferControl& control,
+                 const std::function<void(maskpilot::TransferEvent)>& callback) override {
+            while (!control.pause && !control.cancel) {
+                {
+                    std::lock_guard lock(observed.mutex);
+                    observed.rates[task.id] = control.uploadLimit;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            maskpilot::TransferEvent event;
+            event.outcome =
+                control.cancel ? maskpilot::TransferOutcome::Cancelled : maskpilot::TransferOutcome::Paused;
+            callback(event);
+        }
+    };
+    QTemporaryDir temporary;
+    ASSERT_TRUE(temporary.isValid());
+    const auto root = std::filesystem::path(temporary.path().toStdWString());
+    maskpilot::DownloadService service(
+        std::make_unique<MemoryRepository>(), [&] { return std::make_unique<UploadTransport>(observed); },
+        root / "parts");
+    service.setLimits(3, 0, 64 * 1024);
+    maskpilot::DownloadSpec spec;
+    spec.url = "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567";
+    spec.destination = root / "first";
+    spec.torrent.uploadLimit = 16 * 1024;
+    const auto first = service.add(spec).get();
+    spec.url = "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234568";
+    spec.destination = root / "second";
+    spec.torrent.uploadLimit = 0;
+    const auto second = service.add(spec).get();
+    spec.url = "https://example.test/file";
+    spec.destination = root / "http.bin";
+    service.add(spec).get();
+    auto waitRate = [&](const std::string& id, std::int64_t expected) {
+        for (int n = 0; n < 200; ++n) {
+            {
+                std::lock_guard lock(observed.mutex);
+                if (observed.rates.contains(id) && observed.rates.at(id) == expected)
+                    return true;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        return false;
+    };
+    ASSERT_TRUE(waitRate(first, 16 * 1024));
+    ASSERT_TRUE(waitRate(second, 32 * 1024));
+    service.setLimits(3, 0, 32 * 1024);
+    ASSERT_TRUE(waitRate(second, 16 * 1024));
+    ASSERT_TRUE(waitRate(first, 16 * 1024));
+    service.pause(first);
+    ASSERT_TRUE(waitState(service, first, maskpilot::TaskState::Paused));
+    EXPECT_TRUE(waitRate(second, 32 * 1024));
 }
 TEST(TaskControl, ResumePreservesFutureStopDeadline) {
     maskpilot::DownloadService service(
@@ -316,7 +385,7 @@ TEST(DesktopFlow, ExportImportPreservesMediaModeWithoutExportingLoginHeaders) {
     media.destination = root / "audio.m4a";
     media.cookie.clear();
     media.authorization.clear();
-    media.media = true;
+    media.kind = maskpilot::TransferKind::Media;
     media.audioOnly = true;
     media.mediaFormat = "bestaudio";
     service.add(media).get();
@@ -337,17 +406,52 @@ TEST(DesktopFlow, ExportImportPreservesMediaModeWithoutExportingLoginHeaders) {
     }
     ASSERT_NE(exportAction, nullptr);
     ASSERT_NE(importAction, nullptr);
-    const auto exported = temporary.filePath("tasks.json");
+    const auto exported = QDir(QFileInfo(temporary.path()).canonicalFilePath()).filePath("tasks.json");
+    QString lastSelection;
+    int pickerResult = -1;
     auto chooseFile = [&] {
         auto* dialog = qobject_cast<QFileDialog*>(QApplication::activeModalWidget());
-        ASSERT_NE(dialog, nullptr);
-        dialog->selectFile(exported);
+        if (!dialog)
+            return;
+        const QFileInfo target(exported);
+        if (dialog->directory().absolutePath() != target.absolutePath())
+            dialog->setDirectory(target.absolutePath());
+        // Qt intentionally leaves selectFile() unchanged while this editor has focus. Enter the
+        // filename through the actual widget so focus timing cannot silently keep downloads.json.
+        auto* filename = dialog->findChild<QLineEdit*>("fileNameEdit");
+        if (!filename)
+            return;
+        filename->setText(target.fileName());
+        lastSelection = dialog->selectedFiles().value(0);
+        if (QDir::cleanPath(lastSelection) != QDir::cleanPath(exported))
+            return;
         QMetaObject::invokeMethod(dialog, "accept", Qt::DirectConnection);
+        pickerResult = dialog->result();
     };
-    QTimer::singleShot(50, &window, chooseFile);
+    // QFileDialog loads its directory model asynchronously. Keep driving the same file selection
+    // until it accepts, rather than relying on one timer firing after an arbitrary startup delay.
+    QTimer fileChooser;
+    fileChooser.setInterval(50);
+    QObject::connect(&fileChooser, &QTimer::timeout, &window, chooseFile);
+    QTimer modalWatchdog;
+    modalWatchdog.setSingleShot(true);
+    QObject::connect(&modalWatchdog, &QTimer::timeout, &window, [] {
+        auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+        const auto* message = qobject_cast<QMessageBox*>(dialog);
+        ADD_FAILURE() << "Task-list round trip blocked on modal: "
+                      << (dialog ? dialog->windowTitle().toStdString() : "none") << " / "
+                      << (message ? message->text().toStdString() : "no message");
+        if (dialog)
+            dialog->reject();
+    });
+    modalWatchdog.start(15000);
+    fileChooser.start();
     exportAction->trigger();
+    fileChooser.stop();
     QFile json(exported);
-    ASSERT_TRUE(json.open(QIODevice::ReadOnly));
+    ASSERT_TRUE(json.open(QIODevice::ReadOnly))
+        << json.errorString().toStdString() << "; selected=" << lastSelection.toStdString()
+        << "; result=" << pickerResult;
     const auto bytes = json.readAll();
     json.close();
     EXPECT_FALSE(bytes.contains("fixture-private-session"));
@@ -367,8 +471,9 @@ TEST(DesktopFlow, ExportImportPreservesMediaModeWithoutExportingLoginHeaders) {
     for (int n = 0; n < 100 && !service.snapshot().empty(); ++n)
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     ASSERT_TRUE(service.snapshot().empty());
-    QTimer::singleShot(50, &window, chooseFile);
+    fileChooser.start();
     importAction->trigger();
+    fileChooser.stop();
     waitEvents();
     const auto imported = service.snapshot();
     ASSERT_EQ(imported.size(), 2);
@@ -377,12 +482,12 @@ TEST(DesktopFlow, ExportImportPreservesMediaModeWithoutExportingLoginHeaders) {
         EXPECT_TRUE(task.spec.cookie.empty());
         EXPECT_TRUE(task.spec.authorization.empty());
         if (task.spec.url == media.url) {
-            EXPECT_TRUE(task.spec.media);
+            EXPECT_TRUE(task.spec.kind == maskpilot::TransferKind::Media);
             EXPECT_TRUE(task.spec.audioOnly);
             EXPECT_EQ(task.spec.mediaFormat, "bestaudio");
             EXPECT_EQ(task.spec.mediaDownloader, root / "configured-parser.exe");
         } else {
-            EXPECT_FALSE(task.spec.media);
+            EXPECT_FALSE(task.spec.kind == maskpilot::TransferKind::Media);
         }
     }
 }
@@ -432,5 +537,82 @@ TEST(DesktopFlow, FtpCredentialsReachPausedTaskWithoutHttpHeaders) {
     EXPECT_EQ(tasks[0].spec.ftpUsername, "fixture-user");
     EXPECT_EQ(tasks[0].spec.ftpPassword, "fixture-password");
     EXPECT_TRUE(tasks[0].spec.headers.empty());
-    EXPECT_FALSE(tasks[0].spec.media);
+    EXPECT_FALSE(tasks[0].spec.kind == maskpilot::TransferKind::Media);
+}
+
+TEST(DesktopFlow, TorrentFileSelectionUsesActualWidgetsAndDoesNotStartPayload) {
+    qputenv("QT_QPA_PLATFORM", "offscreen");
+    int argc = 1;
+    char program[] = "MaskPilotTorrentWidgetTest";
+    char* argv[] = {program, nullptr};
+    QApplication application(argc, argv);
+    QCoreApplication::setOrganizationName("MaskPilotTests");
+    QCoreApplication::setApplicationName("TorrentWidgetFlow");
+    QTemporaryDir temporary;
+    ASSERT_TRUE(temporary.isValid());
+    QSettings::setDefaultFormat(QSettings::IniFormat);
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, temporary.path());
+    QSettings().setValue("language", "en");
+    std::string bytes = "d4:infod6:lengthi3e4:name8:file.bin12:piece lengthi16384e6:pieces20:";
+    const unsigned char sha1[] = {0xa9, 0x99, 0x3e, 0x36, 0x47, 0x06, 0x81, 0x6a, 0xba, 0x3e,
+                                  0x25, 0x71, 0x78, 0x50, 0xc2, 0x6c, 0x9c, 0xd0, 0xd8, 0x9d};
+    bytes.append(reinterpret_cast<const char*>(sha1), std::size(sha1));
+    bytes += "ee";
+    const auto source = std::filesystem::path(temporary.filePath("fixture.torrent").toStdWString());
+    {
+        std::ofstream out(source, std::ios::binary);
+        out.write(bytes.data(), bytes.size());
+    }
+    auto factory = maskpilot::makeTorrentTransferFactory({false, "127.0.0.1:0"});
+    maskpilot::DownloadSpec check;
+    const auto sourceText = source.generic_u8string();
+    check.url = "torrent:" + std::string(sourceText.begin(), sourceText.end());
+    check.kind = maskpilot::TransferKind::BitTorrent;
+    ASSERT_NO_THROW(check.torrent.metadata = factory()->captureMetadata(check));
+    ASSERT_NO_THROW(factory()->describe(check));
+    const auto root = std::filesystem::path(temporary.path().toStdWString());
+    maskpilot::DownloadService service(std::make_unique<MemoryRepository>(), factory, root / "parts");
+    maskpilot::MainWindow window(service);
+    window.show();
+    QTimer::singleShot(50, &window, [&] {
+        auto* modal = QApplication::activeModalWidget();
+        ASSERT_NE(modal, nullptr);
+        modal->findChild<QLineEdit*>("downloadDestination")->setText(temporary.filePath("payload"));
+        modal->findChild<QCheckBox*>("torrentAllFiles")->setChecked(false);
+        modal->findChild<QCheckBox*>("addPaused")->setChecked(true);
+        modal->findChild<QPushButton*>("confirmDownload")->click();
+    });
+    window.newDownload(QString::fromStdString(check.url));
+    auto* table = window.findChild<QTableView*>("downloadTable");
+    ASSERT_NE(table, nullptr);
+    for (int n = 0; n < 1000 && table->model()->rowCount() != 1; ++n) {
+        QApplication::processEvents();
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    ASSERT_EQ(table->model()->rowCount(), 1);
+    ASSERT_EQ(service.snapshot()[0].state, maskpilot::TaskState::AwaitingSelection);
+    table->selectRow(0);
+    for (auto* action : window.findChildren<QAction*>())
+        if (action->text() == "Details") {
+            action->trigger();
+            break;
+        }
+    auto* files = window.findChild<QTreeWidget*>("torrentFiles");
+    ASSERT_NE(files, nullptr);
+    ASSERT_EQ(files->topLevelItemCount(), 1);
+    EXPECT_EQ(files->topLevelItem(0)->checkState(0), Qt::Unchecked);
+    files->topLevelItem(0)->setCheckState(0, Qt::Checked);
+    auto* apply = window.findChild<QPushButton*>("applyTorrentSelection");
+    ASSERT_NE(apply, nullptr);
+    ASSERT_TRUE(apply->isEnabled());
+    apply->click();
+    for (int n = 0; n < 1000 && service.snapshot()[0].state != maskpilot::TaskState::Paused; ++n) {
+        QApplication::processEvents();
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    const auto task = service.snapshot()[0];
+    EXPECT_EQ(task.state, maskpilot::TaskState::Paused);
+    EXPECT_EQ(task.spec.torrent.selectedFiles, std::vector<int>{0});
+    EXPECT_NE(task.spec.torrent.metadata, nullptr);
+    EXPECT_FALSE(std::filesystem::exists(root / "payload"));
 }

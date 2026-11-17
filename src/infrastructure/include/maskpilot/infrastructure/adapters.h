@@ -5,5 +5,8 @@ namespace maskpilot {
 std::unique_ptr<ITaskRepository> makeSqliteRepository(const std::filesystem::path& path);
 std::unique_ptr<ITransferTransport> makeCurlTransfer();
 std::unique_ptr<ITransferTransport> makeFtpTransfer();
+std::unique_ptr<ITransferTransport> makeUnifiedTransfer();
+// Keep one factory per service so all BT workers share its lazily created session.
+TransportFactory makeUnifiedTransferFactory(TransportFactory torrent = {});
 std::string sha256File(const std::filesystem::path& path, const TransferControl* control = nullptr);
 } // namespace maskpilot

@@ -81,7 +81,7 @@ int main(int argc, char** argv) {
                               QFileDevice::ReadOwner | QFileDevice::WriteOwner);
         const auto directory = std::filesystem::path(data.toStdWString());
         maskpilot::DownloadService service(maskpilot::makeSqliteRepository(directory / L"tasks.db"),
-                                           maskpilot::makeUnifiedTransfer, directory / L"parts");
+                                           maskpilot::makeUnifiedTransferFactory(), directory / L"parts");
         maskpilot::MainWindow window(service);
         if (!parser.isSet("background"))
             window.show();

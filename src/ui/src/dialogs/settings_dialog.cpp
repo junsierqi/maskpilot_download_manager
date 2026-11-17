@@ -50,6 +50,12 @@ void MainWindow::Impl::settingsDialog() {
     limit->setSuffix(" KiB/s");
     limit->setValue(settings.value("globalLimit", 0).toInt());
     form->addRow(t("Global speed limit", "全局限速"), limit);
+    auto* upload = new QSpinBox;
+    upload->setRange(0, 1000000);
+    upload->setSpecialValueText(t("Unlimited", "不限速"));
+    upload->setSuffix(" KiB/s");
+    upload->setValue(settings.value("globalUploadLimit", 0).toInt());
+    form->addRow(t("BT upload limit", "BT 全局上传限速"), upload);
     auto* proxy = new QLineEdit(settings.value("proxy").toString());
     proxy->setPlaceholderText("http://127.0.0.1:7890");
     form->addRow(t("Proxy URL", "代理地址"), proxy);
@@ -92,12 +98,14 @@ void MainWindow::Impl::settingsDialog() {
         settings.setValue("categorySubfolders", categoryFolders->isChecked());
         settings.setValue("categoryRules", categoryRules->toPlainText());
         settings.setValue("globalLimit", limit->value());
+        settings.setValue("globalUploadLimit", upload->value());
         settings.setValue("proxy", proxy->text());
         settings.setValue("language", language->currentData());
         settings.setValue("closeToTray", trayOption->isChecked());
         settings.setValue("completionAction", completeAction->currentIndex());
         settings.sync();
-        service.setLimits(concurrent->value(), static_cast<std::int64_t>(limit->value()) * 1024);
+        service.setLimits(concurrent->value(), static_cast<std::int64_t>(limit->value()) * 1024,
+                          static_cast<std::int64_t>(upload->value()) * 1024);
         dialog.accept();
     });
     dialog.exec();

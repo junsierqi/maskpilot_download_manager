@@ -18,6 +18,7 @@
 #include <QStandardPaths>
 #include <QTabWidget>
 #include <QUrl>
+#include <QUrlQuery>
 #include <QVBoxLayout>
 #include <maskpilot/ui/add_download_dialog.h>
 
@@ -25,7 +26,12 @@ namespace maskpilot {
 namespace {
 std::filesystem::path nativePath(const QString& s) { return std::filesystem::path(s.toStdWString()); }
 QString safeName(const QString& url) {
-    auto name = QFileInfo(QUrl(url).path()).fileName();
+    auto name = url.startsWith("torrent:") ? QFileInfo(url.mid(8)).completeBaseName()
+                                           : QFileInfo(QUrl(url).path()).fileName();
+    if (url.startsWith("magnet:?"))
+        name = QUrlQuery(QUrl(url)).queryItemValue("dn");
+    if (isTorrentUrl(url.toStdString()) && name.isEmpty())
+        name = "Torrent download";
     name.replace(QRegularExpression(R"([<>:"/\\|?*\x00-\x1f])"), "_");
     while (name.endsWith('.') || name.endsWith(' '))
         name.chop(1);
@@ -51,6 +57,11 @@ struct AddDownloadDialog::Impl {
     QLineEdit *downloader, *muxer;
     QLineEdit *ftpUsername, *ftpPassword, *ftpCa;
     QCheckBox *ftpTls, *ftpActive;
+    QCheckBox *torrentAll, *torrentSeed;
+    QSpinBox* torrentUpload;
+    TorrentMetadata torrentMetadata;
+    std::vector<int> torrentSelection;
+    std::string torrentSource;
 };
 AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString initialUrl)
     : QDialog(parent), impl_(std::make_unique<Impl>()) {
@@ -72,7 +83,14 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
     impl_->url = new QLineEdit(initialUrl);
     impl_->url->setObjectName("downloadUrl");
     impl_->url->setPlaceholderText("https://example.com/file.zip / ftp://example.com/file.zip");
-    form->addRow(t("URL", "下载地址"), impl_->url);
+    auto* sourceRow = new QWidget;
+    auto* sourceLayout = new QHBoxLayout(sourceRow);
+    sourceLayout->setContentsMargins(0, 0, 0, 0);
+    sourceLayout->addWidget(impl_->url);
+    auto* torrentFile = new QPushButton(t("Torrent…", "种子文件…"));
+    torrentFile->setObjectName("chooseTorrentFile");
+    sourceLayout->addWidget(torrentFile);
+    form->addRow(t("Source", "下载来源"), sourceRow);
     QSettings settings;
     const auto folder =
         settings
@@ -88,9 +106,23 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
     pathLayout->addWidget(browse);
     form->addRow(t("Save as", "保存为"), pathRow);
     connect(browse, &QPushButton::clicked, this, [this] {
-        auto path = QFileDialog::getSaveFileName(this, windowTitle(), impl_->destination->text());
+        const bool torrent = isTorrentUrl(impl_->url->text().toStdString());
+        auto path = torrent ? QFileDialog::getExistingDirectory(
+                                  this, windowTitle(), QFileInfo(impl_->destination->text()).absolutePath())
+                            : QFileDialog::getSaveFileName(this, windowTitle(), impl_->destination->text());
+        if (torrent && !path.isEmpty())
+            path = QDir(path).filePath(safeName(impl_->url->text()));
         if (!path.isEmpty())
             impl_->destination->setText(path);
+    });
+    connect(torrentFile, &QPushButton::clicked, this, [this, t] {
+        const auto file =
+            QFileDialog::getOpenFileName(this, t("Open torrent", "打开种子"), {}, "Torrent (*.torrent)");
+        if (file.isEmpty())
+            return;
+        impl_->url->setText("torrent:" + QDir::fromNativeSeparators(file));
+        const auto parent = QFileInfo(impl_->destination->text()).absolutePath();
+        impl_->destination->setText(QDir(parent).filePath(safeName(impl_->url->text())));
     });
     connect(impl_->url, &QLineEdit::textEdited, this, [this] {
         auto path = QFileInfo(impl_->destination->text()).absolutePath();
@@ -224,6 +256,31 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
     ftpNote->setWordWrap(true);
     ftpForm->addRow(ftpNote);
     const auto ftpIndex = tabs->addTab(ftpTab, "FTP / FTPS");
+    auto* torrentTab = new QWidget;
+    auto* torrentForm = new QFormLayout(torrentTab);
+    torrentForm->setSpacing(14);
+    impl_->torrentAll = new QCheckBox(t("Download all files", "下载全部文件"));
+    impl_->torrentAll->setChecked(true);
+    impl_->torrentAll->setObjectName("torrentAllFiles");
+    impl_->torrentSeed = new QCheckBox(t("Continue seeding after download", "下载完成后继续做种"));
+    impl_->torrentSeed->setObjectName("torrentSeedAfterDownload");
+    impl_->torrentUpload = new QSpinBox;
+    impl_->torrentUpload->setObjectName("torrentUploadLimit");
+    impl_->torrentUpload->setRange(0, 1000000);
+    impl_->torrentUpload->setSpecialValueText(t("Unlimited", "不限速"));
+    impl_->torrentUpload->setSuffix(" KiB/s");
+    torrentForm->addRow(impl_->torrentAll);
+    torrentForm->addRow(impl_->torrentSeed);
+    torrentForm->addRow(t("Upload limit", "上传限速"), impl_->torrentUpload);
+    auto* torrentNote = new QLabel(
+        t("Use a .torrent file or magnet link. Uncheck all files to obtain the file list first, then "
+          "choose files in Details. Data is verified by pieces and published into a dedicated folder. "
+          "BitTorrent uploads while downloading; continuing after completion is optional.",
+          "支持 .torrent 文件与磁力链接。取消“下载全部文件”后，先获取文件列表，再在详情中选择文件。"
+          "数据按分片校验并保存到独立目录。BT 下载期间会上传，完成后是否继续做种由你选择。"));
+    torrentNote->setWordWrap(true);
+    torrentForm->addRow(torrentNote);
+    const auto torrentIndex = tabs->addTab(torrentTab, "BT / Magnet");
     auto* mediaTab = new QWidget;
     auto* mediaForm = new QFormLayout(mediaTab);
     mediaForm->setSpacing(12);
@@ -266,15 +323,18 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
     note->setWordWrap(true);
     mediaForm->addRow(note);
     tabs->addTab(mediaTab, t("Media", "媒体"));
-    auto updateProtocol = [this, tabs, ftpIndex] {
+    auto updateProtocol = [this, tabs, ftpIndex, torrentIndex] {
         const bool ftp = isFtpUrl(impl_->url->text().trimmed().toStdString());
+        const bool torrent = isTorrentUrl(impl_->url->text().trimmed().toStdString());
         tabs->setTabEnabled(ftpIndex, ftp);
-        impl_->media->setEnabled(!ftp);
-        impl_->connections->setEnabled(!ftp);
-        impl_->referrer->setEnabled(!ftp);
-        impl_->cookie->setEnabled(!ftp);
-        impl_->authorization->setEnabled(!ftp);
-        impl_->headers->setEnabled(!ftp);
+        tabs->setTabEnabled(torrentIndex, torrent);
+        impl_->media->setEnabled(!ftp && !torrent);
+        impl_->connections->setEnabled(!ftp && !torrent);
+        impl_->referrer->setEnabled(!ftp && !torrent);
+        impl_->cookie->setEnabled(!ftp && !torrent);
+        impl_->authorization->setEnabled(!ftp && !torrent);
+        impl_->headers->setEnabled(!ftp && !torrent);
+        impl_->checksum->setEnabled(!torrent);
     };
     connect(impl_->url, &QLineEdit::textChanged, this,
             [updateProtocol](const QString&) { updateProtocol(); });
@@ -307,14 +367,15 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
             QMessageBox::warning(this, t("Check download", "请检查下载信息"), QString::fromStdString(error));
             return;
         }
-        if (spec.media && (!QFileInfo(impl_->downloader->text()).isExecutable() ||
-                           !QFileInfo(impl_->muxer->text()).isExecutable())) {
+        if ((spec.kind == maskpilot::TransferKind::Media) &&
+            (!QFileInfo(impl_->downloader->text()).isExecutable() ||
+             !QFileInfo(impl_->muxer->text()).isExecutable())) {
             QMessageBox::warning(this, t("Media support", "媒体支持"),
                                  t("Locate both components, or install them from Tools → Media support.",
                                    "请选择两个媒体组件，或从“工具 → 媒体支持”安装。"));
             return;
         }
-        if (spec.media) {
+        if ((spec.kind == maskpilot::TransferKind::Media)) {
             QSettings current;
             current.setValue("mediaDownloader", impl_->downloader->text());
             current.setValue("mediaMuxer", impl_->muxer->text());
@@ -341,7 +402,7 @@ DownloadSpec AddDownloadDialog::specification() const {
     s.cookie = impl_->cookie->text().toStdString();
     s.authorization = impl_->authorization->text().toStdString();
     s.expectedSha256 = impl_->checksum->text().trimmed().toStdString();
-    s.media = impl_->media->isChecked();
+    s.kind = impl_->media->isChecked() ? maskpilot::TransferKind::Media : maskpilot::TransferKind::Http;
     s.audioOnly = impl_->mode->currentIndex() == 1;
     s.mediaFormat = impl_->quality->currentData().toString().toStdString();
     s.mediaDownloader = nativePath(impl_->downloader->text());
@@ -356,7 +417,7 @@ DownloadSpec AddDownloadDialog::specification() const {
                                line.mid(colon + 1).trimmed().toStdString());
     }
     if (isFtpUrl(s.url)) {
-        s.media = false;
+        s.kind = maskpilot::TransferKind::Ftp;
         s.referrer.clear();
         s.cookie.clear();
         s.authorization.clear();
@@ -366,6 +427,22 @@ DownloadSpec AddDownloadDialog::specification() const {
         s.ftpExplicitTls = impl_->ftpTls->isChecked();
         s.ftpActiveMode = impl_->ftpActive->isChecked();
         s.ftpCaBundle = nativePath(impl_->ftpCa->text().trimmed());
+    }
+    if (isTorrentUrl(s.url)) {
+        s.kind = TransferKind::BitTorrent;
+        s.referrer.clear();
+        s.cookie.clear();
+        s.authorization.clear();
+        s.headers.clear();
+        s.expectedSha256.clear();
+        s.torrent.allFiles = impl_->torrentAll->isChecked();
+        s.torrent.seedAfterDownload = impl_->torrentSeed->isChecked();
+        s.torrent.uploadLimit = static_cast<std::int64_t>(impl_->torrentUpload->value()) * 1024;
+        if (s.url == impl_->torrentSource) {
+            s.torrent.metadata = impl_->torrentMetadata;
+            if (!s.torrent.allFiles)
+                s.torrent.selectedFiles = impl_->torrentSelection;
+        }
     }
     return s;
 }
@@ -393,11 +470,17 @@ void AddDownloadDialog::setSpecification(const DownloadSpec& spec) {
     impl_->ftpTls->setChecked(spec.ftpExplicitTls);
     impl_->ftpActive->setChecked(spec.ftpActiveMode);
     impl_->ftpCa->setText(QString::fromStdWString(spec.ftpCaBundle.wstring()));
+    impl_->torrentSource = spec.url;
+    impl_->torrentMetadata = spec.torrent.metadata;
+    impl_->torrentSelection = spec.torrent.selectedFiles;
+    impl_->torrentAll->setChecked(spec.torrent.allFiles);
+    impl_->torrentSeed->setChecked(spec.torrent.seedAfterDownload);
+    impl_->torrentUpload->setValue(static_cast<int>(spec.torrent.uploadLimit / 1024));
     QStringList headers;
     for (const auto& [name, value] : spec.headers)
         headers << QString::fromStdString(name + ": " + value);
     impl_->headers->setPlainText(headers.join('\n'));
-    impl_->media->setChecked(spec.media);
+    impl_->media->setChecked(spec.kind == TransferKind::Media);
     impl_->mode->setCurrentIndex(spec.audioOnly ? 1 : 0);
     auto quality = impl_->quality->findData(QString::fromStdString(spec.mediaFormat));
     if (quality >= 0)

@@ -17,7 +17,13 @@ class DownloadService {
     void resume(const std::string& id);
     void cancel(const std::string& id);
     void remove(const std::string& id);
-    void setLimits(int concurrentTasks, std::int64_t globalBytesPerSecond);
+    void setLimits(int concurrentTasks, std::int64_t globalBytesPerSecond,
+                   std::int64_t globalUploadBytesPerSecond = 0);
+    std::future<std::string> selectTorrentFiles(const std::string& id, std::vector<int> indices,
+                                                bool allFiles = false);
+    void stopSeeding(const std::string& id);
+    // Validate/capture an entire imported list without changing tasks or blocking the coordinator.
+    std::future<std::vector<DownloadSpec>> prepareImport(std::vector<DownloadSpec> specs);
     void setPriority(const std::string& id, int priority);
     void updateUrl(const std::string& id, std::string url);
     void updateRequest(const std::string& id, DownloadSpec spec);

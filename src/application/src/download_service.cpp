@@ -8,6 +8,26 @@
 #include <thread>
 
 namespace maskpilot {
+namespace {
+void loadTorrentSource(DownloadSpec& spec, const TransportFactory& factory) {
+    if (spec.kind != TransferKind::BitTorrent || spec.torrent.metadata || !spec.url.starts_with("torrent:"))
+        return;
+    auto bytes = factory()->captureMetadata(spec);
+    if (!bytes || bytes->empty() || bytes->size() > maxTorrentMetadataBytes)
+        throw std::invalid_argument("Torrent metadata is empty or exceeds 16 MiB.");
+    spec.torrent.metadata = std::move(bytes);
+}
+void validateSelection(const DownloadSpec& spec, const TransferDescription& description) {
+    if (spec.torrent.allFiles || spec.torrent.selectedFiles.empty())
+        return;
+    if (!description.files)
+        throw std::invalid_argument("Obtain torrent metadata before choosing files.");
+    for (const auto index : spec.torrent.selectedFiles)
+        if (std::none_of(description.files->begin(), description.files->end(),
+                         [&](const auto& file) { return file.index == index && !file.padding; }))
+            throw std::invalid_argument("Torrent selection refers to an unavailable file.");
+}
+} // namespace
 struct DownloadService::Impl {
     struct Job {
         std::shared_ptr<TransferControl> control = std::make_shared<TransferControl>();
@@ -27,7 +47,7 @@ struct DownloadService::Impl {
     std::atomic_bool stopping{false};
     bool healthy = true;
     int concurrentTasks = 3, mediaSlots = 3;
-    std::int64_t globalLimit = 0;
+    std::int64_t globalLimit = 0, globalUploadLimit = 0;
 
     void post(std::function<void()> command) {
         {
@@ -63,6 +83,16 @@ struct DownloadService::Impl {
         // or unintended filesystem path. The task cache above is owned by validated ID.
         if (!validateSpec(task.spec).empty())
             return;
+        if (task.spec.kind == TransferKind::BitTorrent) {
+            try {
+                factory()->discard(task, folder);
+            } catch (const std::exception&) {
+                std::lock_guard lock(mutex);
+                error = "Some torrent recovery files could not be removed. Published files were preserved.";
+            }
+            std::filesystem::remove(folder, ignored);
+            return;
+        }
         auto stage = task.spec.destination;
         stage += L".maskpilot-" + std::filesystem::path(task.id).wstring() + L".tmp";
         std::filesystem::remove(stage, ignored);
@@ -86,14 +116,31 @@ struct DownloadService::Impl {
         task.total = event.total;
         task.bytesPerSecond = event.speed;
         task.resumable = event.resumable;
+        task.uploaded = std::max(task.uploaded, event.uploaded);
+        task.uploadSpeed = event.uploadSpeed;
+        task.peers = event.peers;
+        task.seeds = event.seeds;
+        const bool newlyPublished = !task.torrentPublished && event.torrentPublished;
+        task.torrentPublished = task.torrentPublished || event.torrentPublished;
+        if (event.description)
+            task.torrent = *event.description;
+        if (event.torrentMetadata && !task.spec.torrent.metadata) {
+            if (event.torrentMetadata->empty() || event.torrentMetadata->size() > maxTorrentMetadataBytes)
+                throw std::runtime_error("Invalid received torrent metadata size.");
+            task.spec.torrent.metadata = std::move(event.torrentMetadata);
+            save(task);
+        }
         if (event.outcome == TransferOutcome::Progress) {
             if (task.state != TaskState::Pausing && task.state != TaskState::Cancelling)
                 task.state = event.phase;
+            if (newlyPublished)
+                save(task); // Seeding can continue indefinitely; publication must survive a crash now.
             // Transfer metadata, not progress counters, determines resumable bytes after a crash.
             return;
         }
         jobs.erase(id); // The worker has enqueued its terminal event and no longer uses service state.
         task.bytesPerSecond = 0;
+        task.uploadSpeed = 0;
         task.error = std::move(event.error);
         switch (event.outcome) {
         case TransferOutcome::Complete:
@@ -107,6 +154,9 @@ struct DownloadService::Impl {
             break;
         case TransferOutcome::Attention:
             task.state = TaskState::NeedsAttention;
+            break;
+        case TransferOutcome::SelectionRequired:
+            task.state = TaskState::AwaitingSelection;
             break;
         case TransferOutcome::Failed:
             if (event.retryable && task.retries < task.spec.maxRetries && !stopping) {
@@ -170,6 +220,11 @@ struct DownloadService::Impl {
             control->speedLimit = initialShare > 0 && task->spec.speedLimit > 0
                                       ? std::min(initialShare, task->spec.speedLimit)
                                       : std::max(initialShare, task->spec.speedLimit);
+            const auto initialUploadShare =
+                globalUploadLimit > 0 ? std::max<std::int64_t>(1, globalUploadLimit / mediaSlots) : 0;
+            control->uploadLimit = initialUploadShare > 0 && task->spec.torrent.uploadLimit > 0
+                                       ? std::min(initialUploadShare, task->spec.torrent.uploadLimit)
+                                       : std::max(initialUploadShare, task->spec.torrent.uploadLimit);
             task->state = TaskState::Probing;
             task->error.clear();
             ++task->generation;
@@ -200,7 +255,7 @@ struct DownloadService::Impl {
         for (const auto& [id, job] : jobs) {
             (void)job;
             const auto& spec = tasks.at(id).spec;
-            if (!spec.media) {
+            if (spec.kind != maskpilot::TransferKind::Media) {
                 ++nativeCount;
                 continue;
             }
@@ -215,14 +270,38 @@ struct DownloadService::Impl {
                 : 0;
         for (auto& [id, job] : jobs) {
             auto limit = tasks.at(id).spec.speedLimit;
-            auto allocation = tasks.at(id).spec.media ? mediaShare : share;
+            auto allocation = (tasks.at(id).spec.kind == maskpilot::TransferKind::Media) ? mediaShare : share;
             job->control->speedLimit =
                 allocation > 0 && limit > 0 ? std::min(allocation, limit) : std::max(allocation, limit);
+        }
+        const auto torrentCount = std::count_if(jobs.begin(), jobs.end(), [&](const auto& job) {
+            return tasks.at(job.first).spec.kind == TransferKind::BitTorrent;
+        });
+        const auto uploadShare =
+            globalUploadLimit > 0
+                ? std::max<std::int64_t>(1, globalUploadLimit / std::max<std::int64_t>(1, torrentCount))
+                : 0;
+        for (auto& [id, job] : jobs) {
+            if (tasks.at(id).spec.kind != TransferKind::BitTorrent)
+                continue;
+            const auto limit = tasks.at(id).spec.torrent.uploadLimit;
+            job->control->uploadLimit =
+                uploadShare > 0 && limit > 0 ? std::min(uploadShare, limit) : std::max(uploadShare, limit);
         }
     }
     void loop(std::promise<void> ready) {
         try {
             for (auto task : repository->load()) {
+                if (task.spec.kind == TransferKind::BitTorrent) {
+                    try {
+                        task.torrent = factory()->describe(task.spec);
+                        validateSelection(task.spec, task.torrent);
+                    } catch (const std::exception&) {
+                        task.state = TaskState::NeedsAttention;
+                        task.error = "Saved torrent metadata or file selection is invalid.";
+                        save(task);
+                    }
+                }
                 if (isActive(task.state) || task.state == TaskState::Queued ||
                     task.state == TaskState::RetryWaiting) {
                     task.state = TaskState::Paused;
@@ -303,6 +382,7 @@ std::future<std::string> DownloadService::add(DownloadSpec spec, std::string req
                 throw std::runtime_error("Task storage unavailable.");
             if (auto message = validateSpec(spec); !message.empty())
                 throw std::invalid_argument(message);
+            spec.kind = sourceKind(spec);
             if (!requestId.empty() && (requestId.size() != 32 ||
                                        !std::all_of(requestId.begin(), requestId.end(), [](unsigned char c) {
                                            return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
@@ -310,10 +390,16 @@ std::future<std::string> DownloadService::add(DownloadSpec spec, std::string req
                 throw std::invalid_argument("Invalid request ID.");
             if (!requestId.empty() && p->tasks.contains(requestId)) {
                 if (p->tasks.at(requestId).spec.url != spec.url ||
-                    p->tasks.at(requestId).spec.media != spec.media)
+                    p->tasks.at(requestId).spec.kind != spec.kind)
                     throw std::invalid_argument("Request ID belongs to another resource.");
                 promise->set_value(requestId);
                 return;
+            }
+            loadTorrentSource(spec, p->factory);
+            TransferDescription description;
+            if (spec.kind == TransferKind::BitTorrent) {
+                description = p->factory()->describe(spec);
+                validateSelection(spec, description);
             }
             spec.destination = std::filesystem::absolute(spec.destination).lexically_normal();
             const auto original = spec.destination;
@@ -333,11 +419,15 @@ std::future<std::string> DownloadService::add(DownloadSpec spec, std::string req
             Task task;
             task.id = requestId.empty() ? newTaskId() : requestId;
             task.spec = std::move(spec);
+            task.torrent = std::move(description);
             task.createdAt = unixTime();
             task.updatedAt = task.createdAt;
             task.state = task.spec.startPaused ? TaskState::Paused
                                                : (task.spec.scheduledAt > unixTime() ? TaskState::Scheduled
                                                                                      : TaskState::Queued);
+            if (task.spec.kind == TransferKind::BitTorrent && task.torrent.files &&
+                !task.spec.torrent.allFiles && task.spec.torrent.selectedFiles.empty())
+                task.state = TaskState::AwaitingSelection;
             p->save(task);
             const auto id = task.id;
             p->tasks.emplace(id, std::move(task));
@@ -404,13 +494,15 @@ void DownloadService::remove(const std::string& id) {
         p->tasks.erase(it);
     });
 }
-void DownloadService::setLimits(int concurrentTasks, std::int64_t globalBytesPerSecond) {
-    impl_->post([p = impl_.get(), concurrentTasks, globalBytesPerSecond] {
+void DownloadService::setLimits(int concurrentTasks, std::int64_t globalBytesPerSecond,
+                                std::int64_t globalUploadBytesPerSecond) {
+    impl_->post([p = impl_.get(), concurrentTasks, globalBytesPerSecond, globalUploadBytesPerSecond] {
         p->concurrentTasks = std::clamp(concurrentTasks, 1, 8);
         // Retain stable reservations while a batch drains. Reducing configured concurrency
         // must not multiply the budget of existing media subprocesses.
         p->mediaSlots = std::max(p->concurrentTasks, static_cast<int>(p->jobs.size()));
         p->globalLimit = std::max<std::int64_t>(0, globalBytesPerSecond);
+        p->globalUploadLimit = std::clamp<std::int64_t>(globalUploadBytesPerSecond, 0, 2147483647LL);
     });
 }
 void DownloadService::setPriority(const std::string& id, int priority) {
@@ -427,6 +519,8 @@ void DownloadService::updateUrl(const std::string& id, std::string url) {
         auto it = p->tasks.find(id);
         if (it == p->tasks.end() || p->jobs.contains(id) || isTerminal(it->second.state))
             return;
+        if (it->second.spec.kind == TransferKind::BitTorrent || isTorrentUrl(url))
+            return; // A different torrent is a different task, never a refreshed file URL.
         auto spec = it->second.spec;
         spec.url = url;
         spec.cookie.clear();
@@ -442,6 +536,7 @@ void DownloadService::updateUrl(const std::string& id, std::string url) {
         }
         if (!validateSpec(spec).empty())
             return;
+        spec.kind = sourceKind(spec);
         it->second.spec = std::move(spec);
         it->second.state = TaskState::Paused;
         p->save(it->second);
@@ -456,6 +551,11 @@ void DownloadService::restart(const std::string& id) {
         auto it = p->tasks.find(id);
         if (it == p->tasks.end() || p->jobs.contains(id) || isTerminal(it->second.state))
             return;
+        if (it->second.spec.kind == TransferKind::BitTorrent) {
+            if (it->second.torrentPublished)
+                return;
+            p->clearOwnedParts(it->second);
+        }
         const auto folder = p->workDirectory / id;
         for (int n = 0; n < 8; ++n) {
             std::error_code error;
@@ -478,16 +578,94 @@ void DownloadService::restart(const std::string& id) {
 void DownloadService::updateRequest(const std::string& id, DownloadSpec spec) {
     impl_->post([p = impl_.get(), id, spec = std::move(spec)]() mutable {
         auto it = p->tasks.find(id);
-        if (it == p->tasks.end() || p->jobs.contains(id) || isTerminal(it->second.state) ||
-            !validateSpec(spec).empty())
+        if (it == p->tasks.end() || p->jobs.contains(id) || isTerminal(it->second.state))
             return;
+        if (it->second.spec.kind == TransferKind::BitTorrent || isTorrentUrl(spec.url)) {
+            if (it->second.spec.kind != TransferKind::BitTorrent || spec.url != it->second.spec.url)
+                return;
+            spec.torrent.metadata = it->second.spec.torrent.metadata;
+            if (it->second.torrentPublished &&
+                (spec.torrent.allFiles != it->second.spec.torrent.allFiles ||
+                 spec.torrent.selectedFiles != it->second.spec.torrent.selectedFiles))
+                return;
+        }
         spec.destination = it->second.spec.destination;
-        if (it->second.spec.media != spec.media)
+        if (!validateSpec(spec).empty())
+            return;
+        spec.kind = sourceKind(spec);
+        if (spec.kind == TransferKind::BitTorrent) {
+            try {
+                validateSelection(spec, it->second.torrent);
+            } catch (const std::exception&) {
+                return;
+            }
+        }
+        if (it->second.spec.kind != spec.kind)
             p->clearOwnedParts(it->second);
         it->second.spec = std::move(spec);
         it->second.state = TaskState::Paused;
         it->second.error.clear();
         p->save(it->second);
+    });
+}
+std::future<std::string> DownloadService::selectTorrentFiles(const std::string& id, std::vector<int> indices,
+                                                             bool allFiles) {
+    auto promise = std::make_shared<std::promise<std::string>>();
+    auto result = promise->get_future();
+    impl_->post([p = impl_.get(), id, indices = std::move(indices), allFiles, promise]() mutable {
+        try {
+            auto it = p->tasks.find(id);
+            if (it == p->tasks.end() || p->jobs.contains(id) || isTerminal(it->second.state) ||
+                it->second.spec.kind != TransferKind::BitTorrent || it->second.torrentPublished)
+                throw std::invalid_argument("Pause an unpublished torrent before changing its files.");
+            auto spec = it->second.spec;
+            spec.torrent.allFiles = allFiles;
+            spec.torrent.selectedFiles = allFiles ? std::vector<int>{} : std::move(indices);
+            if (!allFiles && spec.torrent.selectedFiles.empty())
+                throw std::invalid_argument("Select at least one file.");
+            if (const auto error = validateSpec(spec); !error.empty())
+                throw std::invalid_argument(error);
+            validateSelection(spec, it->second.torrent);
+            it->second.spec = std::move(spec);
+            it->second.state = TaskState::Paused;
+            it->second.error.clear();
+            p->save(it->second);
+            p->publish();
+            promise->set_value(id);
+        } catch (...) {
+            promise->set_exception(std::current_exception());
+        }
+    });
+    return result;
+}
+void DownloadService::stopSeeding(const std::string& id) {
+    impl_->post([p = impl_.get(), id] {
+        const auto it = p->tasks.find(id);
+        if (it != p->tasks.end() && it->second.state == TaskState::Seeding && p->jobs.contains(id))
+            p->jobs.at(id)->control->finish = true;
+    });
+}
+std::future<std::vector<DownloadSpec>> DownloadService::prepareImport(std::vector<DownloadSpec> specs) {
+    return std::async(std::launch::async, [factory = impl_->factory, specs = std::move(specs)]() mutable {
+        if (specs.size() > 10000)
+            throw std::invalid_argument("Task list exceeds 10000 entries.");
+        std::size_t metadataBytes = 0;
+        for (auto& spec : specs) {
+            if (const auto error = validateSpec(spec); !error.empty())
+                throw std::invalid_argument(error);
+            spec.kind = sourceKind(spec);
+            loadTorrentSource(spec, factory);
+            if (spec.kind == TransferKind::BitTorrent) {
+                if (spec.torrent.metadata)
+                    metadataBytes += spec.torrent.metadata->size();
+                if (metadataBytes > 24 * 1024 * 1024)
+                    throw std::invalid_argument(
+                        "Imported torrent metadata exceeds 24 MiB. Use smaller lists.");
+                validateSelection(spec, factory()->describe(spec));
+            }
+            spec.startPaused = true;
+        }
+        return specs;
     });
 }
 void DownloadService::schedule(const std::string& id, std::int64_t startAt, std::int64_t stopAt) {

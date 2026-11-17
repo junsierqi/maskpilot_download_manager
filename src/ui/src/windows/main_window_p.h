@@ -97,6 +97,7 @@ struct MainWindow::Impl {
     void refresh();
     void completion();
     void details();
+    void torrentDetails(const Task& task);
     void settingsDialog();
     void mediaSupport();
     void exportTasks();

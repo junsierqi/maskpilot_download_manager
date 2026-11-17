@@ -25,10 +25,63 @@ std::vector<Segment> splitSegments(std::int64_t length, int count) {
     return result;
 }
 bool isFtpUrl(const std::string& url) { return url.starts_with("ftp://") || url.starts_with("ftps://"); }
+bool isTorrentUrl(const std::string& url) {
+    return url.starts_with("magnet:?") || url.starts_with("torrent:");
+}
+TransferKind sourceKind(const DownloadSpec& spec) {
+    if (spec.kind == TransferKind::Media)
+        return TransferKind::Media;
+    if (isTorrentUrl(spec.url))
+        return TransferKind::BitTorrent;
+    return isFtpUrl(spec.url) ? TransferKind::Ftp : TransferKind::Http;
+}
 std::string validateSpec(const DownloadSpec& spec) {
     const bool ftp = isFtpUrl(spec.url);
-    if (ftp && (spec.media || !spec.cookie.empty() || !spec.authorization.empty() || !spec.headers.empty() ||
-                !spec.referrer.empty()))
+    const bool torrent = isTorrentUrl(spec.url);
+    if (static_cast<int>(spec.kind) < 0 || static_cast<int>(spec.kind) > 3)
+        return "Invalid transfer kind.";
+    if (spec.kind == TransferKind::BitTorrent && !torrent)
+        return "BitTorrent tasks require a magnet link or local torrent source.";
+    if (torrent) {
+        if (spec.kind == TransferKind::Media || !spec.cookie.empty() || !spec.authorization.empty() ||
+            !spec.headers.empty() || !spec.referrer.empty() || !spec.expectedSha256.empty())
+            return "BitTorrent uses verified pieces, not HTTP credentials, media mode or a single file "
+                   "digest.";
+        if (spec.torrent.uploadLimit < 0 || spec.torrent.uploadLimit > 2147483647LL ||
+            spec.torrent.selectedFiles.size() > maxTorrentFiles)
+            return "Invalid torrent limits or file selection.";
+        auto selection = spec.torrent.selectedFiles;
+        std::sort(selection.begin(), selection.end());
+        if ((!selection.empty() &&
+             (selection.front() < 0 || selection.back() >= static_cast<int>(maxTorrentFiles))) ||
+            std::adjacent_find(selection.begin(), selection.end()) != selection.end() ||
+            (spec.torrent.allFiles && !selection.empty()))
+            return "Torrent file selection must contain unique valid file indices.";
+        if (spec.torrent.metadata &&
+            (spec.torrent.metadata->empty() || spec.torrent.metadata->size() > maxTorrentMetadataBytes))
+            return "Torrent metadata is empty or exceeds 16 MiB.";
+        if (spec.url.starts_with("torrent:") && !spec.torrent.metadata) {
+            try {
+                const auto text = spec.url.substr(8);
+                const std::filesystem::path path(std::u8string(text.begin(), text.end()));
+                if (!path.is_absolute() || path.filename().empty() || text.starts_with("\\\\") ||
+                    text.starts_with("//"))
+                    return "Choose an absolute local torrent file path.";
+#ifdef _WIN32
+                const auto root = path.root_name().native();
+                if (root.size() != 2 || root[1] != L':' ||
+                    !((root[0] >= L'A' && root[0] <= L'Z') || (root[0] >= L'a' && root[0] <= L'z')))
+                    return "Copy the torrent metadata to a local drive before importing it.";
+#endif
+            } catch (const std::system_error&) {
+                return "Invalid local torrent source path.";
+            }
+        }
+    } else if (spec.torrent.metadata || !spec.torrent.allFiles || !spec.torrent.selectedFiles.empty() ||
+               spec.torrent.seedAfterDownload || spec.torrent.uploadLimit != 0)
+        return "Torrent options require a torrent source.";
+    if (ftp && ((spec.kind == maskpilot::TransferKind::Media) || !spec.cookie.empty() ||
+                !spec.authorization.empty() || !spec.headers.empty() || !spec.referrer.empty()))
         return "FTP tasks cannot use media mode or HTTP request credentials and headers.";
     if (!ftp && (!spec.ftpUsername.empty() || !spec.ftpPassword.empty() || spec.ftpExplicitTls ||
                  spec.ftpActiveMode || !spec.ftpCaBundle.empty()))
@@ -45,21 +98,24 @@ std::string validateSpec(const DownloadSpec& spec) {
     } catch (const std::system_error&) {
         return "FTP CA bundle path contains invalid Unicode.";
     }
-    if (spec.media && (!spec.cookie.empty() || !spec.authorization.empty() || !spec.headers.empty()))
+    if ((spec.kind == maskpilot::TransferKind::Media) &&
+        (!spec.cookie.empty() || !spec.authorization.empty() || !spec.headers.empty()))
         return "Origin-bound login headers are supported for direct file downloads only. For media, use a "
                "public URL or download the direct file without media mode.";
     if (spec.mediaFormat.size() > 1000 || spec.mediaFormat.find_first_of("\r\n\0", 0, 3) != std::string::npos)
         return "Invalid media format selection.";
-    if (!(spec.url.starts_with("https://") || spec.url.starts_with("http://") || ftp))
-        return "Only HTTP, HTTPS, FTP and FTPS URLs are supported.";
+    if (!(spec.url.starts_with("https://") || spec.url.starts_with("http://") || ftp || torrent))
+        return "Use an HTTP, HTTPS, FTP, FTPS, magnet or local torrent source.";
     if (spec.url.size() > 32768 || spec.url.find_first_of("\r\n\0", 0, 3) != std::string::npos)
         return "Invalid URL.";
-    auto hostBegin = spec.url.find("://") + 3;
-    auto authorityEnd = spec.url.find_first_of("/?#", hostBegin);
-    auto authority = spec.url.substr(hostBegin, authorityEnd == std::string::npos ? std::string::npos
-                                                                                  : authorityEnd - hostBegin);
-    if (authority.empty() || authority.find('@') != std::string::npos)
-        return "URL host is missing or contains credentials.";
+    if (!torrent) {
+        auto hostBegin = spec.url.find("://") + 3;
+        auto authorityEnd = spec.url.find_first_of("/?#", hostBegin);
+        auto authority = spec.url.substr(
+            hostBegin, authorityEnd == std::string::npos ? std::string::npos : authorityEnd - hostBegin);
+        if (authority.empty() || authority.find('@') != std::string::npos)
+            return "URL host is missing or contains credentials.";
+    }
     if (spec.destination.empty() || spec.destination.filename().empty())
         return "Choose a destination file.";
     std::u8string destinationBytes;
@@ -126,13 +182,16 @@ std::string validateSpec(const DownloadSpec& spec) {
 }
 bool isActive(TaskState state) {
     return state == TaskState::Probing || state == TaskState::Downloading || state == TaskState::Pausing ||
-           state == TaskState::Verifying || state == TaskState::Finalizing || state == TaskState::Cancelling;
+           state == TaskState::Verifying || state == TaskState::Finalizing ||
+           state == TaskState::Cancelling || state == TaskState::FetchingMetadata ||
+           state == TaskState::Seeding;
 }
 bool isTerminal(TaskState state) { return state == TaskState::Completed || state == TaskState::Cancelled; }
 const char* stateName(TaskState state) {
     static constexpr const char* names[] = {
-        "Queued",    "Scheduled",  "Probing",   "Downloading", "Pausing",    "Paused",    "Retry waiting",
-        "Verifying", "Finalizing", "Completed", "Failed",      "Cancelling", "Cancelled", "Needs attention"};
+        "Queued",        "Scheduled",       "Probing",           "Downloading", "Pausing",     "Paused",
+        "Retry waiting", "Verifying",       "Finalizing",        "Completed",   "Failed",      "Cancelling",
+        "Cancelled",     "Needs attention", "Fetching metadata", "Seeding",     "Select files"};
     auto index = static_cast<int>(state);
     return index >= 0 && index < static_cast<int>(std::size(names)) ? names[index] : "Invalid";
 }

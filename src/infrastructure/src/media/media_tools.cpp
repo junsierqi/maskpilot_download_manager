@@ -149,15 +149,13 @@ void copyStage(const std::filesystem::path& source, const std::filesystem::path&
     throw std::runtime_error("This media adapter currently supports Windows.");
 #endif
 }
-class UnifiedTransfer final : public ITransferTransport {
+class MediaTransfer final : public ITransferTransport {
   public:
     void run(const Task& task, const std::filesystem::path& work, TransferControl& control,
              const std::function<void(TransferEvent)>& callback) override {
-        if (!task.spec.media) {
-            makeCurlTransfer()->run(task, work, control, callback);
-            return;
-        }
-        if (auto error = validateSpec(task.spec); !error.empty()) {
+        if (auto error =
+                task.spec.kind == TransferKind::Media ? validateSpec(task.spec) : "A media task is required.";
+            !error.empty()) {
             TransferEvent failed;
             failed.outcome = TransferOutcome::Attention;
             failed.error = error;
@@ -416,5 +414,5 @@ QStringList mediaArguments(const Task& task, const std::filesystem::path& work, 
     args << "--output" << output << "--" << QString::fromStdString(task.spec.url);
     return args;
 }
-std::unique_ptr<ITransferTransport> makeUnifiedTransfer() { return std::make_unique<UnifiedTransfer>(); }
+std::unique_ptr<ITransferTransport> makeMediaTransfer() { return std::make_unique<MediaTransfer>(); }
 } // namespace maskpilot

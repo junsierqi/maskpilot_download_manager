@@ -76,12 +76,13 @@ void MainWindow::Impl::refresh() {
         sidebar->currentItem() ? sidebar->currentItem()->data(Qt::UserRole).toString() : "all";
     auto query = search->text().trimmed();
     int active = 0, complete = 0;
-    std::int64_t speed = 0;
+    std::int64_t speed = 0, upload = 0;
     bool busy = false;
     for (const auto& task : all) {
         if (isActive(task.state)) {
             ++active;
             speed += task.bytesPerSecond;
+            upload += task.uploadSpeed;
         }
         if (task.state == TaskState::Completed)
             ++complete;
@@ -90,9 +91,10 @@ void MainWindow::Impl::refresh() {
             wasBusy = true;
         }
         busy = busy || isActive(task.state) || task.state == TaskState::Queued ||
-               task.state == TaskState::Scheduled || task.state == TaskState::RetryWaiting;
+               task.state == TaskState::Scheduled || task.state == TaskState::RetryWaiting ||
+               task.state == TaskState::AwaitingSelection;
         if (isActive(task.state) || task.state == TaskState::Queued || task.state == TaskState::Scheduled ||
-            task.state == TaskState::RetryWaiting)
+            task.state == TaskState::RetryWaiting || task.state == TaskState::AwaitingSelection)
             batchIds.insert(task.id);
         bool match = filter == "all" ||
                      (filter == "active" && (isActive(task.state) || task.state == TaskState::Queued ||
@@ -101,10 +103,14 @@ void MainWindow::Impl::refresh() {
                      (filter == "scheduled" && task.state == TaskState::Scheduled) ||
                      (filter == "completed" && task.state == TaskState::Completed) ||
                      (filter == "attention" &&
-                      (task.state == TaskState::Failed || task.state == TaskState::NeedsAttention)) ||
+                      (task.state == TaskState::Failed || task.state == TaskState::NeedsAttention ||
+                       task.state == TaskState::AwaitingSelection)) ||
+                     (filter == "torrent" && task.spec.kind == TransferKind::BitTorrent) ||
+                     (filter == "seeding" && task.state == TaskState::Seeding) ||
                      (filter.startsWith("category:") && qs(task.spec.category) == filter.mid(9));
         if (match && (query.isEmpty() ||
                       pathString(task.spec.destination.filename()).contains(query, Qt::CaseInsensitive) ||
+                      qs(task.torrent.name).contains(query, Qt::CaseInsensitive) ||
                       qs(task.spec.category).contains(query, Qt::CaseInsensitive)))
             visible.push_back(task);
     }
@@ -120,11 +126,15 @@ void MainWindow::Impl::refresh() {
     table->verticalScrollBar()->setValue(scroll);
     empty->setVisible(model->rows.empty());
     table->setVisible(!model->rows.empty());
-    summary->setText(t("%1 downloads · %2 active · %3 completed", "%1 个任务 · %2 个正在下载 · %3 个已完成")
+    table->setColumnHidden(7, std::none_of(all.begin(), all.end(), [](const auto& task) {
+                               return task.spec.kind == TransferKind::BitTorrent;
+                           }));
+    summary->setText(t("%1 downloads · %2 active · %3 completed", "%1 个任务 · %2 个活跃 · %3 个已完成")
                          .arg(all.size())
                          .arg(active)
                          .arg(complete));
-    window->statusBar()->showMessage(t("Download speed  ", "下载速度  ") + bytes(speed) + "/s");
+    window->statusBar()->showMessage(t("Download  ", "下载  ") + bytes(speed) + "/s    " +
+                                     t("Upload  ", "上传  ") + bytes(upload) + "/s");
     updateActions();
     const auto storageError = qs(service.lastError());
     if (!storageError.isEmpty()) {
@@ -277,6 +287,8 @@ MainWindow::MainWindow(DownloadService& service, QWidget* parent)
     addFilter(p.t("Scheduled", "计划任务"), "scheduled");
     addFilter(p.t("Completed", "已完成"), "completed");
     addFilter(p.t("Needs attention", "需要处理"), "attention");
+    addFilter("BT / Magnet", "torrent");
+    addFilter(p.t("Seeding", "正在做种"), "seeding");
     for (auto category : {"Documents", "Software", "Video", "Music", "Archives"})
         addFilter(category, "category:" + QString(category));
     p.sidebar->setCurrentRow(0);
@@ -301,7 +313,7 @@ MainWindow::MainWindow(DownloadService& service, QWidget* parent)
     p.table->verticalHeader()->hide();
     p.table->verticalHeader()->setDefaultSectionSize(49);
     p.table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
-    for (int col = 1; col < 7; ++col)
+    for (int col = 1; col < p.model->columnCount(); ++col)
         p.table->setColumnWidth(col, col == 2 ? 150 : 100);
     p.table->setContextMenuPolicy(Qt::CustomContextMenu);
     contentLayout->addWidget(p.table, 1);
@@ -320,10 +332,17 @@ MainWindow::MainWindow(DownloadService& service, QWidget* parent)
     file->addSeparator();
     file->addAction(p.t("Quit", "退出"), QKeySequence("Ctrl+Q"), this, &MainWindow::requestQuit);
     auto* tools = menuBar()->addMenu(p.t("Tools", "工具"));
+    tools->addAction(p.t("Open torrent…", "打开种子文件…"), this, [this, &p] {
+        const auto file =
+            QFileDialog::getOpenFileName(this, p.t("Open torrent", "打开种子"), {}, "Torrent (*.torrent)");
+        if (!file.isEmpty())
+            newDownload("torrent:" + QDir::fromNativeSeparators(file));
+    });
+    tools->addAction(p.t("Add magnet link…", "添加磁力链接…"), this, [this] { newDownload("magnet:?"); });
     tools->addAction(p.t("New media download…", "新建媒体下载…"), this, [this, &p] {
         AddDownloadDialog dialog(p.chinese, this);
         auto spec = defaultSpec("https://");
-        spec.media = true;
+        spec.kind = maskpilot::TransferKind::Media;
         spec.destination.replace_extension(L".mkv");
         dialog.setSpecification(spec);
         if (dialog.exec() == QDialog::Accepted)
@@ -351,8 +370,14 @@ MainWindow::MainWindow(DownloadService& service, QWidget* parent)
     connect(batch, &QAction::triggered, this, [&p] { p.batch(); });
     connect(settings, &QAction::triggered, this, [&p] { p.settingsDialog(); });
     connect(p.resumeAction, &QAction::triggered, this, [&p] {
-        for (const auto& task : p.selected())
-            p.service.resume(task.id);
+        const auto tasks = p.selected();
+        if (tasks.size() == 1 && tasks[0].state == TaskState::AwaitingSelection) {
+            p.torrentDetails(tasks[0]);
+            return;
+        }
+        for (const auto& task : tasks)
+            if (task.state != TaskState::AwaitingSelection)
+                p.service.resume(task.id);
     });
     connect(p.pauseAction, &QAction::triggered, this, [&p] {
         for (const auto& task : p.selected())
@@ -385,15 +410,19 @@ MainWindow::MainWindow(DownloadService& service, QWidget* parent)
         menu.addAction(p.cancelAction);
         menu.addSeparator();
         auto task = tasks.front();
+        menu.addAction(p.t("Finish seeding", "结束做种"), this,
+                       [&p, task] { p.service.stopSeeding(task.id); })
+            ->setEnabled(task.state == TaskState::Seeding);
         menu.addAction(p.t("Open file", "打开文件"), this,
                        [task] {
-                           if (task.state == TaskState::Completed)
+                           if (task.state == TaskState::Completed || task.torrentPublished)
                                QDesktopServices::openUrl(
                                    QUrl::fromLocalFile(pathString(task.spec.destination)));
                        })
-            ->setEnabled(task.state == TaskState::Completed);
+            ->setEnabled(task.state == TaskState::Completed || task.torrentPublished);
         menu.addAction(p.t("Open folder", "打开目录"), this, [task] {
-            QDesktopServices::openUrl(QUrl::fromLocalFile(pathString(task.spec.destination.parent_path())));
+            QDesktopServices::openUrl(QUrl::fromLocalFile(pathString(
+                task.torrentPublished ? task.spec.destination : task.spec.destination.parent_path())));
         });
         menu.addAction(p.detailAction);
         menu.addSeparator();
@@ -404,6 +433,12 @@ MainWindow::MainWindow(DownloadService& service, QWidget* parent)
                            dialog.setWindowTitle(p.t("Edit request", "编辑下载请求"));
                            if (auto* destination = dialog.findChild<QLineEdit*>("downloadDestination"))
                                destination->setReadOnly(true);
+                           if (task.spec.kind == TransferKind::BitTorrent) {
+                               dialog.findChild<QLineEdit*>("downloadUrl")->setReadOnly(true);
+                               dialog.findChild<QPushButton*>("chooseTorrentFile")->setEnabled(false);
+                               if (task.torrentPublished)
+                                   dialog.findChild<QCheckBox*>("torrentAllFiles")->setEnabled(false);
+                           }
                            if (auto* button = dialog.findChild<QPushButton*>("confirmDownload"))
                                button->setText(p.t("Save request", "保存请求"));
                            if (dialog.exec() == QDialog::Accepted)
@@ -421,7 +456,8 @@ MainWindow::MainWindow(DownloadService& service, QWidget* parent)
                            if (ok && !url.isEmpty())
                                p.service.updateUrl(task.id, url.toStdString());
                        })
-            ->setEnabled(!isActive(task.state) && !isTerminal(task.state));
+            ->setEnabled(!isActive(task.state) && !isTerminal(task.state) &&
+                         task.spec.kind != TransferKind::BitTorrent);
         menu.addAction(
                 p.t("Restart from beginning", "从头重新下载"), this,
                 [this, &p, task] {
@@ -430,7 +466,7 @@ MainWindow::MainWindow(DownloadService& service, QWidget* parent)
                                                   "丢弃此任务缓存的分段，并重新下载？")) == QMessageBox::Yes)
                         p.service.restart(task.id);
                 })
-            ->setEnabled(!isActive(task.state) && !isTerminal(task.state));
+            ->setEnabled(!isActive(task.state) && !isTerminal(task.state) && !task.torrentPublished);
         menu.addAction(p.t("Set priority…", "设置优先级…"), this, [this, &p, task] {
             bool ok;
             auto priority =
@@ -483,7 +519,8 @@ MainWindow::MainWindow(DownloadService& service, QWidget* parent)
         }
     });
     p.service.setLimits(p.settings.value("concurrentTasks", 3).toInt(),
-                        p.settings.value("globalLimit", 0).toLongLong() * 1024);
+                        p.settings.value("globalLimit", 0).toLongLong() * 1024,
+                        p.settings.value("globalUploadLimit", 0).toLongLong() * 1024);
     p.timer = new QTimer(this);
     connect(p.timer, &QTimer::timeout, this, [&p] { p.refresh(); });
     p.timer->start(400);
@@ -494,6 +531,7 @@ MainWindow::~MainWindow() = default;
 DownloadSpec MainWindow::defaultSpec(const QString& url) const {
     DownloadSpec spec;
     spec.url = url.toStdString();
+    spec.kind = sourceKind(spec);
     spec.connections = impl_->settings.value("connections", 4).toInt();
     spec.proxy = impl_->settings.value("proxy").toString().toStdString();
     spec.mediaDownloader =
@@ -607,14 +645,15 @@ void MainWindow::handleNative(const QJsonObject& request, std::function<void(QJs
             answer(false, "Invalid media flag.");
             return;
         }
-        spec.media = request.value("media").toBool();
+        spec.kind =
+            request.value("media").toBool() ? maskpilot::TransferKind::Media : maskpilot::TransferKind::Http;
         if (request.contains("audioOnly") && !request.value("audioOnly").isBool()) {
             answer(false, "Invalid audio mode.");
             return;
         }
         spec.audioOnly = request.value("audioOnly").toBool();
         spec.startPaused = command == "prepare";
-        if (spec.media) {
+        if ((spec.kind == maskpilot::TransferKind::Media)) {
             spec.category = spec.audioOnly ? "Music" : "Video";
             spec.destination.replace_extension(spec.audioOnly ? L".m4a" : L".mkv");
             if (!QFileInfo(pathString(spec.mediaDownloader)).isExecutable() ||
@@ -670,7 +709,7 @@ void MainWindow::newDownload(QString url) {
     if (url.isEmpty()) {
         auto clipboard = QApplication::clipboard()->text().trimmed();
         if (clipboard.startsWith("http://") || clipboard.startsWith("https://") ||
-            isFtpUrl(clipboard.toStdString()))
+            isFtpUrl(clipboard.toStdString()) || isTorrentUrl(clipboard.toStdString()))
             url = clipboard;
     }
     AddDownloadDialog dialog(impl_->chinese, this, url);
@@ -706,7 +745,8 @@ void MainWindow::dropEvent(QDropEvent* event) {
     auto text = event->mimeData()->hasUrls() && !event->mimeData()->urls().isEmpty()
                     ? event->mimeData()->urls().first().toString()
                     : event->mimeData()->text().trimmed();
-    if (text.startsWith("https://") || text.startsWith("http://") || isFtpUrl(text.toStdString())) {
+    if (text.startsWith("https://") || text.startsWith("http://") || isFtpUrl(text.toStdString()) ||
+        isTorrentUrl(text.toStdString())) {
         newDownload(text);
         event->acceptProposedAction();
     }
