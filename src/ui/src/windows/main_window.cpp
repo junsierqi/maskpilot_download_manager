@@ -129,12 +129,21 @@ void MainWindow::Impl::refresh() {
     table->setColumnHidden(7, std::none_of(all.begin(), all.end(), [](const auto& task) {
                                return task.spec.kind == TransferKind::BitTorrent;
                            }));
-    summary->setText(t("%1 downloads · %2 active · %3 completed", "%1 个任务 · %2 个活跃 · %3 个已完成")
-                         .arg(all.size())
-                         .arg(active)
-                         .arg(complete));
-    window->statusBar()->showMessage(t("Download  ", "下载  ") + bytes(speed) + "/s    " +
-                                     t("Upload  ", "上传  ") + bytes(upload) + "/s");
+    // Keep the name, controls and transfer rates readable in the minimum-size window.
+    const auto width = table->viewport()->width();
+    table->setColumnHidden(5, width < 900);
+    table->setColumnHidden(6, width < 900);
+    table->setColumnHidden(1, width < 740);
+    heading->setText(sidebar->currentItem() ? sidebar->currentItem()->text()
+                                            : t("All downloads", "全部下载"));
+    summary->setText(
+        t("%1 shown / %2 total · %3 active · %4 completed", "显示 %1 / 共 %2 项 · %3 项活跃 · %4 项完成")
+            .arg(model->rows.size())
+            .arg(all.size())
+            .arg(active)
+            .arg(complete));
+    throughput->setText(t("↓ Download  ", "↓ 下载  ") + bytes(speed) + "/s    " +
+                        t("↑ Upload  ", "↑ 上传  ") + bytes(upload) + "/s");
     updateActions();
     const auto storageError = qs(service.lastError());
     if (!storageError.isEmpty()) {
@@ -210,24 +219,7 @@ MainWindow::MainWindow(DownloadService& service, QWidget* parent)
     resize(1180, 750);
     setMinimumSize(850, 560);
     setAcceptDrops(true);
-    setStyleSheet(
-        "QMainWindow,QDialog{background:#f5f7fb;color:#263247;} QWidget{font-family:'Segoe UI','Microsoft "
-        "YaHei UI';font-size:13px;} "
-        "QLineEdit,QComboBox,QSpinBox,QDateTimeEdit,QPlainTextEdit{background:white;border:1px solid "
-        "#dce2ec;border-radius:5px;padding:7px;} QPushButton{background:white;border:1px solid "
-        "#d6deeb;border-radius:6px;padding:8px 14px;} "
-        "QPushButton:hover{background:#edf3ff;border-color:#96b7ff;} "
-        "QPushButton:default{background:#2864ed;color:white;border-color:#2864ed;} "
-        "QTabWidget::pane{border:1px solid #e0e5ee;background:white;} QTabBar::tab{padding:9px 18px;} "
-        "QTableView{background:white;border:0;gridline-color:#eff2f7;selection-background-color:#eaf1ff;"
-        "selection-color:#1f4d99;} QHeaderView::section{background:#f9fafc;border:0;border-bottom:1px solid "
-        "#e8edf4;padding:11px 8px;color:#768299;font-size:12px;} "
-        "QListWidget{background:#eef2f8;border:0;outline:0;padding:12px 8px;} QListWidget::item{padding:11px "
-        "14px;border-radius:6px;color:#65718a;} "
-        "QListWidget::item:selected{background:#dfe9ff;color:#2459c8;font-weight:600;} "
-        "QToolBar{background:white;border-bottom:1px solid #e7ecf3;spacing:9px;padding:9px;} "
-        "QToolButton{padding:7px;border-radius:5px;} QToolButton:hover{background:#edf3ff;} "
-        "QStatusBar{background:white;color:#78859a;border-top:1px solid #e6ebf3;}");
+    setStyleSheet(ui::styleSheet());
     auto* container = new QWidget;
     auto* outer = new QVBoxLayout(container);
     outer->setContentsMargins(0, 0, 0, 0);
@@ -235,15 +227,21 @@ MainWindow::MainWindow(DownloadService& service, QWidget* parent)
     setCentralWidget(container);
     auto* header = new QWidget;
     header->setObjectName("appHeader");
-    header->setStyleSheet("#appHeader { background:white; }");
     auto* headerLayout = new QHBoxLayout(header);
-    headerLayout->setContentsMargins(25, 18, 25, 18);
+    headerLayout->setContentsMargins(20, 12, 20, 12);
+    headerLayout->setSpacing(12);
     auto* logo = new QLabel;
-    logo->setPixmap(QIcon(":/icons/app.svg").pixmap(36, 36));
+    logo->setPixmap(QIcon(":/icons/app.svg").pixmap(32, 32));
     headerLayout->addWidget(logo);
     auto* title = new QLabel("MaskPilot");
-    title->setStyleSheet("font-size:23px;font-weight:650;color:#21304d;");
-    headerLayout->addWidget(title);
+    title->setObjectName("brandTitle");
+    auto* brand = new QVBoxLayout;
+    brand->setSpacing(0);
+    brand->addWidget(title);
+    auto* subtitle = new QLabel(p.t("Download manager", "下载管理器"));
+    subtitle->setObjectName("brandSubtitle");
+    brand->addWidget(subtitle);
+    headerLayout->addLayout(brand);
     headerLayout->addStretch();
     p.search = new QLineEdit;
     p.search->setObjectName("taskSearch");
@@ -256,73 +254,120 @@ MainWindow::MainWindow(DownloadService& service, QWidget* parent)
     headerLayout->addWidget(newButton);
     outer->addWidget(header);
     auto* toolbar = new QToolBar;
+    toolbar->setIconSize(QSize(18, 18));
     toolbar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     outer->addWidget(toolbar);
-    auto addAction = [&](const QString& text, QStyle::StandardPixmap icon) {
-        return toolbar->addAction(style()->standardIcon(icon), text);
+    auto addAction = [&](const QString& text, ui::Icon icon) {
+        return toolbar->addAction(ui::icon(icon), text);
     };
-    p.resumeAction = addAction(p.t("Start", "开始"), QStyle::SP_MediaPlay);
-    p.pauseAction = addAction(p.t("Pause", "暂停"), QStyle::SP_MediaPause);
-    p.cancelAction = addAction(p.t("Cancel", "取消"), QStyle::SP_DialogCancelButton);
+    p.resumeAction = addAction(p.t("Start", "开始"), ui::Icon::Start);
+    p.pauseAction = addAction(p.t("Pause", "暂停"), ui::Icon::Pause);
+    p.cancelAction = addAction(p.t("Cancel", "取消"), ui::Icon::Cancel);
     toolbar->addSeparator();
-    p.removeAction = addAction(p.t("Remove", "移除"), QStyle::SP_TrashIcon);
-    p.detailAction = addAction(p.t("Details", "详情"), QStyle::SP_FileDialogDetailedView);
+    p.removeAction = addAction(p.t("Remove", "移除"), ui::Icon::Remove);
+    p.detailAction = addAction(p.t("Details", "详情"), ui::Icon::Details);
     toolbar->addSeparator();
-    auto* batch = addAction(p.t("Batch", "批量"), QStyle::SP_FileDialogListView);
-    auto* settings = addAction(p.t("Settings", "设置"), QStyle::SP_FileDialogContentsView);
+    auto* batch = addAction(p.t("Batch", "批量"), ui::Icon::Batch);
+    auto* settings = addAction(p.t("Settings", "设置"), ui::Icon::Settings);
     auto* body = new QHBoxLayout;
     body->setContentsMargins(0, 0, 0, 0);
     body->setSpacing(0);
     outer->addLayout(body, 1);
     p.sidebar = new QListWidget;
-    p.sidebar->setFixedWidth(190);
+    p.sidebar->setObjectName("downloadSidebar");
+    p.sidebar->setFixedWidth(200);
+    p.sidebar->setIconSize(QSize(18, 18));
     body->addWidget(p.sidebar);
-    auto addFilter = [&](QString label, QString key) {
-        auto* item = new QListWidgetItem(label, p.sidebar);
+    auto addFilter = [&](QString label, QString key, ui::Icon icon = ui::Icon::Folder) {
+        auto* item = new QListWidgetItem(ui::icon(icon), label, p.sidebar);
         item->setData(Qt::UserRole, key);
+        item->setSizeHint(QSize(0, 36));
     };
-    addFilter(p.t("All downloads", "全部下载"), "all");
-    addFilter(p.t("Downloading", "正在下载"), "active");
-    addFilter(p.t("Paused", "已暂停"), "paused");
-    addFilter(p.t("Scheduled", "计划任务"), "scheduled");
-    addFilter(p.t("Completed", "已完成"), "completed");
-    addFilter(p.t("Needs attention", "需要处理"), "attention");
-    addFilter("BT / Magnet", "torrent");
-    addFilter(p.t("Seeding", "正在做种"), "seeding");
-    for (auto category : {"Documents", "Software", "Video", "Music", "Archives"})
-        addFilter(category, "category:" + QString(category));
+    addFilter(p.t("All downloads", "全部下载"), "all", ui::Icon::Download);
+    addFilter(p.t("Active", "进行中"), "active", ui::Icon::Start);
+    addFilter(p.t("Paused", "已暂停"), "paused", ui::Icon::Pause);
+    addFilter(p.t("Scheduled", "计划任务"), "scheduled", ui::Icon::Clock);
+    addFilter(p.t("Completed", "已完成"), "completed", ui::Icon::Check);
+    addFilter(p.t("Needs attention", "需要处理"), "attention", ui::Icon::Alert);
+    addFilter(p.t("BT / Magnet", "BT / 磁力"), "torrent", ui::Icon::Torrent);
+    addFilter(p.t("Seeding", "正在做种"), "seeding", ui::Icon::Upload);
+    auto* divider = new QListWidgetItem(p.sidebar);
+    divider->setFlags(Qt::NoItemFlags);
+    divider->setSizeHint(QSize(0, 12));
+    for (const auto& [key, label] : {std::pair{"Documents", p.t("Documents", "文档")},
+                                     {"Software", p.t("Software", "软件")},
+                                     {"Video", p.t("Video", "视频")},
+                                     {"Music", p.t("Music", "音乐")},
+                                     {"Archives", p.t("Archives", "压缩包")}})
+        addFilter(label, "category:" + QString(key));
     p.sidebar->setCurrentRow(0);
     auto* content = new QWidget;
     auto* contentLayout = new QVBoxLayout(content);
-    contentLayout->setContentsMargins(22, 20, 22, 18);
-    contentLayout->setSpacing(15);
+    contentLayout->setContentsMargins(20, 18, 20, 18);
+    contentLayout->setSpacing(12);
     body->addWidget(content, 1);
+    auto* section = new QHBoxLayout;
+    p.heading = new QLabel;
+    p.heading->setObjectName("sectionTitle");
+    p.heading->setTextFormat(Qt::PlainText);
+    section->addWidget(p.heading);
+    section->addStretch();
     p.summary = new QLabel;
-    p.summary->setStyleSheet("color:#7a879d;font-size:12px;");
-    contentLayout->addWidget(p.summary);
+    p.summary->setObjectName("taskSummary");
+    section->addWidget(p.summary);
+    contentLayout->addLayout(section);
     p.model = new TaskModel(this);
     p.model->chinese = p.chinese;
     p.table = new QTableView;
     p.table->setObjectName("downloadTable");
     p.table->setModel(p.model);
-    p.table->setItemDelegate(new ProgressDelegate(p.table));
+    p.table->setItemDelegate(new TaskDelegate(p.table));
+    p.table->setWordWrap(false);
     p.table->setSelectionBehavior(QAbstractItemView::SelectRows);
     p.table->setSelectionMode(QAbstractItemView::ExtendedSelection);
     p.table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     p.table->setShowGrid(false);
     p.table->verticalHeader()->hide();
-    p.table->verticalHeader()->setDefaultSectionSize(49);
+    p.table->verticalHeader()->setDefaultSectionSize(58);
+    p.table->horizontalHeader()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    p.table->horizontalHeader()->setMinimumSectionSize(60);
     p.table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    const int widths[] = {0, 80, 150, 90, 132, 96, 85, 90};
     for (int col = 1; col < p.model->columnCount(); ++col)
-        p.table->setColumnWidth(col, col == 2 ? 150 : 100);
+        p.table->setColumnWidth(col, widths[col]);
     p.table->setContextMenuPolicy(Qt::CustomContextMenu);
     contentLayout->addWidget(p.table, 1);
-    p.empty = new QLabel(p.t("Your downloads, organized.\n\nAdd a link, paste a batch, or drop a URL here.",
-                             "让每一次下载井然有序。\n\n添加链接、批量导入，或将下载地址拖到这里。"));
-    p.empty->setAlignment(Qt::AlignCenter);
-    p.empty->setStyleSheet(
-        "background:white;border:1px solid #e6ebf3;border-radius:10px;color:#8491a7;font-size:16px;");
+    p.empty = new QLabel;
+    p.empty->setObjectName("emptyStateFrame");
+    auto* emptyLayout = new QVBoxLayout(p.empty);
+    emptyLayout->setContentsMargins(32, 32, 32, 32);
+    emptyLayout->setSpacing(14);
+    emptyLayout->addStretch();
+    auto* emptyIcon = new QLabel;
+    emptyIcon->setPixmap(QIcon(":/icons/app.svg").pixmap(48, 48));
+    emptyLayout->addWidget(emptyIcon, 0, Qt::AlignHCenter);
+    auto* emptyHeading = new QLabel(p.t("Ready for your next download", "准备好开始下一次下载"));
+    emptyHeading->setObjectName("emptyHeading");
+    emptyLayout->addWidget(emptyHeading, 0, Qt::AlignHCenter);
+    auto* emptyHint =
+        new QLabel(p.t("Add a link or torrent, paste a batch,\nor drop a download address here.",
+                       "添加链接或种子、批量导入，\n或将下载地址拖到这里。"));
+    emptyHint->setObjectName("emptyHint");
+    emptyHint->setAlignment(Qt::AlignCenter);
+    emptyHint->setWordWrap(true);
+    emptyHint->setMaximumWidth(450);
+    emptyHint->setMinimumHeight(44);
+    emptyLayout->addWidget(emptyHint, 0, Qt::AlignHCenter);
+    auto* emptyAdd = new QPushButton(p.t("＋  New download", "＋  新建下载"));
+    emptyAdd->setObjectName("emptyStateAddButton");
+    emptyAdd->setProperty("primary", true);
+    emptyLayout->addWidget(emptyAdd, 0, Qt::AlignHCenter);
+    connect(emptyAdd, &QPushButton::clicked, newButton, &QPushButton::click);
+    emptyLayout->addStretch();
     contentLayout->addWidget(p.empty, 1);
+    p.throughput = new QLabel;
+    p.throughput->setObjectName("throughput");
+    statusBar()->addPermanentWidget(p.throughput);
     auto* file = menuBar()->addMenu(p.t("File", "文件"));
     auto* add = file->addAction(p.t("New download…", "新建下载…"));
     add->setShortcut(QKeySequence("Ctrl+N"));
@@ -362,9 +407,10 @@ MainWindow::MainWindow(DownloadService& service, QWidget* parent)
     auto* help = menuBar()->addMenu(p.t("Help", "帮助"));
     help->addAction(p.t("About MaskPilot", "关于 MaskPilot"), this, [this, &p] {
         QMessageBox::about(this, "MaskPilot",
-                           p.t("MaskPilot 0.1\nOpen-source native download manager.\nC++ · Qt\n\nSource and "
+                           p.t("MaskPilot %1\nOpen-source native download manager.\nC++ · Qt\n\nSource and "
                                "runtime support are documented with this build.",
-                               "MaskPilot 0.1\n开源原生下载管理器\nC++ · Qt\n\n实际支持范围见随包文档。"));
+                               "MaskPilot %1\n开源原生下载管理器\nC++ · Qt\n\n实际支持范围见随包文档。")
+                               .arg(QString::fromLatin1(applicationVersion)));
     });
     connect(newButton, &QPushButton::clicked, this, [this] { newDownload(); });
     connect(batch, &QAction::triggered, this, [&p] { p.batch(); });

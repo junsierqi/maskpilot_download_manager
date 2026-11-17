@@ -12,7 +12,8 @@ $saved = @{}
 foreach ($name in $variables) { $saved[$name] = [Environment]::GetEnvironmentVariable($name,'Process'); [Environment]::SetEnvironmentVariable($name,$null,'Process') }
 try {
     $env:PATH = "$env:SystemRoot/System32;$env:SystemRoot"
-    foreach ($file in @('Qt6Core.dll','Qt6Gui.dll','Qt6Widgets.dll','Qt6Network.dll','Qt6Svg.dll','libcurl.dll','libz.dll','nghttp2.dll','sqlite3.dll','plugins/platforms/qwindows.dll','plugins/platforms/qoffscreen.dll')) { if (-not (Test-Path -LiteralPath "$package/$file")) { throw "Missing deployment file: $file" } }
+    foreach ($file in @('Qt6Core.dll','Qt6Gui.dll','Qt6Widgets.dll','Qt6Network.dll','Qt6Svg.dll','libcurl.dll','libz.dll','nghttp2.dll','sqlite3.dll','torrent-rasterbar.dll','libcrypto-3-x64.dll','libssl-3-x64.dll','plugins/platforms/qwindows.dll','plugins/platforms/qoffscreen.dll')) { if (-not (Test-Path -LiteralPath "$package/$file")) { throw "Missing deployment file: $file" } }
+    foreach ($file in @('licenses/libtorrent/copyright','licenses/openssl/copyright','licenses/boost-headers/copyright')) { if (-not (Test-Path -LiteralPath "$package/$file")) { throw "Missing dependency notice: $file" } }
     $process = Start-Process -FilePath "$package/maskpilot.exe" -ArgumentList @('--smoke-test','--data-dir',('"' + "$temporary/data" + '"')) -WindowStyle Hidden -PassThru
     if (-not $process.WaitForExit(20000)) { $process.Kill(); throw 'Packaged desktop did not exit.' }
     if ($process.ExitCode -ne 0) { throw "Packaged desktop failed: $($process.ExitCode)" }

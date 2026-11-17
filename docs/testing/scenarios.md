@@ -34,4 +34,10 @@ python benchmarks/run.py --desktop out/package/MaskPilot-0.1.0-windows-x64/maskp
 
 预算在运行前固定：桌面进程采样私有／工作集 <512 MiB、首尾季度私有内存漂移 <64 MiB、GUI IPC p95 <200 ms，观察间隔不能超过 30 秒。输出为增量 JSON，包含二进制哈希和复现命令。外部组件／夹具进程内存不在桌面预算内，结果不宣称外部站点、TLS 或所有可见 UI 操作的压力表现。脚本默认 offscreen；原生视觉验收单独执行。
 
+原生界面可用 `maskpilot.exe --data-dir <isolated-dir> --window-size 850x560 --screenshot <file.png>` 捕获；截图使用 Windows 平台，弹出对话框时捕获当前模态窗口。示例任务只用于布局检查，不作为传输成功证据。
+
+包内协议复测可设置 `MASKPILOT_TEST_CLEAN_CLI_ENV=1`，让 FTP 夹具及 BT 实际 CLI 用例仅清理产品子进程的 PATH／Qt 环境；BT 用例另以 `MASKPILOT_TEST_CLI` 指向包内客户端。父进程的 TLS／种源环境保持完整。
+
+做种上传夹具使用两个回环地址区分原种源与接收端，避免把同一 IP 下的多个本地进程误当成独立远端节点。保留原有 60 秒期限、上传限速与完整数据校验；失败时输出监听及连接诊断。浏览器凭据审计包含所有 SQLite 列和二进制字段，并直接检查数据库及其日志文件。
+
 发布前额外人工／环境验收：Windows 10/11 干净系统、不同 DPI、多显示器、休眠唤醒、受限磁盘与不可写目录、真实 Chrome/Edge 安全策略。没有运行的项目必须留在验收记录中。

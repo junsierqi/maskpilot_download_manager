@@ -1,4 +1,5 @@
 #pragma once
+#include "../style/appearance.h"
 #include <QAbstractTableModel>
 #include <QApplication>
 #include <QCheckBox>
@@ -14,6 +15,7 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFontMetrics>
 #include <QFormLayout>
 #include <QHeaderView>
 #include <QInputDialog>
@@ -50,6 +52,7 @@
 #include <QUrlQuery>
 #include <QVBoxLayout>
 #include <algorithm>
+#include <array>
 #include <maskpilot/ui/add_download_dialog.h>
 #include <maskpilot/ui/main_window.h>
 #include <set>
@@ -99,10 +102,14 @@ inline QString stateText(TaskState state, bool chinese) {
                : QString::fromUtf8(stateName(state));
 }
 class TaskModel final : public QAbstractTableModel {
+    std::array<QIcon, 4> icons_;
+
   public:
     std::vector<Task> rows;
     bool chinese = false;
-    explicit TaskModel(QObject* parent) : QAbstractTableModel(parent) {}
+    explicit TaskModel(QObject* parent)
+        : QAbstractTableModel(parent), icons_{ui::icon(ui::Icon::Download), ui::icon(ui::Icon::Download),
+                                              ui::icon(ui::Icon::Media), ui::icon(ui::Icon::Torrent)} {}
     int rowCount(const QModelIndex& parent = {}) const override {
         return parent.isValid() ? 0 : static_cast<int>(rows.size());
     }
@@ -126,14 +133,41 @@ class TaskModel final : public QAbstractTableModel {
             return task.total > 0 ? static_cast<int>(std::clamp<long double>(
                                         static_cast<long double>(task.downloaded) * 100 / task.total, 0, 100))
                                   : (task.state == TaskState::Completed || task.torrentPublished ? 100 : -1);
+        if (role == Qt::DecorationRole && index.column() == 0) {
+            const auto kind = static_cast<std::size_t>(task.spec.kind);
+            return icons_[kind < icons_.size() ? kind : 0];
+        }
+        if (role == Qt::UserRole + 2) {
+            if (task.spec.kind == TransferKind::BitTorrent)
+                return QStringLiteral("BT · ") +
+                       (task.spec.url.starts_with("magnet:?")
+                            ? (chinese ? QStringLiteral("磁力链接") : QStringLiteral("Magnet link"))
+                            : (chinese ? QStringLiteral("种子文件") : QStringLiteral("Torrent file")));
+            const QUrl source(qs(task.spec.url));
+            auto protocol = source.scheme().toUpper();
+            if (task.spec.kind == TransferKind::Media)
+                protocol = chinese ? QStringLiteral("媒体") : QStringLiteral("MEDIA");
+            else if (task.spec.ftpExplicitTls)
+                protocol = QStringLiteral("FTPS");
+            return protocol + (source.host().isEmpty() ? QString() : " · " + source.host());
+        }
+        if (role == Qt::TextAlignmentRole)
+            return static_cast<int>(
+                (index.column() == 1 || index.column() == 3 || index.column() == 6 || index.column() == 7)
+                    ? Qt::AlignRight | Qt::AlignVCenter
+                    : Qt::AlignLeft | Qt::AlignVCenter);
         if (role == Qt::ToolTipRole)
             return pathString(task.spec.destination) +
                    (task.error.empty() ? QString() : "\n" + qs(task.error));
         if (role == Qt::ForegroundRole) {
-            if (task.state == TaskState::Failed || task.state == TaskState::NeedsAttention)
+            if (index.column() == 4 &&
+                (task.state == TaskState::Failed || task.state == TaskState::NeedsAttention))
                 return QColor("#c24135");
-            if (task.state == TaskState::Completed)
+            if (index.column() == 4 &&
+                (task.state == TaskState::Completed || task.state == TaskState::Seeding))
                 return QColor("#22835e");
+            if (index.column() == 4 && task.state == TaskState::AwaitingSelection)
+                return QColor("#946200");
             return QColor("#263247");
         }
         if (role != Qt::DisplayRole)
@@ -152,6 +186,14 @@ class TaskModel final : public QAbstractTableModel {
         case 4:
             return stateText(task.state, chinese);
         case 5:
+            if (chinese) {
+                static const char* keys[] = {"Documents", "Software", "Video",
+                                             "Music",     "Archives", "General"};
+                static const char* labels[] = {"文档", "软件", "视频", "音乐", "压缩包", "常规"};
+                for (std::size_t n = 0; n < std::size(keys); ++n)
+                    if (task.spec.category == keys[n])
+                        return QString::fromUtf8(labels[n]);
+            }
             return qs(task.spec.category);
         case 6:
             if (task.bytesPerSecond > 0 && task.total > task.downloaded) {
@@ -185,22 +227,55 @@ class TaskModel final : public QAbstractTableModel {
         }
     }
 };
-class ProgressDelegate final : public QStyledItemDelegate {
+class TaskDelegate final : public QStyledItemDelegate {
   public:
     using QStyledItemDelegate::QStyledItemDelegate;
     void paint(QPainter* painter, const QStyleOptionViewItem& option,
                const QModelIndex& index) const override {
-        if (index.column() != 2) {
+        if (index.column() != 0 && index.column() != 2) {
             QStyledItemDelegate::paint(painter, option, index);
             return;
         }
         auto background = option;
         initStyleOption(&background, index);
         background.text.clear();
+        background.icon = QIcon();
         QApplication::style()->drawControl(QStyle::CE_ItemViewItem, &background, painter);
-        const int progress = index.data(Qt::UserRole + 1).toInt();
-        auto rect = option.rect.adjusted(10, 14, -12, -14);
+        const bool selected = option.state.testFlag(QStyle::State_Selected);
         painter->save();
+        if (index.column() == 0) {
+            const auto icon = qvariant_cast<QIcon>(index.data(Qt::DecorationRole));
+            icon.paint(painter, QRect(option.rect.left() + 12, option.rect.center().y() - 9, 18, 18));
+            auto font = option.font;
+            font.setWeight(QFont::DemiBold);
+            painter->setFont(font);
+            painter->setPen(QColor(selected ? "#1d4ed8" : "#1f2937"));
+            const auto title = option.rect.adjusted(40, 7, -12, -26);
+            painter->drawText(title, Qt::AlignLeft | Qt::AlignVCenter,
+                              QFontMetrics(font).elidedText(index.data().toString(), Qt::ElideRight,
+                                                            std::max(0, title.width())));
+            font.setWeight(QFont::Normal);
+            font.setPixelSize(12);
+            painter->setFont(font);
+            painter->setPen(QColor(selected ? "#315b9c" : "#64748b"));
+            const auto subtitle = option.rect.adjusted(40, 29, -12, -7);
+            painter->drawText(subtitle, Qt::AlignLeft | Qt::AlignVCenter,
+                              QFontMetrics(font).elidedText(index.data(Qt::UserRole + 2).toString(),
+                                                            Qt::ElideRight, std::max(0, subtitle.width())));
+            painter->restore();
+            return;
+        }
+        const int progress = index.data(Qt::UserRole + 1).toInt();
+        auto font = option.font;
+        font.setPixelSize(12);
+        painter->setFont(font);
+        painter->setPen(QColor(selected ? "#1d4ed8" : "#475569"));
+        const auto label = option.rect.adjusted(10, 7, -10, -26);
+        painter->drawText(label, Qt::AlignLeft | Qt::AlignVCenter, index.data().toString());
+        painter->drawText(label, Qt::AlignRight | Qt::AlignVCenter,
+                          progress >= 0 ? QString::number(progress) + "%" : QStringLiteral("—"));
+        const QRect rect(option.rect.left() + 10, option.rect.top() + 36,
+                         std::max(0, option.rect.width() - 20), 4);
         painter->setPen(Qt::NoPen);
         painter->setBrush(QColor("#e8edf5"));
         painter->drawRoundedRect(rect, 3, 3);

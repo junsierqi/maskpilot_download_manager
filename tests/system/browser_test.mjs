@@ -149,7 +149,9 @@ try {
       assert.deepEqual(request.cookieNames,[fixtureCookies.selected.name],'Unrelated host/path cookies must never be forwarded');
     }
     const listing=await native('list');assert.equal(listing.ok,true);
-    const sqliteCode="import sqlite3,json,sys; c=sqlite3.connect('file:'+sys.argv[1]+'?mode=ro',uri=True); c.row_factory=sqlite3.Row; print(json.dumps([dict(r) for r in c.execute('SELECT * FROM tasks')])); c.close()";
+    // Schema 4 stores binary torrent metadata. Preserve every column in the
+    // credential audit, including UTF-8 text embedded in BLOB values.
+    const sqliteCode="import sqlite3,json,sys; c=sqlite3.connect('file:'+sys.argv[1]+'?mode=ro',uri=True); c.row_factory=sqlite3.Row; print(json.dumps([dict(r) for r in c.execute('SELECT * FROM tasks')],default=lambda value:value.decode('utf-8','backslashreplace'))); c.close()";
     const dumped=spawnSync('python',['-c',sqliteCode,path.join(dataDir,'tasks.db')],{encoding:'utf8',windowsHide:true});
     assert.equal(dumped.status,0,dumped.stderr);
     const listed=JSON.stringify(listing);

@@ -2,7 +2,7 @@
 
 基于 C++20 和 Qt 6 Widgets 的 Windows 下载管理器。HTTP/HTTPS、FTP/FTPS、媒体适配器及独立 BT 引擎负责传输、恢复、校验和安全落盘；桌面、命令行与浏览器共用任务调度和持久化层。
 
-当前版本是核心流程可运行的 **0.1.0 候选版**，尚未实现完整功能目标。动态分段再分配、多命名队列／周期调度、递归站点抓取、Firefox 集成、完成后扫描及在线更新等仍缺失，详见 [功能与缺口](docs/product/feature-matrix.md)。本地测试通过不代表这些功能已完成。
+当前版本是核心流程可运行的 **0.2.0 候选版**，尚未实现完整功能目标。动态分段再分配、多命名队列／周期调度、递归站点抓取、Firefox 集成、完成后扫描及在线更新等仍缺失，详见 [功能与缺口](docs/product/feature-matrix.md)。本地测试通过不代表这些功能已完成。
 
 ## 使用
 
@@ -29,7 +29,7 @@ maskpilot_cli ftp://example.test/file.zip C:/Downloads/file.zip C:/Downloads/sta
 
 ## BT / 磁力
 
-工具菜单可打开本地 `.torrent` 或添加 `magnet:?` 链接；新建任务的 BT 页可设置全部文件、先获取元数据再选择文件、完成后做种及上传限速。任务详情提供文件勾选、上传和连接信息，设置中提供全局上传预算。v1／v2／混合种子、磁力及纯 Tracker 元数据获取已通过本地真实传输验证；旧发布 ZIP 不包含本次协议扩展，发布状态见验收记录。
+工具菜单可打开本地 `.torrent` 或添加 `magnet:?` 链接；新建任务的 BT 页可设置全部文件、先获取元数据再选择文件、完成后做种及上传限速。任务详情提供文件勾选、上传和连接信息，设置中提供全局上传预算。v1／v2／混合种子、磁力及纯 Tracker 元数据获取已通过本地真实传输验证。0.2.0 候选包包含 FTP/FTPS 和 BT 引擎，验证范围见 [验收记录](docs/releases/acceptance.md)。
 
 每个 BT 任务使用独立目标目录，保留种子内部目录结构。选择的内容校验完成后才整体发布，已有同名目录不会被覆盖。暂停保留缓存；取消清理该任务拥有的未发布缓存，已发布文件始终保留。做种占用活跃任务名额，可暂停或选择“结束做种”。恢复时重新校验已有分片。
 
@@ -71,8 +71,10 @@ npm.cmd --prefix browser_extension ci
 npm.cmd --prefix browser_extension test
 ./scripts/dependency-sources.ps1
 ./scripts/package.ps1
-./scripts/smoke.ps1 -PackageDirectory out/package/MaskPilot-0.1.0-windows-x64
+./scripts/smoke.ps1 -PackageDirectory out/package/MaskPilot-0.2.0-windows-x64
 ```
+
+已有独立 Release 构建时，可用 `./scripts/package.ps1 -SkipBuild -BuildDirectory out/build/windows-msvc-protocols` 明确选择产物。脚本检查项目版本、运行客户端、Qt 和编译器匹配，避免将旧二进制混入新包。
 
 固定依赖由 vcpkg 清单获取；生成文件全部放在 `out/`。更换 Qt 版本时同步更新依赖源码清单和哈希，打包脚本会拒绝版本不一致。安装包包含所用 Qt 模块源码与许可证；原始工程代码采用 [MIT](LICENSE)，实际依赖见 [NOTICES](third_party/NOTICES.md)。
 

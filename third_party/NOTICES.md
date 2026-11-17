@@ -25,6 +25,11 @@ The installed libtorrent copyright file includes its bundled helper notices;
 retain the complete file, along with notices for the deployed Boost and OpenSSL
 dependencies. Build-time Perl is not part of the application runtime.
 
+The 0.2.0 Windows candidate bundles the seven native transport/storage libraries
+and the Qt/MSVC runtime. Boost header-library port notices are retained even
+though no Boost DLL is required. Versioned CMake configuration folders are build
+metadata and are not runtime libraries.
+
 Optional media tools are **not bundled**. The application can download pinned
 yt-dlp and FFmpeg binaries from their distributors, or use user-selected executables.
 Their own licenses and third-party notices apply. Keep the full downloaded FFmpeg

@@ -297,18 +297,16 @@ class Runtime {
     static lt::settings_pack settings(const TorrentRuntimeOptions& options) {
         lt::settings_pack settings;
         settings.set_str(lt::settings_pack::listen_interfaces, options.listenInterfaces);
-        settings.set_str(lt::settings_pack::user_agent, "MaskPilot/0.1");
+        settings.set_str(lt::settings_pack::user_agent, defaultUserAgent);
         settings.set_bool(lt::settings_pack::enable_dht, options.enableDiscovery);
         settings.set_bool(lt::settings_pack::enable_lsd, options.enableDiscovery);
         settings.set_bool(lt::settings_pack::enable_upnp, options.enableDiscovery);
         settings.set_bool(lt::settings_pack::enable_natpmp, options.enableDiscovery);
-        settings.set_int(lt::settings_pack::alert_mask,
-                         static_cast<int>(static_cast<std::uint32_t>(lt::alert_category::status |
-                                                                     lt::alert_category::storage |
-                                                                     lt::alert_category::error |
-                                                                     lt::alert_category::peer |
-                                                                     lt::alert_category::connect |
-                                                                     lt::alert_category::tracker)));
+        settings.set_int(
+            lt::settings_pack::alert_mask,
+            static_cast<int>(static_cast<std::uint32_t>(
+                lt::alert_category::status | lt::alert_category::storage | lt::alert_category::error |
+                lt::alert_category::peer | lt::alert_category::connect | lt::alert_category::tracker)));
         settings.set_int(lt::settings_pack::alert_queue_size, 10000);
         settings.set_int(lt::settings_pack::max_metadata_size, static_cast<int>(maxTorrentMetadataBytes));
         return settings;

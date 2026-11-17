@@ -74,7 +74,7 @@ struct MainWindow::Impl {
     QListWidget* sidebar = nullptr;
     QTableView* table = nullptr;
     TaskModel* model = nullptr;
-    QLabel *summary = nullptr, *empty = nullptr;
+    QLabel *heading = nullptr, *summary = nullptr, *empty = nullptr, *throughput = nullptr;
     QSystemTrayIcon* tray = nullptr;
     QTimer* timer = nullptr;
     QPointer<QDialog> completionDialog;

@@ -160,7 +160,7 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
     impl_->connections = new QSpinBox;
     impl_->connections->setRange(1, 8);
     impl_->connections->setValue(settings.value("connections", 4).toInt());
-    form->addRow(t("Connections", "连接数"), impl_->connections);
+    form->addRow(t("HTTP connections", "HTTP 连接数"), impl_->connections);
     impl_->speed = new QSpinBox;
     impl_->speed->setRange(0, 1000000);
     impl_->speed->setSuffix(" KiB/s");
@@ -202,7 +202,7 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
     };
     line(impl_->referrer, t("Referrer", "来源页面"));
     line(impl_->agent, t("User agent", "用户代理"));
-    impl_->agent->setText("MaskPilot/0.1");
+    impl_->agent->setText(QString::fromLatin1(defaultUserAgent));
     line(impl_->proxy, t("Proxy URL", "代理地址"));
     impl_->proxy->setText(settings.value("proxy").toString());
     impl_->proxy->setPlaceholderText("http://127.0.0.1:7890");

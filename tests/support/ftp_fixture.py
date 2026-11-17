@@ -254,9 +254,22 @@ def certificates(root):
     return certificate, key
 
 
+def cli_child_environment():
+    environment = os.environ.copy()
+    if os.environ.get('MASKPILOT_TEST_CLEAN_CLI_ENV') == '1':
+        # The Windows os.environ mapping is case insensitive; its plain dict copy is not.
+        system_root = os.environ['SystemRoot']
+        environment['PATH'] = os.pathsep.join([os.path.join(system_root, 'System32'), system_root])
+        for name in ['QT_ROOT_DIR', 'QT_PLUGIN_PATH', 'QT_QPA_PLATFORM_PLUGIN_PATH',
+                     'QML2_IMPORT_PATH', 'QT_QPA_PLATFORM']:
+            environment.pop(name, None)
+    return environment
+
+
 def exercise(cli):
     cli = cli.resolve(strict=True)
     flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+    cli_environment = cli_child_environment()
     with tempfile.TemporaryDirectory(prefix='maskpilot-ftp-') as temporary:
         root = Path(temporary)
         certificate, key = certificates(root)
@@ -268,7 +281,8 @@ def exercise(cli):
             target = destination or root / f'file-{sequence}.bin'
             state = data or root / f'data-{sequence}'
             result = subprocess.run([str(cli), server.url(name), str(target), str(state), *options],
-                                    capture_output=True, text=True, timeout=35, creationflags=flags)
+                                    capture_output=True, text=True, timeout=35, creationflags=flags,
+                                    env=cli_environment)
             assert (result.returncode == 0) == expected, (result.returncode, result.stdout, result.stderr)
             if expected:
                 assert target.read_bytes() == server.files[name]
@@ -283,7 +297,7 @@ def exercise(cli):
             arguments = ['--sha256', SHA] if digest else []
             process = subprocess.Popen([str(cli), server.url(name), str(target), str(state), *arguments],
                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                                       creationflags=flags)
+                                       creationflags=flags, env=cli_environment)
             try:
                 deadline = time.monotonic() + 15
                 offset = None
@@ -308,7 +322,7 @@ def exercise(cli):
                 before = len(server.transfers)
                 rejections = server.rest_rejections
                 result = subprocess.run([str(cli), '--resume', task_id, str(state)], capture_output=True,
-                                        text=True, timeout=35, creationflags=flags)
+                                        text=True, timeout=35, creationflags=flags, env=cli_environment)
                 assert result.returncode == 0, (result.stdout, result.stderr)
                 assert target.read_bytes() == server.files[name]
                 resumed = server.transfers[before:]
@@ -351,7 +365,8 @@ def exercise(cli):
             destination.write_bytes(b'preserve existing')
             state = root / 'conflict-data'
             result = subprocess.run([str(cli), plain.url('file.bin'), str(destination), str(state)],
-                                    capture_output=True, text=True, timeout=35, creationflags=flags)
+                                    capture_output=True, text=True, timeout=35, creationflags=flags,
+                                    env=cli_environment)
             assert result.returncode == 0, (result.stdout, result.stderr)
             assert destination.read_bytes() == b'preserve existing'
             assert (root / 'existing (1).bin').read_bytes() == DATA
@@ -377,7 +392,7 @@ def exercise(cli):
                 target, state = root / f'hostname-{mode}.bin', root / f'hostname-{mode}'
                 result = subprocess.run([str(cli), secure.url('file.bin', '127.0.0.1'), str(target),
                                          str(state), *options], capture_output=True, text=True, timeout=35,
-                                        creationflags=flags)
+                                        creationflags=flags, env=cli_environment)
                 assert result.returncode != 0 and not target.exists()
                 print(f'PASS FTPS {mode}: encrypted control/data, CA trust and hostname rejection', flush=True)
             finally:

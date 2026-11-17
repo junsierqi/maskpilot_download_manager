@@ -24,13 +24,14 @@ int main(int argc, char** argv) {
     QApplication application(argc, argv);
     QCoreApplication::setApplicationName("MaskPilot");
     QCoreApplication::setOrganizationName("MaskPilot");
-    QCoreApplication::setApplicationVersion("0.1.0");
+    QCoreApplication::setApplicationVersion(maskpilot::applicationVersion);
     QCommandLineParser parser;
     parser.setApplicationDescription("MaskPilot native download manager");
     parser.addHelpOption();
     parser.addVersionOption();
     parser.addOption({"data-dir", "Use an isolated application data directory.", "directory"});
     parser.addOption({"screenshot", "Save a real Qt window rendering, then exit.", "png"});
+    parser.addOption({"window-size", "Set the initial window size (WIDTHxHEIGHT).", "size"});
     parser.addOption({"smoke-test", "Start the complete desktop event loop and exit."});
     parser.addOption({"background", "Start in background for browser integration."});
     parser.addOption({"url", "Open the new download dialog with a URL.", "url"});
@@ -83,6 +84,16 @@ int main(int argc, char** argv) {
         maskpilot::DownloadService service(maskpilot::makeSqliteRepository(directory / L"tasks.db"),
                                            maskpilot::makeUnifiedTransferFactory(), directory / L"parts");
         maskpilot::MainWindow window(service);
+        if (parser.isSet("window-size")) {
+            const auto dimensions = parser.value("window-size").split('x');
+            bool widthOk = false, heightOk = false;
+            const auto width = dimensions.value(0).toInt(&widthOk);
+            const auto height = dimensions.value(1).toInt(&heightOk);
+            if (dimensions.size() != 2 || !widthOk || !heightOk || width < 850 || height < 560 ||
+                width > 8192 || height > 8192)
+                throw std::invalid_argument("Window size must be between 850x560 and 8192x8192.");
+            window.resize(width, height);
+        }
         if (!parser.isSet("background"))
             window.show();
         else
@@ -158,7 +169,8 @@ int main(int argc, char** argv) {
             QTimer::singleShot(0, &window, [&] { window.newDownload(parser.value("url")); });
         if (parser.isSet("screenshot"))
             QTimer::singleShot(1200, &window, [&] {
-                const bool saved = window.grab().save(parser.value("screenshot"));
+                auto* target = QApplication::activeModalWidget();
+                const bool saved = (target ? target : &window)->grab().save(parser.value("screenshot"));
                 window.requestQuit();
                 application.exit(saved ? 0 : 2);
             });

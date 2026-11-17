@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <maskpilot/domain/torrent.h>
+#include <maskpilot/domain/version.h>
 #include <string>
 #include <utility>
 #include <vector>
@@ -33,7 +34,7 @@ struct DownloadSpec {
     std::filesystem::path destination;
     std::string category = "General";
     std::string referrer;
-    std::string userAgent = "MaskPilot/0.1";
+    std::string userAgent = defaultUserAgent;
     std::string cookie;
     std::string authorization;
     std::string proxy;

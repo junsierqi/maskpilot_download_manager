@@ -87,7 +87,8 @@ int runClient(int argc, char** argv) {
     }
     if (argc < 4) {
         std::cout
-            << "MaskPilot verification client\nUsage: maskpilot_cli [--bt-no-discovery] URL DESTINATION "
+            << "MaskPilot " << maskpilot::applicationVersion
+            << " verification client\nUsage: maskpilot_cli [--bt-no-discovery] URL DESTINATION "
                "DATA_DIRECTORY "
                "[connections] [sha256]\n       maskpilot_cli --resume TASK_ID DATA_DIRECTORY [options]\n"
                "Options: --connections N --sha256 HEX --proxy URL --ftp-user USER --ftp-password PASS\n"

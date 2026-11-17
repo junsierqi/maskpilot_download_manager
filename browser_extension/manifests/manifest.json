@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "MaskPilot 下载助手",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "将下载交给 MaskPilot，发现页面文件与媒体。自动接管默认关闭。",
   "minimum_chrome_version": "127",
   "permissions": [

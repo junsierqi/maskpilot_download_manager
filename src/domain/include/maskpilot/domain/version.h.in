@@ -1,0 +1,6 @@
+#pragma once
+
+namespace maskpilot {
+inline constexpr char applicationVersion[] = "@PROJECT_VERSION@";
+inline constexpr char defaultUserAgent[] = "MaskPilot/@PROJECT_VERSION_MAJOR@.@PROJECT_VERSION_MINOR@";
+} // namespace maskpilot

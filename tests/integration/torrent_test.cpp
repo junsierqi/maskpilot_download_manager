@@ -1,4 +1,5 @@
 #include <QProcess>
+#include <QProcessEnvironment>
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -43,7 +44,7 @@ using namespace std::chrono_literals;
 using Tcp = boost::asio::ip::tcp;
 using Udp = boost::asio::ip::udp;
 
-unsigned short availableTcpAndUdpPort() {
+unsigned short availableTcpAndUdpPort(const std::string& address = "127.0.0.1") {
     boost::asio::io_context context;
     boost::system::error_code lastError;
     thread_local std::mt19937 random(std::random_device{}());
@@ -59,7 +60,7 @@ unsigned short availableTcpAndUdpPort() {
             lastError = error;
             continue;
         }
-        tcp.bind({boost::asio::ip::make_address("127.0.0.1"), port}, error);
+        tcp.bind({boost::asio::ip::make_address(address), port}, error);
         if (!error)
             tcp.listen(boost::asio::socket_base::max_listen_connections, error);
         if (error) {
@@ -69,7 +70,7 @@ unsigned short availableTcpAndUdpPort() {
         Udp::socket udp(context);
         udp.open(Udp::v4(), error);
         if (!error)
-            udp.bind({boost::asio::ip::make_address("127.0.0.1"), port}, error);
+            udp.bind({boost::asio::ip::make_address(address), port}, error);
         if (!error)
             return port; // Both owned sockets are released immediately before libtorrent binds.
         lastError = error;
@@ -109,11 +110,12 @@ void writeBytes(const std::filesystem::path& path, const std::vector<char>& byte
     if (!output)
         throw std::runtime_error("Cannot write test payload.");
 }
-lt::settings_pack isolatedSettings(const std::string& listen = {}) {
+lt::settings_pack isolatedSettings(const std::string& listen = {}, const std::string& address = "127.0.0.1") {
     lt::settings_pack settings;
     settings.set_str(lt::settings_pack::listen_interfaces,
-                     listen.empty() ? "127.0.0.1:" + std::to_string(availableTcpAndUdpPort()) : listen);
-    settings.set_str(lt::settings_pack::outgoing_interfaces, "127.0.0.1");
+                     listen.empty() ? address + ":" + std::to_string(availableTcpAndUdpPort(address))
+                                    : listen);
+    settings.set_str(lt::settings_pack::outgoing_interfaces, address);
     settings.set_bool(lt::settings_pack::enable_dht, false);
     settings.set_bool(lt::settings_pack::enable_lsd, false);
     settings.set_bool(lt::settings_pack::enable_upnp, false);
@@ -756,7 +758,9 @@ TEST(TorrentEngine, PublishedSeedingUploadsWithLimitAndPausesWithoutRemovingFile
             seeding = true;
             uploaded = std::max(uploaded, event.uploaded);
             if (!receiver) {
-                auto settings = lt::session_params(isolatedSettings());
+                // Model a distinct peer IP so the product's normal per-IP connection policy cannot
+                // confuse this receiver with the original seed still advertised by the local tracker.
+                auto settings = lt::session_params(isolatedSettings({}, "127.0.0.2"));
                 // The receiving peer already has metadata. Disable PEX so only our product seed can supply
                 // it.
                 settings.extensions.clear();
@@ -782,6 +786,35 @@ TEST(TorrentEngine, PublishedSeedingUploadsWithLimitAndPausesWithoutRemovingFile
             }
         },
         60s);
+    std::ostringstream diagnostics;
+    diagnostics << result.diagnostics() << " product_port=" << port << " product_uploaded=" << uploaded;
+    if (result.timedOut || !receiverFinished) {
+        try {
+            diagnostics << " receiver_exists=" << static_cast<bool>(receiver);
+            if (receiver)
+                diagnostics << " receiver_listen_port=" << receiver->listen_port();
+            diagnostics << " receiver_handle_valid=" << receiverHandle.is_valid();
+            if (receiverHandle.is_valid()) {
+                const auto status = receiverHandle.status();
+                diagnostics << " receiver_state=" << static_cast<int>(status.state)
+                            << " receiver_wanted=" << status.total_wanted_done << '/' << status.total_wanted
+                            << " receiver_peers=" << status.num_peers
+                            << " receiver_seeds=" << status.num_seeds
+                            << " receiver_errc=" << status.errc.value()
+                            << " receiver_error=" << status.errc.message().substr(0, 256);
+            }
+            if (receiver) {
+                std::vector<lt::alert*> alerts;
+                receiver->pop_alerts(&alerts);
+                const auto first = alerts.size() > 16 ? alerts.size() - 16 : 0;
+                for (auto i = first; i < alerts.size(); ++i)
+                    diagnostics << " receiver_alert=" << alerts[i]->message().substr(0, 250);
+            }
+        } catch (const std::exception& error) {
+            diagnostics << " snapshot_error=" << std::string(error.what()).substr(0, 256);
+        }
+    }
+    SCOPED_TRACE(diagnostics.str());
     EXPECT_FALSE(result.timedOut);
     EXPECT_TRUE(seeding);
     EXPECT_TRUE(receiverFinished);
@@ -1050,6 +1083,16 @@ TEST(TorrentEngine, ActualCliCapturesAndDownloadsLocalTorrentWithoutPublicDiscov
     const auto destination = fixture.temporary.path / "cli-output";
     const auto data = fixture.temporary.path / "cli-state";
     QProcess process;
+    if (qEnvironmentVariable("MASKPILOT_TEST_CLEAN_CLI_ENV") == "1") {
+        auto environment = QProcessEnvironment::systemEnvironment();
+        const auto systemRoot = environment.value("SystemRoot");
+        ASSERT_FALSE(systemRoot.isEmpty());
+        environment.insert("PATH", systemRoot + "\\System32;" + systemRoot);
+        for (const auto* name : {"QT_ROOT_DIR", "QT_PLUGIN_PATH", "QT_QPA_PLATFORM_PLUGIN_PATH",
+                                 "QML2_IMPORT_PATH", "QT_QPA_PLATFORM"})
+            environment.remove(name);
+        process.setProcessEnvironment(environment);
+    }
     process.setCreateProcessArgumentsModifier(
         [](QProcess::CreateProcessArguments* arguments) { arguments->flags |= CREATE_NO_WINDOW; });
     struct Cleanup {
