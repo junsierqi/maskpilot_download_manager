@@ -9,6 +9,10 @@
 #include <system_error>
 
 namespace maskpilot {
+bool validHttpResponseContentType(std::string_view value) {
+    return value.size() <= 1024 &&
+           std::all_of(value.begin(), value.end(), [](unsigned char ch) { return ch >= 0x20 && ch <= 0x7e; });
+}
 bool hasOriginMaterial(const DownloadSpec& spec) {
     return !spec.cookie.empty() || !spec.authorization.empty() || !spec.headers.empty() ||
            !spec.ftpUsername.empty() || !spec.ftpPassword.empty();

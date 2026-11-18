@@ -2,6 +2,7 @@
 #include <maskpilot/application/download_context.h>
 #include <maskpilot/application/ports.h>
 #include <maskpilot/application/queue.h>
+#include <maskpilot/application/site_content.h>
 
 namespace maskpilot {
 struct SqliteStore {
@@ -11,6 +12,7 @@ struct SqliteStore {
     std::shared_ptr<IQueueTrafficRepository> traffic;
 };
 SqliteStore makeSqliteStore(const std::filesystem::path& path);
+std::unique_ptr<ISiteContentProcessor> makeSiteContentProcessor();
 std::shared_ptr<IQueueCivilTime> makeQueueCivilTime();
 std::unique_ptr<ITaskRepository> makeSqliteRepository(const std::filesystem::path& path);
 std::unique_ptr<ITransferTransport> makeCurlTransfer();

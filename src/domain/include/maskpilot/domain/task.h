@@ -6,6 +6,7 @@
 #include <maskpilot/domain/torrent.h>
 #include <maskpilot/domain/version.h>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -102,12 +103,14 @@ struct Task {
     bool torrentPublished = false;
     // Observed by the current native HTTP run, never accepted as request authority.
     std::string responseUrl;
+    std::string responseContentType;
 };
 struct Segment {
     std::int64_t begin = 0, end = 0;
 };
 std::vector<Segment> splitSegments(std::int64_t length, int count);
 std::string validateSpec(const DownloadSpec& spec);
+bool validHttpResponseContentType(std::string_view value);
 bool hasOriginMaterial(const DownloadSpec& spec);
 bool requiresOriginAuthentication(const DownloadSpec& spec);
 std::string validateOriginAuthentication(const DownloadSpec& spec, bool requireMaterial = false);

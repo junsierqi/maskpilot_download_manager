@@ -11,6 +11,7 @@ respective files. This document records actual dependencies, not design referenc
 | nghttp2 1.71.0 | HTTP/2 support | MIT; https://nghttp2.org/ |
 | zlib 1.4 | Transport compression dependency | zlib license; https://zlib.net/ |
 | SQLite 3.54.1 | Task persistence | Public domain; https://sqlite.org/ |
+| libxml2 2.15.4 | Bounded local HTML parsing, dynamically linked without optional encoding/network dependencies | MIT and bundled notices; https://gitlab.gnome.org/GNOME/libxml2 |
 | libtorrent 2.1.2 | Independent BitTorrent session, metadata and verified piece transfer | BSD-3-Clause and bundled Zlib, BSL-1.0, APSL-2.0, BSD-4-Clause notices; https://github.com/arvidn/libtorrent/tree/v2.1.2 |
 | Boost 1.92.0 | BitTorrent engine dependencies | Boost Software License 1.0; https://www.boost.org/LICENSE_1_0.txt |
 | OpenSSL 3.6.5 | BitTorrent engine cryptographic dependency | Apache-2.0; https://www.openssl.org/ |

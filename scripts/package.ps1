@@ -32,7 +32,7 @@ New-Item -ItemType Directory -Path $stage -Force | Out-Null
 foreach ($exe in @('maskpilot.exe','maskpilot_cli.exe','maskpilot_native_host.exe')) { Copy-Item -LiteralPath "$buildRoot/$exe" -Destination $stage }
 New-Item -ItemType Directory -Path "$stage/media_guard" -Force | Out-Null
 foreach ($exe in @('ffmpeg.exe','ffprobe.exe')) { Copy-Item -LiteralPath "$buildRoot/media_guard/$exe" -Destination "$stage/media_guard" }
-foreach ($dll in @('libcurl.dll','libz.dll','nghttp2.dll','sqlite3.dll','torrent-rasterbar.dll','libcrypto-3-x64.dll','libssl-3-x64.dll')) { Copy-Item -LiteralPath "$projectRoot/out/dependencies/x64-windows/bin/$dll" -Destination $stage }
+foreach ($dll in @('libcurl.dll','libz.dll','nghttp2.dll','sqlite3.dll','torrent-rasterbar.dll','libcrypto-3-x64.dll','libssl-3-x64.dll','libxml2.dll')) { Copy-Item -LiteralPath "$projectRoot/out/dependencies/x64-windows/bin/$dll" -Destination $stage }
 & "$env:QT_ROOT_DIR/bin/windeployqt.exe" --release --compiler-runtime --no-opengl-sw --no-system-d3d-compiler --no-system-dxc-compiler --no-ffmpeg --no-plugins --no-translations --dir $stage "$stage/maskpilot.exe"
 if ($LASTEXITCODE -ne 0) { throw 'Qt deployment failed.' }
 # Windows supplies ICU. Do not redistribute a system DLL selected from the build machine.
@@ -90,7 +90,7 @@ if (Test-Path -LiteralPath $qtLicenses) {
 foreach ($module in @('qtbase','qtsvg','qttranslations')) {
     Copy-Item -LiteralPath "$env:QT_ROOT_DIR/sbom/$module-$qtVersion.spdx.json" -Destination "$stage/licenses/Qt"
 }
-foreach ($dependency in @('curl','nghttp2','zlib','sqlite3','libtorrent','openssl')) {
+foreach ($dependency in @('curl','nghttp2','zlib','sqlite3','libtorrent','openssl','libxml2')) {
     New-Item -ItemType Directory -Path "$stage/licenses/$dependency" -Force | Out-Null
     Copy-Item -LiteralPath "$projectRoot/out/dependencies/x64-windows/share/$dependency/copyright" -Destination "$stage/licenses/$dependency"
 }

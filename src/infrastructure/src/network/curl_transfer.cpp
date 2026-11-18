@@ -64,7 +64,7 @@ Range parseRange(const std::string& text) {
 struct Headers {
     long status = 0;
     std::map<std::string, std::string> fields;
-    bool complete = false, conflict = false;
+    bool complete = false, conflict = false, contentTypeInvalid = false;
     size_t bytes = 0;
     void line(std::string line) {
         bytes += line.size();
@@ -74,6 +74,7 @@ struct Headers {
             fields.clear();
             complete = false;
             conflict = false;
+            contentTypeInvalid = false;
             auto pos = line.find(' ');
             status = pos == std::string::npos ? 0 : std::strtol(line.c_str() + pos + 1, nullptr, 10);
             return;
@@ -92,12 +93,37 @@ struct Headers {
         if ((name == "content-range" || name == "content-length" || name == "etag") &&
             fields.contains(name) && fields[name] != value)
             conflict = true;
+        if (name == "content-type" &&
+            (!validHttpResponseContentType(value) || (fields.contains(name) && fields[name] != value)))
+            contentTypeInvalid = true;
         fields[name] = std::move(value);
     }
     std::string get(const std::string& name) const {
         auto it = fields.find(name);
         return it == fields.end() ? std::string() : it->second;
     }
+};
+// One worker owns the multi handle and this scalar; every validated response contributes.
+// Unsafe or inconsistent metadata affects classification, never ordinary byte completion.
+struct ResponseContentType {
+    std::string probe, actual;
+    bool invalid = false, sawActual = false;
+    void seed(long status, const std::string& value, bool unsafe) {
+        if (status == 200 || status == 206) {
+            probe = value;
+            invalid = unsafe;
+        }
+    }
+    void observe(const Headers& headers) {
+        const auto value = headers.get("content-type");
+        if (headers.contentTypeInvalid || value.empty() || (!probe.empty() && value != probe) ||
+            (sawActual && value != actual))
+            invalid = true;
+        if (!sawActual)
+            actual = value;
+        sawActual = true;
+    }
+    std::string value() const { return invalid ? std::string{} : (sawActual ? actual : probe); }
 };
 size_t headerCallback(char* data, size_t size, size_t count, void* context) {
     try {
@@ -216,6 +242,8 @@ struct Probe {
     std::int64_t total = -1;
     bool ranges = false;
     std::string etag, effectiveUrl;
+    std::string contentType;
+    bool contentTypeInvalid = false;
     DownloadSpec effectiveSpec;
     long status = 0;
     int retryAfter = 0;
@@ -246,6 +274,8 @@ Probe probeOnce(const DownloadSpec& spec, TransferControl& control, Headers& hea
     result.code = code;
     result.status = headers.status;
     result.etag = headers.get("etag");
+    result.contentType = headers.get("content-type");
+    result.contentTypeInvalid = headers.contentTypeInvalid;
     result.retryAfter =
         static_cast<int>(std::clamp<std::int64_t>(number(headers.get("retry-after")), 0, 3600));
     char* effective = nullptr;
@@ -322,6 +352,7 @@ struct Sink {
     int extentId = 0;
     bool attached = false;
     TransferControl* control = nullptr;
+    ResponseContentType* contentType = nullptr;
     Easy easy;
     Headers headers;
     FILE* file = nullptr;
@@ -343,8 +374,11 @@ struct Sink {
         checkpointAt = Clock::now();
     }
     bool validate() {
-        if (validated)
+        if (validated) {
+            if (error.empty() && contentType)
+                contentType->observe(headers);
             return error.empty();
+        }
         if (!headers.complete)
             return false;
         validated = true;
@@ -374,6 +408,8 @@ struct Sink {
             error = "Unexpected encoded response.";
             return false;
         }
+        if (contentType)
+            contentType->observe(headers);
         return true;
     }
     static size_t write(char* data, size_t size, size_t count, void* context) {
@@ -433,14 +469,19 @@ class CurlTransfer final : public ITransferTransport {
             return;
         }
         TransferEvent event;
+        ResponseContentType contentType;
+        auto deliver = [&] {
+            event.responseContentType = contentType.value();
+            callback(event);
+        };
         event.phase = TaskState::Probing;
         auto emit = [&](TransferOutcome result, std::string error = {}, bool retry = false) {
             event.outcome = result;
             event.error = std::move(error);
             event.retryable = retry;
-            callback(event);
+            deliver();
         };
-        callback(event);
+        deliver();
         auto stopped = [&]() {
             if (control.cancel) {
                 emit(TransferOutcome::Cancelled);
@@ -484,6 +525,7 @@ class CurlTransfer final : public ITransferTransport {
             return;
         }
         event.responseUrl = remote.effectiveUrl;
+        contentType.seed(remote.status, remote.contentType, remote.contentTypeInvalid);
         if (task.spec.maxStoredBytes > 0 && remote.total > task.spec.maxStoredBytes) {
             emit(TransferOutcome::Attention, "Resource exceeds this task's stored-byte limit.");
             return;
@@ -642,6 +684,7 @@ class CurlTransfer final : public ITransferTransport {
                 auto sink = std::make_unique<Sink>();
                 sink->extentId = extent.id;
                 sink->control = &control;
+                sink->contentType = &contentType;
                 sink->part = work / ("part-" + std::to_string(extent.id));
                 sink->offsetPath = work / ("offset-" + std::to_string(extent.id));
                 sink->partOffset = offsets.at(extent.id);
@@ -769,7 +812,7 @@ class CurlTransfer final : public ITransferTransport {
                         previousTime = now;
                     }
                     event.phase = TaskState::Downloading;
-                    callback(event);
+                    deliver();
                     lastEvent = now;
                 }
                 if (control.pause || control.cancel || !failure.empty())
@@ -851,7 +894,7 @@ class CurlTransfer final : public ITransferTransport {
             event.total = event.downloaded;
         event.phase = TaskState::Verifying;
         event.speed = 0;
-        callback(event);
+        deliver();
         std::filesystem::create_directories(task.spec.destination.parent_path());
         auto stage = task.spec.destination;
         stage += L".maskpilot-" + std::filesystem::path(task.id).wstring() + L".tmp";
@@ -904,7 +947,7 @@ class CurlTransfer final : public ITransferTransport {
                 }
             }
             event.phase = TaskState::Finalizing;
-            callback(event);
+            deliver();
             if (std::filesystem::exists(task.spec.destination)) {
                 if (sha256File(stage, &control) == sha256File(task.spec.destination, &control)) {
                     if (stopped())

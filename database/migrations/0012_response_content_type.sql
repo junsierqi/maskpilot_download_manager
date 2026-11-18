@@ -1,0 +1,4 @@
+BEGIN IMMEDIATE;
+ALTER TABLE tasks ADD COLUMN response_content_type TEXT NOT NULL DEFAULT '';
+PRAGMA user_version=12;
+COMMIT;

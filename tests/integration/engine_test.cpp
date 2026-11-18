@@ -469,7 +469,8 @@ TEST(Storage, MigratesPreviousSchemaWithoutChangingExistingProtocolsOrFiles) {
                                "media_container",
                                "max_stored_bytes",
                                "same_origin_redirect_only",
-                               "response_url"}) {
+                               "response_url",
+                               "response_content_type"}) {
         const auto sql = std::string("ALTER TABLE tasks DROP COLUMN ") + column;
         ASSERT_EQ(sqlite3_exec(connection, sql.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
     }

@@ -162,6 +162,8 @@ DecodedTaskList decodeTaskList(const QByteArray& bytes,
         if (!entry.isObject())
             invalid();
         const auto object = entry.toObject();
+        if (object.contains("responseContentType") || object.contains("response_content_type"))
+            invalid();
         keys(object, {"url", "destination", "category", "connections", "proxy", "proxyAuthenticationRequired",
                       "originAuthenticationRequired", "contextBound", "media", "audioOnly", "mediaFormat",
                       "sha256", "ftpTls", "ftpActive", "ftpCa", "torrent", "mediaSelection", "maxStoredBytes",

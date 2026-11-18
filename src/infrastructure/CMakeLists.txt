@@ -3,6 +3,8 @@ add_library(maskpilot_infrastructure
     src/network/curl_transfer.cpp
     src/network/http_layout.cpp
     src/network/ftp_transfer.cpp
+    src/site/site_content.cpp
+    src/site/css_content.cpp
     src/transfer/transfer_router.cpp
     src/filesystem/transfer_files.cpp
     src/persistence/sqlite_repository.cpp
@@ -15,7 +17,7 @@ add_library(maskpilot_infrastructure
     src/torrent/torrent_metadata.cpp)
 target_include_directories(maskpilot_infrastructure PUBLIC include)
 target_link_libraries(maskpilot_infrastructure PUBLIC maskpilot_application Qt6::Core
-    PRIVATE CURL::libcurl unofficial::sqlite3::sqlite3 LibtorrentRasterbar::torrent-rasterbar)
+    PRIVATE CURL::libcurl unofficial::sqlite3::sqlite3 LibtorrentRasterbar::torrent-rasterbar LibXml2::LibXml2)
 if(WIN32)
   target_link_libraries(maskpilot_infrastructure PRIVATE bcrypt advapi32)
 endif()

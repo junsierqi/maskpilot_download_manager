@@ -277,6 +277,7 @@ struct DownloadService::Impl {
         auto candidate = old;
         candidate.spec = std::move(spec);
         candidate.responseUrl.clear();
+        candidate.responseContentType.clear();
         candidate.originAuthenticationRequired = (preserveRequired && old.originAuthenticationRequired) ||
                                                  requiresOriginAuthentication(candidate.spec);
         candidate.spec.originAuthenticationRequired = candidate.originAuthenticationRequired;
@@ -468,6 +469,11 @@ struct DownloadService::Impl {
             return;
         auto& task = it->second;
         auto& job = *jobs.at(id);
+        if (!validHttpResponseContentType(event.responseContentType) ||
+            (!event.responseContentType.empty() && event.responseUrl.empty())) {
+            job.responseError = "Invalid HTTP response metadata.";
+            job.control->cancel = true;
+        }
         if (!event.responseUrl.empty()) {
             DownloadSpec observed;
             observed.url = event.responseUrl;
@@ -478,11 +484,14 @@ struct DownloadService::Impl {
                             [](unsigned char ch) { return ch <= 0x20 || ch == 0x7f; })) {
                 job.responseError = "Invalid HTTP response metadata.";
                 job.control->cancel = true;
-            } else if (job.responseError.empty())
+            } else if (job.responseError.empty()) {
                 task.responseUrl = event.responseUrl;
+                task.responseContentType = event.responseContentType;
+            }
         }
         if (!job.responseError.empty()) {
             task.responseUrl.clear();
+            task.responseContentType.clear();
             if (event.outcome != TransferOutcome::Progress) {
                 event.outcome = TransferOutcome::Attention;
                 event.error = job.responseError;
@@ -665,8 +674,9 @@ struct DownloadService::Impl {
             auto* task = next->second;
             lastQueue = next->first;
             attempted.insert(task->id);
-            if (!task->responseUrl.empty()) {
+            if (!task->responseUrl.empty() || !task->responseContentType.empty()) {
                 task->responseUrl.clear();
+                task->responseContentType.clear();
                 save(*task);
             }
             if (auto message = validateSpec(task->spec); !message.empty()) {
@@ -1223,6 +1233,7 @@ void DownloadService::updateUrl(const std::string& id, std::string url) {
             it->second.originGrantId.clear();
         it->second.spec = std::move(spec);
         it->second.responseUrl.clear();
+        it->second.responseContentType.clear();
         it->second.runIntent = RunIntent::Paused;
         it->second.state = TaskState::Paused;
         p->save(it->second);
@@ -1248,6 +1259,7 @@ void DownloadService::restart(const std::string& id) {
         task.retries = 0;
         task.error.clear();
         task.responseUrl.clear();
+        task.responseContentType.clear();
         if (task.spec.stopAt <= p->queueRegistry->now())
             task.spec.stopAt = 0;
         task.runIntent = RunIntent::Run;

@@ -1,5 +1,9 @@
 # 验证场景
 
+内容类型观察使用 `python tests/integration/response_metadata_test.py --exercise <cli.exe>`，覆盖实际无扩展名 HTML／CSS、字符集、最终地址、探测与正文冲突、重复／不安全／缺失头、空资源、8 路范围与动态拆分、完整缓存恢复。`ctest --test-dir <build> -R 'SiteContent|ResponseContentType' --output-on-failure --no-tests=error` 覆盖实际 SQLite 11→12、当前事件与旧代回调、HTML 树／CSS 转义、调用方异常、输出膨胀限额及声明类型与二进制签名不符。
+
+运行 `node tests/system/site_content_test.mjs --build-directory <build> --browser <chromium.exe>` 验证生产解析器与真实 `file://` 浏览器：关闭来源后，本地图片、CSS 导入和锚点跳转仍有效，页面网络请求为零，活动代码不执行。夹具保留输出、截图和 `evidence.json`，不修改真实浏览器配置或注册表。这些验证属于内容处理基础，不替代完整站点项目状态机与更新流程验收。
+
 原生资源约束使用 `python tests/integration/transfer_constraints_test.py --exercise <cli.exe>`：本地实际服务器覆盖已知／分块／未知长度、8 路范围、崩溃恢复及降低上限、发布同名保护、相对重定向最终地址，以及外来源 TCP 零连接；记录代理下默认端口、主机大小写和 IPv6 的来源等价。探测请求仍可能接收正文并计入流量。CTest `TransferConstraints|RequestConstraints|ResponseMetadata|TransferConstraintStorage` 覆盖隐藏 Qt 字段、严格清单、SQL 10→11 迁移及响应元数据生命周期；协调器桩属 fixture-only，不能替代真实传输。
 
 浏览器开发代码另运行 `node tests/system/browser_test.mjs --build-directory <build> --browser <chromium.exe>` 与 `python tests/system/firefox_test.py --build-directory <build> --extension browser_extension/dist-firefox --browser <firefox.exe> --evidence-directory out/qa/firefox`。二者使用真实扩展、隔离配置和本机桌面，覆盖持久暂停确认、输出哈希、接管与回退、容器及页面面板。实际可信点击与网页 DOM 篡改／程序化点击分开验证；Firefox 实际隐私及分区 Cookie 拒绝保留浏览器文件。临时加载不证明签名发行。

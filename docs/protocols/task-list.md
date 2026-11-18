@@ -1,5 +1,7 @@
 # Task list interchange
 
+`responseUrl` and `responseContentType` are observed output from the current native HTTP attempt. They are never exported, imported or accepted as request authority; supplying them (including database-style snake_case names) is rejected. Schema 12 keeps unknown or ambiguous observed content types empty. Downloaded filenames do not establish a content type.
+
 Desktop export writes UTF-8 JSON version 2: `{"version":2,"downloads":[...]}`. Input is limited to 32 MiB and 10,000 tasks. Unknown keys, wrong types, unsupported versions and invalid specifications fail before any task is added. Torrent metadata has its own 16 MiB per-item and 24 MiB aggregate decoded limits.
 
 Each item contains `url`, `destination`, `category`, `connections`, credential-free `proxy`, mandatory boolean `proxyAuthenticationRequired` and `originAuthenticationRequired`, advisory `contextBound`, media options, expected SHA-256 and FTP TLS options. Torrent items additionally carry bounded metadata, file selection and seeding options. Cookies, authorization/custom headers, account/password values, credential references, owner IDs, session/grant tokens and helper executable paths are excluded. Original URLs and torrent metadata may contain signed parameters or private tracker credentials; protect exported files.
