@@ -1,4 +1,5 @@
 #include "../filesystem/transfer_files.h"
+#include "http_layout.h"
 #include "proxy_options.h"
 #include <algorithm>
 #include <array>
@@ -295,6 +296,8 @@ bool retryCode(CURLcode code) {
            code == CURLE_HTTP2 || code == CURLE_HTTP2_STREAM;
 }
 struct Sink {
+    int extentId = 0;
+    bool attached = false;
     Easy easy;
     Headers headers;
     FILE* file = nullptr;
@@ -429,169 +432,338 @@ class CurlTransfer final : public ITransferTransport {
                  retryStatus(remote.status) || retryCode(remote.code));
             return;
         }
-        const bool resumable = remote.ranges && strongEtag(remote.etag) && remote.total >= 0;
+        bool resumable = remote.ranges && strongEtag(remote.etag) && remote.total >= 0;
+        if (resumable) {
+            try {
+                // Quoting can expand unusual server tags. Preserve downloading
+                // even when this identity cannot fit bounded recovery metadata.
+                const int count = remote.total >= 1024 * 1024 ? task.spec.connections : 1;
+                (void)http::encodeLayout(
+                    http::initialLayout(remote.etag, remote.effectiveUrl, remote.total, count));
+            } catch (const std::invalid_argument&) {
+                resumable = false;
+            }
+        }
         event.resumable = resumable;
-        std::filesystem::create_directories(work);
         const auto metadata = work / "identity";
-        int count = resumable && remote.total >= 1024 * 1024 ? task.spec.connections : 1;
-        bool reuse = false;
-        if (resumable && std::filesystem::exists(metadata)) {
-            std::ifstream input(metadata);
-            std::string tag, resource;
-            std::int64_t length;
-            int storedCount;
-            if (input >> std::quoted(tag) >> length >> storedCount >> std::quoted(resource);
-                input && tag == remote.etag && resource == remote.effectiveUrl && length == remote.total &&
-                storedCount >= 1 && storedCount <= 8) {
-                count = storedCount;
-                reuse = true;
-            }
-        }
-        auto ranges = remote.total >= 0 ? splitSegments(remote.total, count) : std::vector<Segment>{{0, -1}};
-        std::ostringstream identity;
-        identity << std::quoted(remote.etag) << ' ' << remote.total << ' ' << ranges.size() << ' '
-                 << std::quoted(remote.effectiveUrl);
-        if (!reuse) {
-            // Delete only our fixed-name part files, never arbitrary user paths.
-            for (int i = 0; i < 8; ++i) {
-                std::error_code ec;
-                std::filesystem::remove(work / ("part-" + std::to_string(i)), ec);
-                std::filesystem::remove(work / ("offset-" + std::to_string(i)), ec);
-            }
-            atomicText(metadata, identity.str());
-        }
-        std::vector<std::unique_ptr<Sink>> sinks;
-        auto* multi = curl_multi_init();
-        if (!multi)
-            throw std::runtime_error("Cannot initialize transfer scheduler.");
-        struct MultiGuard {
-            CURLM* multi;
-            std::vector<std::unique_ptr<Sink>>& sinks;
-            ~MultiGuard() {
-                for (auto& sink : sinks)
-                    curl_multi_remove_handle(multi, sink->easy.handle);
-                curl_multi_cleanup(multi);
-            }
-        } guard{multi, sinks};
-        for (size_t i = 0; i < ranges.size(); ++i) {
-            auto sink = std::make_unique<Sink>();
-            sink->part = work / ("part-" + std::to_string(i));
-            sink->offsetPath = work / ("offset-" + std::to_string(i));
-            const auto range = ranges[i];
-            std::int64_t offset = 0;
-            if (reuse && std::filesystem::exists(sink->part) && std::filesystem::exists(sink->offsetPath)) {
-                std::ifstream input(sink->offsetPath);
-                input >> offset;
-                if (!input || offset < 0 || offset > range.end - range.begin ||
-                    static_cast<std::uint64_t>(offset) > std::filesystem::file_size(sink->part))
-                    offset = 0;
-            }
-            if (std::filesystem::exists(sink->part))
-                std::filesystem::resize_file(sink->part, static_cast<std::uintmax_t>(offset));
-            sink->begin = range.begin + offset;
-            sink->end = range.end;
-            sink->total = remote.total;
-            sink->ranged = resumable;
-            sink->expectedEtag = remote.etag;
-            sink->file = openFile(sink->part, L"ab");
-            if (!sink->file)
-                throw std::runtime_error("Cannot open temporary file.");
-            // The sidecar stores total bytes in this part, including previously synchronized data.
-            sink->written = 0;
-            sink->partOffset = offset;
-            configure(sink->easy, remote.effectiveSpec, sink->headers, control);
-            if (resumable && sink->begin < range.end) {
-                auto rangeText = std::to_string(sink->begin) + "-" + std::to_string(range.end - 1);
-                curl_easy_setopt(sink->easy.handle, CURLOPT_RANGE, rangeText.c_str());
-                sink->easy.header("If-Range: " + remote.etag);
-            }
-            curl_easy_setopt(sink->easy.handle, CURLOPT_HTTPHEADER, sink->easy.list);
-            curl_easy_setopt(sink->easy.handle, CURLOPT_WRITEFUNCTION, Sink::write);
-            curl_easy_setopt(sink->easy.handle, CURLOPT_WRITEDATA, sink.get());
-            curl_easy_setopt(sink->easy.handle, CURLOPT_PRIVATE, sink.get());
-            if (range.end >= 0 && sink->begin == range.end) {
-                sink->finished = true;
-            } else if (curl_multi_add_handle(multi, sink->easy.handle) != CURLM_OK)
-                throw std::runtime_error("Cannot queue transfer connection.");
-            sinks.push_back(std::move(sink));
-        }
-        const auto started = Clock::now();
-        auto lastEvent = started;
-        std::int64_t previousBytes = 0;
-        auto previousTime = started;
+        std::vector<http::Extent> ranges;
+        std::map<int, std::int64_t> offsets;
         std::string failure;
         bool integrityFailure = false, retryable = false;
-        int running = 0;
-        do {
-            const auto limit = control.speedLimit.load();
-            for (auto& sink : sinks)
-                curl_easy_setopt(
-                    sink->easy.handle, CURLOPT_MAX_RECV_SPEED_LARGE,
-                    static_cast<curl_off_t>(
-                        limit > 0 ? std::max<std::int64_t>(1, limit / static_cast<std::int64_t>(sinks.size()))
-                                  : 0));
-            auto code = curl_multi_perform(multi, &running);
-            if (code != CURLM_OK) {
-                failure = "Network scheduler failed.";
-                retryable = true;
-                break;
-            }
-            int remaining = 0;
-            while (auto* message = curl_multi_info_read(multi, &remaining)) {
-                if (message->msg != CURLMSG_DONE)
-                    continue;
-                Sink* sink = nullptr;
-                curl_easy_getinfo(message->easy_handle, CURLINFO_PRIVATE, &sink);
-                sink->finished = true;
-                if (control.pause || control.cancel)
-                    continue;
-                const bool valid = sink->validate();
-                if (!sink->error.empty()) {
-                    failure = sink->error;
-                    integrityFailure =
-                        (sink->ranged && (sink->headers.status == 200 || sink->headers.status == 206 ||
-                                          sink->headers.status == 416)) ||
-                        sink->headers.status == 401 || sink->headers.status == 403;
-                    retryable = retryStatus(sink->headers.status);
-                    event.retryAfter = static_cast<int>(
-                        std::clamp<std::int64_t>(number(sink->headers.get("retry-after")), 0, 3600));
-                } else if (message->data.result != CURLE_OK) {
-                    failure = "Connection interrupted (" + std::to_string(message->data.result) + ").";
-                    retryable = retryCode(message->data.result);
-                } else if (!valid || (sink->end >= 0 && sink->written != sink->end - sink->begin)) {
-                    failure = "Response ended before the requested bytes were received.";
-                    retryable = true;
+        try {
+            std::filesystem::create_directories(work);
+            auto removeExtentArtifacts = [&](int id) {
+                for (const auto* prefix : {"part-", "offset-"}) {
+                    auto path = work / (std::string(prefix) + std::to_string(id));
+                    for (int temporary = 0; temporary < 2; ++temporary) {
+                        std::error_code error;
+                        std::filesystem::remove(path, error);
+                        if (error)
+                            throw std::runtime_error("Cannot reset owned HTTP recovery files. Close files "
+                                                     "using this task and retry.");
+                        path += L".new";
+                    }
+                }
+            };
+            http::Layout layout;
+            bool reuse = false;
+            if (resumable) {
+                if (const auto saved = http::readLayout(metadata);
+                    saved && saved->etag == remote.etag && saved->effectiveUrl == remote.effectiveUrl &&
+                    saved->total == remote.total) {
+                    layout = *saved;
+                    reuse = true;
+                    if (layout.legacy) {
+                        layout.legacy = false;
+                        layout.generation = 1;
+                        http::saveLayout(metadata, layout);
+                    }
                 }
             }
-            event.downloaded = 0;
-            for (size_t i = 0; i < sinks.size(); ++i)
-                event.downloaded += sinks[i]->begin - ranges[i].begin + sinks[i]->written;
-            const auto now = Clock::now();
-            if (now - lastEvent >= std::chrono::milliseconds(200) || running == 0) {
-                const auto elapsed = std::chrono::duration<double>(now - previousTime).count();
-                if (elapsed >= 0.5) {
-                    event.speed = static_cast<std::int64_t>((event.downloaded - previousBytes) / elapsed);
-                    previousBytes = event.downloaded;
-                    previousTime = now;
+            if (!reuse) {
+                // Never install a new identity while any old numeric checkpoint can
+                // be mistaken for one of its stable IDs. Unrelated files are untouched.
+                for (std::size_t id = 0; id < maxRecoveryExtents; ++id)
+                    removeExtentArtifacts(static_cast<int>(id));
+                for (const auto* name : {"identity", "identity.new"}) {
+                    std::error_code error;
+                    std::filesystem::remove(work / name, error);
+                    if (error)
+                        throw std::runtime_error(
+                            "Cannot reset HTTP recovery identity. Existing files were preserved.");
                 }
-                event.phase = TaskState::Downloading;
-                callback(event);
-                lastEvent = now;
+                if (resumable) {
+                    const int count = remote.total >= 1024 * 1024 ? task.spec.connections : 1;
+                    layout = http::initialLayout(remote.etag, remote.effectiveUrl, remote.total, count);
+                    http::saveLayout(metadata, layout);
+                }
             }
-            if (control.pause || control.cancel || !failure.empty())
-                break;
-            int descriptors = 0;
-            if (running > 0)
-                curl_multi_poll(multi, nullptr, 0, 100, &descriptors);
-        } while (running > 0);
-        for (size_t i = 0; i < sinks.size(); ++i) {
-            auto& sink = *sinks[i];
-            if (sink.file) {
-                syncFile(sink.file);
-                atomicText(sink.offsetPath, std::to_string(sink.begin - ranges[i].begin + sink.written));
+            ranges = resumable ? layout.extents : std::vector<http::Extent>{{0, 0, remote.total}};
+            for (const auto& extent : ranges) {
+                const auto part = work / ("part-" + std::to_string(extent.id));
+                const auto sidecar = work / ("offset-" + std::to_string(extent.id));
+                std::int64_t prefix = 0;
+                if (reuse && std::filesystem::exists(part) && std::filesystem::exists(sidecar)) {
+                    std::error_code error;
+                    const auto sidecarSize = std::filesystem::file_size(sidecar, error);
+                    if (!error && sidecarSize > 0 && sidecarSize <= 64) {
+                        std::ifstream input(sidecar);
+                        input >> prefix;
+                        if (!input || prefix < 0 || prefix > extent.end - extent.begin)
+                            prefix = 0;
+                        else {
+                            input >> std::ws;
+                            if (!input.eof() ||
+                                static_cast<std::uint64_t>(prefix) > std::filesystem::file_size(part))
+                                prefix = 0;
+                        }
+                    }
+                }
+                if (std::filesystem::exists(part))
+                    std::filesystem::resize_file(part, static_cast<std::uintmax_t>(prefix));
+                offsets.emplace(extent.id, prefix);
+                if (extent.end == extent.begin && !std::filesystem::exists(part)) {
+                    auto* empty = openFile(part, L"wb");
+                    if (!empty)
+                        throw std::runtime_error("Cannot create the empty downloaded part.");
+                    try {
+                        syncFile(empty);
+                    } catch (...) {
+                        fclose(empty);
+                        throw;
+                    }
+                    fclose(empty);
+                }
+            }
+            std::map<int, std::unique_ptr<Sink>> active;
+            auto* multi = curl_multi_init();
+            if (!multi)
+                throw std::runtime_error("Cannot initialize transfer scheduler.");
+            struct MultiGuard {
+                CURLM*& multi;
+                std::map<int, std::unique_ptr<Sink>>& active;
+                std::map<int, std::int64_t>& offsets;
+                void close(bool report) {
+                    std::exception_ptr failed;
+                    if (multi) {
+                        for (auto& [id, sink] : active)
+                            if (sink->attached) {
+                                if (curl_multi_remove_handle(multi, sink->easy.handle) != CURLM_OK && !failed)
+                                    failed = std::make_exception_ptr(
+                                        std::runtime_error("Cannot release transfer connection."));
+                                sink->attached = false;
+                            }
+                        curl_multi_cleanup(multi);
+                        multi = nullptr;
+                    }
+                    for (auto& [id, sink] : active) {
+                        try {
+                            sink->checkpoint();
+                            offsets.at(id) = sink->partOffset + sink->written;
+                        } catch (...) {
+                            if (!failed)
+                                failed = std::current_exception();
+                        }
+                        if (sink->file) {
+                            fclose(sink->file);
+                            sink->file = nullptr;
+                        }
+                    }
+                    active.clear();
+                    if (report && failed)
+                        std::rethrow_exception(failed);
+                }
+                ~MultiGuard() { close(false); }
+            } guard{multi, active, offsets};
+            bool streamFinished = false, splittingEnabled = true;
+            const int handleLimit = resumable ? std::clamp(task.spec.connections, 1, 8) : 1;
+            auto start = [&](const http::Extent& extent) {
+                auto sink = std::make_unique<Sink>();
+                sink->extentId = extent.id;
+                sink->part = work / ("part-" + std::to_string(extent.id));
+                sink->offsetPath = work / ("offset-" + std::to_string(extent.id));
+                sink->partOffset = offsets.at(extent.id);
+                sink->begin = extent.begin + sink->partOffset;
+                sink->end = extent.end;
+                sink->total = remote.total;
+                sink->ranged = resumable;
+                sink->expectedEtag = remote.etag;
+                sink->file = openFile(sink->part, L"ab");
+                if (!sink->file)
+                    throw std::runtime_error("Cannot open temporary file.");
+                configure(sink->easy, remote.effectiveSpec, sink->headers, control);
+                if (resumable) {
+                    const auto range = std::to_string(sink->begin) + "-" + std::to_string(extent.end - 1);
+                    curl_easy_setopt(sink->easy.handle, CURLOPT_RANGE, range.c_str());
+                    sink->easy.header("If-Range: " + remote.etag);
+                }
+                curl_easy_setopt(sink->easy.handle, CURLOPT_HTTPHEADER, sink->easy.list);
+                curl_easy_setopt(sink->easy.handle, CURLOPT_WRITEFUNCTION, Sink::write);
+                curl_easy_setopt(sink->easy.handle, CURLOPT_WRITEDATA, sink.get());
+                curl_easy_setopt(sink->easy.handle, CURLOPT_PRIVATE, sink.get());
+                auto& owned = active.emplace(extent.id, std::move(sink)).first->second;
+                if (curl_multi_add_handle(multi, owned->easy.handle) != CURLM_OK)
+                    throw std::runtime_error("Cannot queue transfer connection.");
+                owned->attached = true;
+            };
+            auto fill = [&] {
+                for (const auto& extent : ranges) {
+                    if (active.size() >= static_cast<std::size_t>(handleLimit))
+                        break;
+                    const bool unfinished =
+                        extent.end < 0 ? !streamFinished : offsets.at(extent.id) < extent.end - extent.begin;
+                    if (unfinished && !active.contains(extent.id))
+                        start(extent);
+                }
+            };
+            auto detach = [&](int id) {
+                auto& sink = *active.at(id);
+                if (curl_multi_remove_handle(multi, sink.easy.handle) != CURLM_OK)
+                    throw std::runtime_error("Cannot detach transfer connection for recovery.");
+                sink.attached = false;
+                sink.checkpoint();
+                offsets.at(id) = sink.partOffset + sink.written;
                 fclose(sink.file);
                 sink.file = nullptr;
+                active.erase(id);
+            };
+            auto downloaded = [&] {
+                std::int64_t bytes = 0;
+                for (const auto& [id, prefix] : offsets)
+                    bytes += prefix;
+                for (const auto& [id, sink] : active)
+                    bytes += sink->written;
+                return bytes;
+            };
+            auto lastEvent = Clock::now(), previousTime = lastEvent;
+            std::int64_t previousBytes = downloaded();
+            for (;;) {
+                if (control.pause || control.cancel || !failure.empty())
+                    break;
+                fill();
+                if (active.empty())
+                    break;
+                const auto limit = control.speedLimit.load();
+                for (auto& [id, sink] : active)
+                    curl_easy_setopt(sink->easy.handle, CURLOPT_MAX_RECV_SPEED_LARGE,
+                                     static_cast<curl_off_t>(
+                                         limit > 0 ? std::max<std::int64_t>(
+                                                         1, limit / static_cast<std::int64_t>(active.size()))
+                                                   : 0));
+                int running = 0;
+                if (curl_multi_perform(multi, &running) != CURLM_OK) {
+                    failure = "Network scheduler failed.";
+                    retryable = true;
+                    break;
+                }
+                int remaining = 0;
+                while (auto* message = curl_multi_info_read(multi, &remaining)) {
+                    if (message->msg != CURLMSG_DONE)
+                        continue;
+                    // CURLMsg may be invalidated by remove_handle; copy everything first.
+                    const auto result = message->data.result;
+                    auto* easy = message->easy_handle;
+                    Sink* sink = nullptr;
+                    curl_easy_getinfo(easy, CURLINFO_PRIVATE, &sink);
+                    if (!sink)
+                        throw std::runtime_error("Transfer completion had no owned extent.");
+                    const int id = sink->extentId;
+                    if (!control.pause && !control.cancel && failure.empty()) {
+                        const bool valid = sink->validate();
+                        if (!sink->error.empty()) {
+                            failure = sink->error;
+                            integrityFailure = (sink->ranged &&
+                                                (sink->headers.status == 200 || sink->headers.status == 206 ||
+                                                 sink->headers.status == 416)) ||
+                                               sink->headers.status == 401 || sink->headers.status == 403;
+                            retryable = retryStatus(sink->headers.status);
+                            event.retryAfter = static_cast<int>(
+                                std::clamp<std::int64_t>(number(sink->headers.get("retry-after")), 0, 3600));
+                        } else if (result != CURLE_OK) {
+                            failure = "Connection interrupted (" + std::to_string(result) + ").";
+                            retryable = retryCode(result);
+                        } else if (!valid || (sink->end >= 0 && sink->written != sink->end - sink->begin)) {
+                            failure = "Response ended before the requested bytes were received.";
+                            retryable = true;
+                        }
+                    }
+                    detach(id);
+                    if (!resumable)
+                        streamFinished = true;
+                }
+                event.downloaded = downloaded();
+                const auto now = Clock::now();
+                if (now - lastEvent >= std::chrono::milliseconds(200) || active.empty()) {
+                    const auto elapsed = std::chrono::duration<double>(now - previousTime).count();
+                    if (elapsed >= 0.5) {
+                        event.speed = static_cast<std::int64_t>((event.downloaded - previousBytes) / elapsed);
+                        previousBytes = event.downloaded;
+                        previousTime = now;
+                    }
+                    event.phase = TaskState::Downloading;
+                    callback(event);
+                    lastEvent = now;
+                }
+                if (control.pause || control.cancel || !failure.empty())
+                    break;
+                fill();
+                while (resumable && splittingEnabled &&
+                       active.size() < static_cast<std::size_t>(handleLimit) &&
+                       layout.extents.size() < maxRecoveryExtents) {
+                    int victim = -1;
+                    std::int64_t largest = 2 * http::minSplitBytes - 1;
+                    for (const auto& extent : ranges) {
+                        const auto found = active.find(extent.id);
+                        if (found == active.end())
+                            continue;
+                        const auto tail =
+                            extent.end - extent.begin - found->second->partOffset - found->second->written;
+                        if (tail > largest) {
+                            largest = tail;
+                            victim = extent.id;
+                        }
+                    }
+                    if (victim < 0)
+                        break;
+                    detach(victim); // durable prefix and closed FILE precede layout ownership change
+                    if (control.pause || control.cancel)
+                        break;
+                    const auto next = http::splitLayout(layout, victim, offsets.at(victim));
+                    if (!next) {
+                        splittingEnabled = false;
+                        break;
+                    }
+                    // A legacy or externally interrupted cache can contain orphan
+                    // numeric files. The old manifest does not own this fresh ID;
+                    // clear its entire namespace before publishing the new owner.
+                    for (const auto& extent : next->extents)
+                        if (!offsets.contains(extent.id))
+                            removeExtentArtifacts(extent.id);
+                    try {
+                        http::saveLayout(metadata, *next);
+                    } catch (const std::exception&) {
+                        throw std::runtime_error(
+                            "Cannot commit adaptive recovery layout. Existing checkpoints were preserved.");
+                    }
+                    layout = *next;
+                    ranges = layout.extents;
+                    for (const auto& extent : ranges)
+                        offsets.try_emplace(extent.id, 0);
+                    // New child files are opened only after the complete layout commits.
+                    fill();
+                }
+                int descriptors = 0;
+                if (!active.empty())
+                    curl_multi_poll(multi, nullptr, 0, 100, &descriptors);
             }
+            guard.close(true);
+            event.downloaded = 0;
+            for (const auto& [id, prefix] : offsets)
+                event.downloaded += prefix;
+        } catch (const std::exception& exception) {
+            failure = exception.what();
+            integrityFailure = true; // Recovery/commit failure preserves owned parts for retry.
+            retryable = false;
         }
         if (stopped())
             return;
@@ -618,8 +790,8 @@ class CurlTransfer final : public ITransferTransport {
         }
         try {
             std::array<char, 128 * 1024> buffer{};
-            for (auto& sink : sinks) {
-                std::ifstream input(sink->part, std::ios::binary);
+            for (const auto& extent : ranges) {
+                std::ifstream input(work / ("part-" + std::to_string(extent.id)), std::ios::binary);
                 if (!input)
                     throw std::runtime_error("A downloaded part is missing.");
                 while (input) {

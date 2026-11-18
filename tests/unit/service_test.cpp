@@ -145,12 +145,43 @@ TEST(TaskControl, InactiveCancellationDeletesOnlyOwnedCache) {
     const auto cache = root / "parts" / id;
     std::filesystem::create_directories(cache / "media");
     std::ofstream(cache / "part-0") << "partial";
+    std::ofstream(cache / "part-255") << "last adaptive extent";
+    std::ofstream(cache / "offset-255.new") << "3";
+    std::ofstream(cache / "identity.new") << "uncommitted layout";
     std::ofstream(cache / "media" / "fragment") << "partial";
     std::ofstream(spec.destination) << "keep final";
     service.cancel(id);
     ASSERT_TRUE(waitState(service, id, maskpilot::TaskState::Cancelled));
     EXPECT_FALSE(std::filesystem::exists(cache));
     EXPECT_TRUE(std::filesystem::exists(spec.destination));
+}
+TEST(TaskControl, RestartClearsHighRecoveryIdsButPreservesUnrelatedFilesAndDestination) {
+    QTemporaryDir temporary;
+    ASSERT_TRUE(temporary.isValid());
+    const auto root = std::filesystem::path(temporary.path().toStdWString());
+    maskpilot::DownloadService service(
+        std::make_unique<MemoryRepository>(), [] { return std::make_unique<ControlledTransport>(); },
+        root / "parts");
+    maskpilot::DownloadSpec spec;
+    spec.url = "https://example.test/restart";
+    spec.destination = root / "published.bin";
+    spec.startPaused = true;
+    spec.originAuthenticationRequired = true; // Keep this restart from creating any network worker.
+    const auto id = service.add(spec).get();
+    const auto cache = root / "parts" / id;
+    std::filesystem::create_directories(cache);
+    for (const auto* name : {"part-255", "offset-255", "offset-255.new", "identity", "identity.new",
+                             "part-256", "part-025", "part-2.backup", "notes.txt"})
+        std::ofstream(cache / name) << "owned fixture bytes";
+    std::ofstream(spec.destination) << "preserve published bytes";
+    service.restart(id);
+    ASSERT_TRUE(waitState(service, id, maskpilot::TaskState::NeedsAttention));
+    for (const auto* name : {"part-255", "offset-255", "offset-255.new", "identity", "identity.new"})
+        EXPECT_FALSE(std::filesystem::exists(cache / name));
+    for (const auto* name : {"part-256", "part-025", "part-2.backup", "notes.txt"})
+        EXPECT_TRUE(std::filesystem::exists(cache / name));
+    std::ifstream published(spec.destination);
+    EXPECT_EQ(std::string((std::istreambuf_iterator<char>(published)), {}), "preserve published bytes");
 }
 TEST(TaskControl, DamagedSavedPathCannotStartOrDeleteAnExistingFile) {
     QTemporaryDir temporary;

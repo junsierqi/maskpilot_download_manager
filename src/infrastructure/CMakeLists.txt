@@ -1,5 +1,6 @@
 add_library(maskpilot_infrastructure
     src/network/curl_transfer.cpp
+    src/network/http_layout.cpp
     src/network/ftp_transfer.cpp
     src/transfer/transfer_router.cpp
     src/filesystem/transfer_files.cpp

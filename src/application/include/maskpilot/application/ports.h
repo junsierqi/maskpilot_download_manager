@@ -5,6 +5,8 @@
 #include <memory>
 
 namespace maskpilot {
+// Shared numeric part/offset cache namespace; bounds both recovery and exact owned cleanup.
+inline constexpr int maxRecoveryExtents = 256;
 class ITaskRepository {
   public:
     virtual ~ITaskRepository() = default;

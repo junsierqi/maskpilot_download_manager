@@ -7,6 +7,7 @@
 #include <maskpilot/application/download_service.h>
 #include <maskpilot/domain/proxy.h>
 #include <mutex>
+#include <string_view>
 #include <thread>
 #include <type_traits>
 
@@ -15,6 +16,29 @@ namespace {
 bool sameProxyRoute(const std::string& first, const std::string& second) {
     const auto a = parseProxyEndpoint(first), b = parseProxyEndpoint(second);
     return a.type == b.type && a.host == b.host && a.port == b.port;
+}
+bool ownedRecoveryArtifact(const std::filesystem::path& path) {
+    const auto text = path.filename().generic_u8string();
+    std::u8string_view name(text);
+    if (name == u8"identity" || name == u8"identity.new")
+        return true;
+    if (name.ends_with(u8".new"))
+        name.remove_suffix(4);
+    if (name.starts_with(u8"part-"))
+        name.remove_prefix(5);
+    else if (name.starts_with(u8"offset-"))
+        name.remove_prefix(7);
+    else
+        return false;
+    if (name.empty() || name.size() > 3 || (name.size() > 1 && name.front() == u8'0'))
+        return false;
+    int id = 0;
+    for (const auto ch : name) {
+        if (ch < u8'0' || ch > u8'9')
+            return false;
+        id = id * 10 + (ch - u8'0');
+    }
+    return id < maxRecoveryExtents;
 }
 void loadTorrentSource(DownloadSpec& spec, const TransportFactory& factory) {
     if (spec.kind != TransferKind::BitTorrent || spec.torrent.metadata || !spec.url.starts_with("torrent:"))
@@ -347,15 +371,13 @@ struct DownloadService::Impl {
         // Completed tasks usually had their cache reclaimed already. Avoid dozens
         // of redundant delete requests per record during bulk history removal.
         if (std::filesystem::exists(folder, ignored)) {
-            for (int n = 0; n < 8; ++n)
-                for (const auto& prefix : {"part-", "offset-"}) {
-                    auto file = folder / (std::string(prefix) + std::to_string(n));
-                    std::filesystem::remove(file, ignored);
-                    file += L".new";
-                    std::filesystem::remove(file, ignored);
+            // Enumerate existing bounded names instead of issuing 1,026 probes per history row.
+            for (auto it = std::filesystem::directory_iterator(folder, ignored);
+                 !ignored && it != std::filesystem::directory_iterator{}; it.increment(ignored))
+                if (ownedRecoveryArtifact(it->path())) {
+                    std::error_code removeError;
+                    std::filesystem::remove(it->path(), removeError);
                 }
-            std::filesystem::remove(folder / "identity", ignored);
-            std::filesystem::remove(folder / "identity.new", ignored);
             std::filesystem::remove(folder, ignored);
             std::filesystem::remove_all(folder / "media", ignored);
             std::filesystem::remove(folder, ignored);
@@ -861,16 +883,8 @@ void DownloadService::restart(const std::string& id) {
         if (it->second.spec.kind == TransferKind::BitTorrent) {
             if (it->second.torrentPublished)
                 return;
-            p->clearOwnedParts(it->second);
         }
-        const auto folder = p->workDirectory / id;
-        for (int n = 0; n < 8; ++n) {
-            std::error_code error;
-            std::filesystem::remove(folder / ("part-" + std::to_string(n)), error);
-            std::filesystem::remove(folder / ("offset-" + std::to_string(n)), error);
-        }
-        std::error_code error;
-        std::filesystem::remove(folder / "identity", error);
+        p->clearOwnedParts(it->second);
         auto& task = it->second;
         task.downloaded = 0;
         task.total = -1;

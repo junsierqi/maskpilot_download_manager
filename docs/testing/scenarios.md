@@ -5,6 +5,7 @@
 | 场景 | 命令／证据 |
 |---|---|
 | 原生文件故障矩阵 | CTest `local_http_product_path`：Range、降级、空／未知长度、身份变化、重定向清除凭据、代理、登录、重试、重名和 SHA 失败 |
+| 动态分段 | CTest `adaptive_http_product_path`：不均速本地服务记录实际尾段内新切点、2／8 活动连接边界，布局提交后强制退出并改为单连接恢复，旧偏移迁移、损坏布局及 Windows 元数据替换失败后恢复；逐块不同内容的 SHA-256 防止组装顺序错误被重复数据掩盖 |
 | FTP/FTPS | CTest `ftp_product_path`，或 `python tests/support/ftp_fixture.py --exercise <cli.exe>`：实际匿名／认证、主动／被动、显式／隐式 TLS、CA／主机名拒绝、摘要、远端变化、REST 回退及强制退出恢复；只对受控本地服务器作保证 |
 | 原生代理 | CTest `proxy_product_path`，或 `python tests/integration/proxy_test.py --exercise <cli.exe>`：记录实际 HTTP CONNECT／SOCKS5 转发与认证，验证远端 DNS、环境绕过污染、错误／缺失凭据、代理不可用不直连、FTPS 两种 TLS 模式及强制退出后的凭据标记 |
 | BT 代理隔离 | CTest `TorrentProxy.*`：实际元数据与分片通过代理，直连／不同端点／同端点不同凭据并发隔离；坏节点与坏 Tracker 不妨碍有效备用源和同路由其他任务 |
