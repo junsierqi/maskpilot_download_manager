@@ -17,6 +17,8 @@
 #include <QUuid>
 #include <QtEndian>
 #include <maskpilot/infrastructure/adapters.h>
+#include <maskpilot/infrastructure/credential_vault.h>
+#include <maskpilot/infrastructure/download_bridge.h>
 #include <maskpilot/infrastructure/media_tools.h>
 #include <maskpilot/ui/main_window.h>
 
@@ -73,17 +75,27 @@ int main(int argc, char** argv) {
             if (!found.isEmpty())
                 settings.setValue(pair.first, QFileInfo(found).absoluteFilePath());
         }
-        const auto token = (QUuid::createUuid().toRfc4122() + QUuid::createUuid().toRfc4122()).toHex();
-        QSaveFile tokenFile(QDir(data).filePath("ipc.token"));
-        if (!tokenFile.open(QIODevice::WriteOnly) || tokenFile.write(token) != token.size() ||
-            !tokenFile.commit())
-            throw std::runtime_error("Cannot create local authentication token.");
-        QFile::setPermissions(QDir(data).filePath("ipc.token"),
-                              QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+        const auto writeToken = [&](const QString& filename) {
+            const auto secret = (QUuid::createUuid().toRfc4122() + QUuid::createUuid().toRfc4122()).toHex();
+            QSaveFile file(QDir(data).filePath(filename));
+            if (!file.open(QIODevice::WriteOnly) ||
+                !file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner) ||
+                file.write(secret) != secret.size() || !file.commit())
+                throw std::runtime_error("Cannot create local authentication token.");
+            return secret;
+        };
+        const auto token = writeToken("ipc.token");
+        const auto administrativeToken = writeToken("ipc-admin.token");
         const auto directory = std::filesystem::path(data.toStdWString());
-        maskpilot::DownloadService service(maskpilot::makeSqliteRepository(directory / L"tasks.db"),
-                                           maskpilot::makeUnifiedTransferFactory(), directory / L"parts");
+        auto store = maskpilot::makeSqliteStore(directory / L"tasks.db");
+        auto vault = maskpilot::makeNativeCredentialVault(store.contexts->installationId());
+        maskpilot::DownloadService service(
+            std::move(store.tasks), maskpilot::makeUnifiedTransferFactory(), directory / L"parts",
+            maskpilot::ContextDependencies{std::move(store.contexts), std::move(vault)});
         maskpilot::MainWindow window(service);
+        maskpilot::DownloadBridge bridge(
+            service, [&window](const QString& url) { return window.defaultSpec(url); },
+            [&window] { window.cancelCompletionCountdown(); }, &window);
         if (parser.isSet("window-size")) {
             const auto dimensions = parser.value("window-size").split('x');
             bool widthOk = false, heightOk = false;
@@ -114,8 +126,11 @@ int main(int argc, char** argv) {
                 auto buffer = std::make_shared<QByteArray>();
                 auto processed = std::make_shared<bool>(false);
                 QObject::connect(client, &QLocalSocket::disconnected, client, &QObject::deleteLater);
-                QTimer::singleShot(10000, client, [client] { client->abort(); });
-                auto consume = [&, client, buffer, processed] {
+                auto* deadline = new QTimer(client);
+                deadline->setSingleShot(true);
+                QObject::connect(deadline, &QTimer::timeout, client, [client] { client->abort(); });
+                deadline->start(10000);
+                auto consume = [&, client, buffer, processed, deadline] {
                     if (*processed)
                         return;
                     *buffer += client->readAll();
@@ -150,15 +165,30 @@ int main(int argc, char** argv) {
                         guard->flush();
                         guard->disconnectFromServer();
                     };
-                    if (!document.isObject() || request.value("token").toString().toLatin1() != token) {
-                        reply({{"version", 1},
+                    const auto version = request.value("version").toInt();
+                    const auto supplied = request.value("token").toString().toLatin1();
+                    maskpilot::BridgeAccess access;
+                    const bool legacy = version == 1 && supplied == token;
+                    const bool administrative = version == 2 && supplied == administrativeToken;
+                    const bool scoped = version == 2 && supplied != token &&
+                                        supplied != administrativeToken &&
+                                        maskpilot::isOpaqueId(supplied.toStdString());
+                    if (!document.isObject() || (!legacy && !administrative && !scoped)) {
+                        reply({{"version", version == 2 ? 2 : 1},
                                {"requestId", request.value("requestId")},
                                {"ok", false},
                                {"error", "Local authentication failed."}});
                         return;
                     }
+                    access.authority = legacy           ? maskpilot::BridgeAuthority::Legacy
+                                       : administrative ? maskpilot::BridgeAuthority::Administrative
+                                                        : maskpilot::BridgeAuthority::Scoped;
+                    if (administrative)
+                        deadline->start(60000);
+                    if (scoped)
+                        access.sessionToken = supplied.toStdString();
                     request.remove("token");
-                    window.handleNative(request, std::move(reply));
+                    bridge.handle(std::move(request), std::move(access), std::move(reply));
                 };
                 QObject::connect(client, &QLocalSocket::readyRead, &window, consume);
                 if (client->bytesAvailable() > 0)

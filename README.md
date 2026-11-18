@@ -97,3 +97,7 @@ npm.cmd --prefix browser_extension test
 开发顺序、状态不变量和主要目录见 [工程蓝图](docs/DEVELOPMENT_BLUEPRINT.md)。具体测试命令见 [验证场景](docs/testing/scenarios.md)，发布证据与待验收项见 [验收记录](docs/releases/acceptance.md)。未完成的压力、干净系统或商店验证不代表已通过。
 
 贡献代码使用 C++20、4 空格缩进与 `.clang-format`（LLVM 基线，110 列）；类型用 `PascalCase`，函数和局部变量沿用 `camelCase`。`.clang-tidy` 提供静态检查配置，但 `verify.ps1` 不自动运行它。GoogleTest 测试采用 `TEST(Suite, DescriptiveBehavior)`，网络场景优先使用本地故障服务；新增行为须说明验证方法。提交主题使用简短的祈使句；PR 说明行为变化、关联问题及验证结果，界面变化附截图。既有 `AGENTS.md` 按用户要求保留，当前工程说明以本文与蓝图补充。
+
+## 本地上下文协议（开发代码）
+
+当前代码包含独立下载区的 v1 接口及面向可信本机浏览器桥接方的 v2 上下文接口。管理方通过独立 broker 权限配置目录、路由与短期源站授权，普通客户端只能使用签发的单一上下文会话；失败不会转用其他权限。接口、帧和接管顺序见 [本机协议](docs/protocols/browser.md)。它不代表现有扩展已能自动识别指纹浏览器配置；实际浏览器端签发与上下文／安全保存管理界面仍有独立验收工作。

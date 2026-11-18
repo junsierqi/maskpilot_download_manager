@@ -95,3 +95,9 @@ Optional native writes have a durable ownership journal before the OS call. A se
 Revocation first persists disabled policy and denies new work, then pauses owned workers. Acknowledgement waits for their teardown and exact owned credential cleanup; cleanup errors keep the context disabled and report incomplete cleanup. Published files survive. Failed unused-entry cleanup reports a warning without disabling unrelated downloads. Per-context processes, schedulers and SQLite writers are unnecessary. BT sessions include owner identity even when route credentials match.
 
 The typed core is tested independently of the desktop composition. Framed broker authorization, actual profile/Remember/rebind/revoke widgets, and genuine sibling-browser issuance remain separate acceptance work; core fixtures alone do not establish those paths.
+
+## Scoped native broker composition
+
+Desktop startup supplies the shared task/context store and native vault to the single coordinator. A Qt Core protocol adapter replaces window-owned native request handling. Administrative broker authority and legacy extension authority have separate per-start tokens; ordinary bearer requests use the core session registry and never fall back to another authority. The native host has a deliberate local broker invocation distinct from browser-origin invocation. Credentials use framed standard input, not command-line arguments.
+
+The current extension remains a standalone v1 client. v2 fixtures establish downloader-side context readiness; they do not establish actual fingerprint-browser Profile/Storage/Bridge issuance. Context and optional credential management widgets are still required acceptance work. The UI remains trusted local administration, while browser projections and controls are owner-scoped inside the application actor.

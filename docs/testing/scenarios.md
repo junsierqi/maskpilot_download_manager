@@ -43,3 +43,7 @@ python benchmarks/run.py --desktop out/package/MaskPilot-0.1.0-windows-x64/maskp
 做种上传夹具使用两个回环地址区分原种源与接收端，避免把同一 IP 下的多个本地进程误当成独立远端节点。保留原有 60 秒期限、上传限速与完整数据校验；失败时输出监听及连接诊断。浏览器凭据审计包含所有 SQLite 列和二进制字段，并直接检查数据库及其日志文件。
 
 发布前额外人工／环境验收：Windows 10/11 干净系统、不同 DPI、多显示器、休眠唤醒、受限磁盘与不可写目录、真实 Chrome/Edge 安全策略。没有运行的项目必须留在验收记录中。
+
+## 上下文原生消息验证
+
+`ctest --test-dir <build> -R scoped_native_bridge_product_path --output-on-failure --no-tests=error` 调用实际桌面与 host。夹具验证独立管理权限、两个会话、请求去重、跨上下文拒绝、旧客户端隔离、撤销／重新签发／重启及真实代理和 Cookie 路由。大历史数据只在夹具所属桌面关闭时写入；运行时不另起数据库写入器。此夹具仅使用进程内代理凭据，安全保存的实际控件验收另列，不能据此推断 UI 或浏览器侧签发已完成。

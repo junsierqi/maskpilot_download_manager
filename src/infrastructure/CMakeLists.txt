@@ -5,6 +5,7 @@ add_library(maskpilot_infrastructure
     src/filesystem/transfer_files.cpp
     src/persistence/sqlite_repository.cpp
     src/security/credential_vault.cpp
+    src/bridge/download_bridge.cpp
     src/media/media_tools.cpp
     src/torrent/torrent_engine.cpp
     src/torrent/torrent_metadata.cpp)

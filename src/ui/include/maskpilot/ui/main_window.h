@@ -12,7 +12,7 @@ class MainWindow final : public QMainWindow {
     ~MainWindow() override;
     void newDownload(QString url = {});
     DownloadSpec defaultSpec(const QString& url) const;
-    void handleNative(const QJsonObject& request, std::function<void(QJsonObject)> respond);
+    void cancelCompletionCountdown();
     void enqueue(DownloadSpec spec, QString requestId = {},
                  std::function<void(QString, QString)> completion = {});
     void requestQuit();
