@@ -75,3 +75,11 @@ UI 的私有状态、表格展示和不同对话框分置于 `windows/`、`model
 后续长测暴露历史删除超时。逐条完整同步写入的隔离测量不足以解释该次卡顿，因此暂不引入影响新增确认顺序的通用事务合并。仅跳过不存在缓存目录下的重复删除请求，继续独立清理经过验证的专属组装文件；既有最终文件始终保留。压力测试在失败后采集隔离桌面线程转储，保持 10 秒删除断言及所有既定预算，以继续定位历史卡顿。
 
 测试框架的报告发布及结束状态回归归入 `tests/system/stress_report_test.py`，与原生消息交互集成分开维护。Windows 报告发布对短暂读取占用作有界重试，持续错误仍失败；实时监测读取进程输出的有界进度摘要，避免打开正在替换的报告文件。只有结束报告成功发布后才进入接受清理，任何异常都撤销接受状态，避免错误被后续清理误标为通过。
+
+## Optional native credential vault foundation
+
+The application defines `ICredentialVault` independently of Windows. Its native adapter stores only explicitly supplied proxy credentials in current-user Windows Credential Manager (`CRED_TYPE_GENERIC`, `CRED_PERSIST_LOCAL_MACHINE`). Random installation and reference IDs form a private target namespace. An entry binds its owner and canonical proxy route; mismatching reads and deletes fail. HTTP and HTTPS remain distinct; SOCKS5 aliases share the product's remote-DNS semantics. Native blob limits are checked before writes; malformed entries fail closed. Other platforms report unavailable without plaintext fallback.
+
+This protects persisted credentials at the Windows logon-user boundary; it does not isolate hostile processes running as the same user. The adapter does not enumerate entries or accept caller-selected native target names. Native-read buffers are cleared before release, but complete in-process secret zeroization is not claimed. Callers must store a returned reference transactionally, clean up a failed reference commit, and revoke active use before deleting owned entries. Factory creation itself performs no writes.
+
+This foundation is not yet connected to task persistence or the desktop Remember control. Profile authorization, ownership and scoped IPC remain required before claiming browser integration readiness. Browser cookies are not stored in this vault. Tests use random owned installation IDs, real native writes/reads/deletes and a second process; they never enumerate or delete unrelated credentials.
