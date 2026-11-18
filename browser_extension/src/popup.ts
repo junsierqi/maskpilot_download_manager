@@ -1,5 +1,7 @@
-import { newRequestId, normalizeCandidates, safeHttpUrl, validateRequest, withTimeout, type Candidate,
+import { newRequestId, isRecord, safeHttpUrl, validateRequest, withTimeout,
   type Command, type NativeRequest, type NativeTask } from './protocol.js';
+import {browserApi as api} from './browser_api.js';
+import type {PanelItem} from './panel_authority.js';
 
 function element<T extends HTMLElement>(id: string): T {
   const result = document.getElementById(id);
@@ -8,7 +10,8 @@ function element<T extends HTMLElement>(id: string): T {
 }
 const urlInput = element<HTMLInputElement>('url');
 const feedback = element<HTMLDivElement>('feedback');
-let candidates: Candidate[] = [];
+let candidates: PanelItem[] = [];
+let resourceToken = '', resourceTab = -1;
 let pageUrl = '';
 function show(message: string, error = false): void {
   feedback.textContent = message;
@@ -16,7 +19,7 @@ function show(message: string, error = false): void {
   feedback.hidden = false;
 }
 async function call(message: object): Promise<Record<string, unknown>> {
-  const result = await withTimeout(chrome.runtime.sendMessage(message));
+  const result = await withTimeout(api.runtime.sendMessage(message));
   if (!result || !result.ok) throw new Error(typeof result?.error === 'string' ? result.error : '操作失败。');
   return result;
 }
@@ -72,11 +75,12 @@ function renderCandidates(): void {
   candidates.forEach((candidate, index) => {
     const row = document.createElement('label'); row.className = 'resource';
     const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.value = String(index);
+    checkbox.disabled = candidate.accepted;
     const copy = document.createElement('div'); copy.className = 'item-copy';
     const title = document.createElement('div'); title.className = 'item-title';
     title.textContent = candidate.name || new URL(candidate.url).pathname.split('/').at(-1) || '下载文件';
     const address = document.createElement('div'); address.className = 'item-url'; address.textContent = candidate.url;
-    const kind = document.createElement('span'); kind.className = 'kind'; kind.textContent = candidate.kind === 'media' ? '媒体' : '文件';
+    const kind = document.createElement('span'); kind.className = 'kind'; kind.textContent = candidate.accepted ? '已发送' : (candidate.kind === 'media' ? '媒体' : '文件');
     copy.append(title, address); row.append(checkbox, copy, kind); root.append(row);
   });
   element<HTMLInputElement>('select-all').checked = false;
@@ -84,26 +88,31 @@ function renderCandidates(): void {
 const discover = element<HTMLButtonElement>('discover');
 discover.addEventListener('click', () => { void busy(discover, async () => {
   const response = await call({kind: 'discover'});
-  candidates = normalizeCandidates(response.items);
+  if (!isRecord(response.model) || typeof response.model.token !== 'string' || !Array.isArray(response.model.items) || typeof response.tabId !== 'number')
+    throw new Error('页面资源响应无效。');
+  candidates = response.model.items as PanelItem[];
+  resourceToken = response.model.token; resourceTab = response.tabId;
   pageUrl = typeof response.pageUrl === 'string' ? safeHttpUrl(response.pageUrl) : '';
   element('resources-caption').textContent = `发现 ${candidates.length} 项资源`;
   renderCandidates();
 }); });
 element<HTMLInputElement>('select-all').addEventListener('change', event => {
-  for (const checkbox of document.querySelectorAll<HTMLInputElement>('#resources input[type=checkbox]'))
+  for (const checkbox of document.querySelectorAll<HTMLInputElement>('#resources input[type=checkbox]:not(:disabled)'))
     checkbox.checked = (event.target as HTMLInputElement).checked;
 });
 const selected = element<HTMLButtonElement>('send-selected');
 selected.addEventListener('click', () => { void busy(selected, async () => {
   const chosen = [...document.querySelectorAll<HTMLInputElement>('#resources input:checked')]
-    .map(checkbox => candidates[Number(checkbox.value)]).filter((candidate): candidate is Candidate => !!candidate);
+    .map(checkbox => candidates[Number(checkbox.value)]).filter((candidate): candidate is PanelItem => !!candidate && !candidate.accepted);
   if (!chosen.length) throw new Error('请先选择至少一项资源。');
-  let sent = 0;
-  for (const item of chosen) {
-    await native('add', {url: item.url, referrer: pageUrl || undefined, media: item.kind === 'media'});
-    sent++;
-  }
-  show(`已发送 ${sent} 项资源。`);
+  const response = await call({kind: 'resource-batch', tabId: resourceTab, token: resourceToken, ids: chosen.map(item => item.id)});
+  const accepted = new Set(Array.isArray(response.accepted) ? response.accepted : []);
+  const remaining = new Set(Array.isArray(response.remaining) ? response.remaining : []);
+  for (const item of candidates) if (accepted.has(item.id)) item.accepted = true;
+  renderCandidates();
+  for (const checkbox of document.querySelectorAll<HTMLInputElement>('#resources input[type=checkbox]'))
+    checkbox.checked = remaining.has(candidates[Number(checkbox.value)]?.id);
+  show(`已发送 ${accepted.size} 项资源。${typeof response.error === 'string' ? response.error : ''}`, !!response.error);
 }); });
 async function loadTasks(): Promise<void> {
   const root = element('tasks'); root.textContent = '正在读取任务…';
@@ -132,21 +141,25 @@ async function loadTasks(): Promise<void> {
 element('refresh-tasks').addEventListener('click', () => { void loadTasks(); });
 const autoCapture = element<HTMLInputElement>('auto-capture');
 const includeCookies = element<HTMLInputElement>('include-cookies');
+const pagePanel = element<HTMLInputElement>('page-panel');
 async function savePreferences(): Promise<void> {
-  autoCapture.disabled = includeCookies.disabled = true;
-  try { await call({kind: 'preferences', autoCapture: autoCapture.checked, includeCookies: includeCookies.checked}); }
+  autoCapture.disabled = includeCookies.disabled = pagePanel.disabled = true;
+  try { await call({kind: 'preferences', autoCapture: autoCapture.checked, includeCookies: includeCookies.checked, pagePanel: pagePanel.checked}); }
   catch (error) {
-    const saved = await chrome.storage.local.get({autoCapture: false, includeCookies: false});
+    const saved = await api.storage.local.get({autoCapture: false, includeCookies: false, pagePanel: false});
     autoCapture.checked = saved.autoCapture === true; includeCookies.checked = saved.includeCookies === true;
+    pagePanel.checked = saved.pagePanel === true;
     show(error instanceof Error ? error.message : '设置未保存。', true);
-  } finally { autoCapture.disabled = includeCookies.disabled = false; }
+  } finally { autoCapture.disabled = includeCookies.disabled = pagePanel.disabled = false; }
 }
 autoCapture.addEventListener('change', () => { void savePreferences(); });
 includeCookies.addEventListener('change', () => { void savePreferences(); });
+pagePanel.addEventListener('change', () => { void savePreferences(); });
 void (async () => {
-  const saved = await chrome.storage.local.get({autoCapture: false, includeCookies: false, lastError: ''});
+  const saved = await api.storage.local.get({autoCapture: false, includeCookies: false, pagePanel: false, lastError: ''});
   autoCapture.checked = saved.autoCapture === true; includeCookies.checked = saved.includeCookies === true;
+  pagePanel.checked = saved.pagePanel === true;
   if (typeof saved.lastError === 'string' && saved.lastError) show(saved.lastError, true);
-  try { const [tab] = await chrome.tabs.query({active: true, currentWindow: true}); if (tab?.url) pageUrl = safeHttpUrl(tab.url); } catch { /* Browser pages are not downloadable. */ }
+  try { const [tab] = await api.tabs.query({active: true, currentWindow: true}); if (tab?.url) pageUrl = safeHttpUrl(tab.url); } catch { /* Browser pages are not downloadable. */ }
   await checkConnection();
 })();

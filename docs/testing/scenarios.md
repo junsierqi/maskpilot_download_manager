@@ -1,5 +1,9 @@
 # 验证场景
 
+浏览器开发代码另运行 `node tests/system/browser_test.mjs --build-directory <build> --browser <chromium.exe>` 与 `python tests/system/firefox_test.py --build-directory <build> --extension browser_extension/dist-firefox --browser <firefox.exe> --evidence-directory out/qa/firefox`。二者使用真实扩展、隔离配置和本机桌面，覆盖持久暂停确认、输出哈希、接管与回退、容器及页面面板。实际可信点击与网页 DOM 篡改／程序化点击分开验证；Firefox 实际隐私及分区 Cookie 拒绝保留浏览器文件。临时加载不证明签名发行。
+
+注册所有权测试 `tests/system/browser_registration_test.ps1` 覆盖原值类型、重复注册、外部修改和写日志失败；CTest 将其标记为串行。三个固定 HKCU 默认值在 `finally` 恢复。不要与其他真实浏览器夹具并行运行，防止各自恢复记录交错。纯状态／Cookie 模块负例使用 `npm --prefix browser_extension test`，不替代真实浏览器验收。
+
 常规回归运行 `scripts/verify.ps1 -Configuration Release` 和 `npm.cmd --prefix browser_extension test`。CTest 中的调度器控制桩测试为 fixture-only；本地 HTTP、原生主机、真实组件和浏览器测试调用实际产品二进制。
 
 | 场景 | 命令／证据 |

@@ -27,6 +27,9 @@ foreach ($record in $marker.files) {
     $inventory += @{ file=$file; sha256=$record.sha256 }
 }
 Get-Process maskpilot,maskpilot_native_host -ErrorAction SilentlyContinue | ForEach-Object { if ($_.Path -and $_.Path.StartsWith($target + '\',[StringComparison]::OrdinalIgnoreCase)) { throw 'Close MaskPilot before uninstalling.' } }
+# Restore exact-owned HKCU64 browser defaults before deleting their manifest/journal files.
+# Any cleanup failure stops uninstall, leaving the recovery journal and installation intact.
+Assert-NoReparse (Join-Path $target 'browser-registration.json')
 & "$target/scripts/register-browser.ps1" -InstallDirectory $target -Unregister
 $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\MaskPilot'
 if ((Test-Path -LiteralPath $key) -and (Get-ItemProperty -LiteralPath $key).InstallLocation -eq $target) { Remove-Item -LiteralPath $key }

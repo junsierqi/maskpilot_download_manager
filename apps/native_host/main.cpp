@@ -3,6 +3,7 @@
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -47,6 +48,57 @@ bool administrative(const QString& command) {
     return command == "context.configure" || command == "context.list" || command == "context.issue" ||
            command == "origin.grant" || command == "context.revoke" || command == "task.rebind";
 }
+bool firefoxInvocation(const QStringList& arguments, const QJsonObject& config,
+                       const QString& applicationDirectory) {
+    constexpr auto geckoId = "downloads@maskpilot.invalid";
+    if (arguments.size() != 3 || arguments[2] != geckoId)
+        return false;
+    const auto manifestArgument = arguments[1];
+    if (!QDir::isAbsolutePath(manifestArgument) || manifestArgument.startsWith("\\\\") ||
+        manifestArgument.startsWith("//") ||
+        std::any_of(manifestArgument.begin(), manifestArgument.end(),
+                    [](QChar c) { return c.unicode() < 32 || c.unicode() == 127; }))
+        return false;
+    const auto expected = QDir(applicationDirectory).absoluteFilePath("com.maskpilot.downloads.firefox.json");
+    // Reject arbitrary/remote paths lexically before querying or opening them.
+    if (QDir::cleanPath(QDir::fromNativeSeparators(manifestArgument))
+            .compare(QDir::cleanPath(expected), Qt::CaseInsensitive) != 0)
+        return false;
+    bool registered = false;
+    for (const auto& value : config.value("allowedFirefoxExtensions").toArray())
+        if (value.isString() && value.toString() == geckoId)
+            registered = true;
+    if (!registered)
+        return false;
+    const QFileInfo manifestInfo(expected);
+    if (!manifestInfo.isFile() || manifestInfo.isSymLink())
+        return false;
+    QFile manifestFile(expected);
+    if (!manifestFile.open(QIODevice::ReadOnly) || manifestFile.size() <= 0 || manifestFile.size() > 65536)
+        return false;
+    QJsonParseError error;
+    const auto document = QJsonDocument::fromJson(manifestFile.readAll(), &error);
+    if (error.error != QJsonParseError::NoError || !document.isObject())
+        return false;
+    const auto manifest = document.object();
+    if (manifest.value("name").toString() != "com.maskpilot.downloads" ||
+        manifest.value("type").toString() != "stdio" || !manifest.value("path").isString())
+        return false;
+    const auto target = manifest.value("path").toString();
+    if (!QDir::isAbsolutePath(target) ||
+        QDir::cleanPath(QDir::fromNativeSeparators(target))
+                .compare(QDir::cleanPath(QCoreApplication::applicationFilePath()), Qt::CaseInsensitive) != 0)
+        return false;
+    const auto canonical = QFileInfo(target).canonicalFilePath();
+    if (canonical.isEmpty() ||
+        canonical.compare(QFileInfo(QCoreApplication::applicationFilePath()).canonicalFilePath(),
+                          Qt::CaseInsensitive) != 0)
+        return false;
+    for (const auto& entry : manifest.value("allowed_extensions").toArray())
+        if (entry.isString() && entry.toString() == geckoId)
+            return true;
+    return false;
+}
 } // namespace
 int main(int argc, char** argv) {
 #ifdef _WIN32
@@ -83,6 +135,7 @@ int main(int argc, char** argv) {
                 if (entry.isString() && entry.toString() == origin &&
                     origin.startsWith("chrome-extension://"))
                     allowed = true;
+        allowed = allowed || firefoxInvocation(arguments, config, application.applicationDirPath());
         if (!allowed) {
             respond({{"version", 1},
                      {"requestId", ""},

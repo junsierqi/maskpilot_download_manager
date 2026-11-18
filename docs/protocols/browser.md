@@ -4,6 +4,16 @@
 
 ## 帧与身份
 
+Chromium 使用服务工作线程清单，Firefox 150+ 使用模块事件页清单，共享扩展实现。Firefox 编号固定为 `downloads@maskpilot.invalid`；同名服务 `com.maskpilot.downloads` 使用相邻清单 `com.maskpilot.downloads.firefox.json`。host 先比较绝对清单路径，再核实当前可执行文件与 `allowed_extensions`；`native-bridge.json` 还需包含 `allowedFirefoxExtensions`。来源参数不授予 broker 管理权限，也不证明指纹配置身份。
+
+页面面板默认关闭，只在顶层 HTTP(S) 页面注入隔离经典脚本。一次最多 200 项资源，后台最多 64 个页面会话、10 分钟有效期。页面仅提交文档随机编号、会话 token 和所选不透明资源编号；拒绝额外字段、iframe、错误文档、过期 token 和任意 native／管理命令。重载、导航、关闭、停用或后台状态丢失后需重新查找。
+
+ShadowRoot 用于样式组织，DOM 不授予权限。选择放在隔离闭包中，只由真实点击更新；网页修改 `value`／`checked` 或程序化点击不会增加所选资源。每个 native 发送前，在 Cookie 查询等异步操作之后再次核实页面和会话。逐项返回已接受与剩余项，同批次稳定 `requestId` 保证丢失响应后的重试幂等；不是跨任务事务，不承诺浏览器重启后保留内存批次。
+
+Cookie 仅查询所选 URL 和可信浏览器容器，以空 `partitionKey` 检查全部分区，再拒绝实际分区或第一方隔离身份；不降级查询。Firefox 缺少可信 `cookieStoreId` 或隐私窗口时拒绝转发。策略可能拒绝具有其他分区 Cookie 的同一 URL。关闭转发须用户明确操作。
+
+注册只操作 HKCU 64 位视图的三个固定服务键，写入前在 `browser-registration.json` 保存原默认值类型、值及存在状态；重复注册保留最初快照。注销仅恢复仍指向本安装的默认值，保留外部后续改动、无关值与子键。安装记录动态文件哈希；恢复失败时保留日志并停止卸载。临时扩展验收不等同于签名发行或系统级隔离。
+
 原生消息和本机管道均为 4 字节小端无符号长度，随后为 UTF-8 JSON。单帧最大 1 MiB，一个连接处理一个请求。`requestId`、`taskId`、上下文编号和会话编号使用 32 位小写十六进制；字段有类型、长度和命令白名单检查。
 
 桌面管道仅允许当前用户访问。每次启动生成不同的 `ipc.token` 与 `ipc-admin.token`：前者只服务 v1 独立下载区，后者只授权可信本机管理端。普通扩展 host 不读取管理 token。v2 普通客户端使用管理端为一个上下文签发的 `sessionToken`，验证失败直接拒绝，不转用独立下载区或管理权限。扩展来源注册只证明扩展身份，不证明浏览器配置归属。

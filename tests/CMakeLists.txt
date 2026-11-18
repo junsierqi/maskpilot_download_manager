@@ -18,3 +18,10 @@ add_test(NAME adaptive_http_product_path COMMAND ${Python3_EXECUTABLE} ${CMAKE_C
 set_tests_properties(adaptive_http_product_path PROPERTIES TIMEOUT 150)
 add_test(NAME native_payload_budget_product_path COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/integration/native_budget_test.py --exercise $<TARGET_FILE:maskpilot_cli>)
 set_tests_properties(native_payload_budget_product_path PROPERTIES TIMEOUT 150)
+if(WIN32)
+  find_program(MASKPILOT_TEST_POWERSHELL powershell REQUIRED)
+  add_test(NAME browser_registration_ownership COMMAND ${MASKPILOT_TEST_POWERSHELL}
+    -NoProfile -ExecutionPolicy Bypass -File ${CMAKE_CURRENT_SOURCE_DIR}/system/browser_registration_test.ps1
+    -SourceRoot ${CMAKE_SOURCE_DIR})
+  set_tests_properties(browser_registration_ownership PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE)
+endif()

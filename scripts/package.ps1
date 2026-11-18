@@ -52,6 +52,7 @@ Copy-Item -LiteralPath "$env:QT_ROOT_DIR/translations/qtbase_zh_CN.qm" -Destinat
 & npm.cmd --prefix "$projectRoot/browser_extension" run build
 if ($LASTEXITCODE -ne 0) { throw 'Browser extension build failed.' }
 Copy-Item -LiteralPath "$projectRoot/browser_extension/dist" -Destination "$stage/browser_extension" -Recurse
+Copy-Item -LiteralPath "$projectRoot/browser_extension/dist-firefox" -Destination "$stage/browser_extension_firefox" -Recurse
 foreach ($dir in @('scripts','licenses','dependency-sources')) { New-Item -ItemType Directory -Path "$stage/$dir" -Force | Out-Null }
 Copy-Item -LiteralPath "$projectRoot/scripts/register-browser.ps1" -Destination "$stage/scripts"
 Copy-Item -LiteralPath "$projectRoot/packaging/windows/install.ps1","$projectRoot/packaging/windows/uninstall.ps1" -Destination "$stage/scripts"

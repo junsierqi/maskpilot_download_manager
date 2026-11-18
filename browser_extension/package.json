@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc -p tsconfig.json && node -e \"const f=require('node:fs');for(const p of ['popup.html','popup.css'])f.copyFileSync('src/'+p,'dist/'+p);f.copyFileSync('manifests/manifest.json','dist/manifest.json')\"",
+    "build": "tsc -p tsconfig.json && node scripts/build.mjs",
     "test": "npm run build && node --test tests/*.test.mjs"
   },
   "devDependencies": {

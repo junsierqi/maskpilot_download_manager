@@ -1,4 +1,7 @@
 (() => {
+  const globals = globalThis as typeof globalThis & {maskpilotDocument?: string};
+  globals.maskpilotDocument ??= Array.from(crypto.getRandomValues(new Uint8Array(16)),
+    byte => byte.toString(16).padStart(2, '0')).join('');
   const found: {url: string; name: string; kind: 'file' | 'media'}[] = [];
   const seen = new Set<string>();
   function add(raw: string | null | undefined, name: string, kind: 'file' | 'media'): void {
@@ -24,5 +27,5 @@
   for (const entry of performance.getEntriesByType('resource')) {
     if (/\.(m3u8|mpd|mp4|webm|m4a|mp3)(?:[?#]|$)/i.test(entry.name)) add(entry.name, '已加载的媒体', 'media');
   }
-  return found;
+  return {document: globals.maskpilotDocument, items: found};
 })();

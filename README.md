@@ -57,7 +57,7 @@ maskpilot_cli ftp://example.test/file.zip C:/Downloads/file.zip C:/Downloads/sta
 
 原始种子元数据随任务保存，删除原 `.torrent` 不影响任务恢复。元数据可能包含私有 Tracker 地址或 passkey，**也会包含在主动导出的任务清单中**，请保护数据库与清单。自动导入的原始种子文件必须位于直接挂载的本地磁盘，不读取网络共享、设备或重解析路径；可先复制到本地再添加。
 
-单个种子元数据上限 16 MiB、文件上限 20,000。BT 暂不支持代理路由；带代理的任务会报错，不会悄悄直连。浏览器扩展仍只接管 HTTP/HTTPS。公网连通性受网络、系统端口限制、Tracker 和种源影响，本地夹具不代表所有公网种子可用。
+单个种子元数据上限 16 MiB、文件上限 20,000。BT 支持隔离的 HTTP CONNECT／SOCKS5 TCP 代理，具体限制见前文；浏览器扩展只接管 HTTP/HTTPS。公网连通性受网络、系统端口限制、Tracker 和种源影响，本地夹具不代表所有公网种子可用。
 
 ```powershell
 maskpilot_cli C:/Downloads/example.torrent C:/Downloads/example C:/Downloads/state --select-files 0,2 --upload-limit 65536
@@ -68,13 +68,17 @@ maskpilot_cli C:/Downloads/example.torrent C:/Downloads/example C:/Downloads/sta
 
 ## 浏览器
 
-安装脚本注册当前用户 Chrome/Edge 通道。便携版可运行：
+安装脚本注册当前用户 Chrome／Edge／Firefox 通道。便携版可运行：
 
 ```powershell
 ./scripts/register-browser.ps1 -InstallDirectory 'C:/Apps/MaskPilot'
 ```
 
-在浏览器扩展管理页启用开发者模式，加载包内 `browser_extension/`。右键发送链接，或点击扩展图标发现页面资源。自动接管默认关闭；Cookie 传递需单独开启，仅对所选下载地址取 Cookie。商店签名安装包尚未发布。协议和回退规则见 [浏览器协议](docs/protocols/browser.md)。
+Chrome／Edge 在扩展管理页启用开发者模式，加载包内 `browser_extension/`。Firefox 150+ 在 `about:debugging#/runtime/this-firefox` 临时加载 `browser_extension_firefox/manifest.json`；临时扩展重启后失效，商店签名安装包尚未发布。源码构建 `npm --prefix browser_extension run build` 同时生成 `dist/` 和 `dist-firefox/`。
+
+右键发送链接，或点击扩展图标发现资源。自动接管、页面浮动面板及 Cookie 传递均默认关闭，分别开启。部分发送成功后保留已接受项，重试剩余项不会重复同批次的已接受请求。页面重载／导航后需重新查找。
+
+Cookie 仅查询所选 URL 与浏览器提供的容器。隐私窗口登录材料、分区 Cookie／第一方隔离暂不转发，失败时保留浏览器下载，不改用默认容器。即使匹配 URL 的 Cookie 属于另一个分区，也会保守拒绝。注销仅在通道仍属于本安装时恢复原值，保留外部修改。两种扩展都使用独立下载区，协议和回退规则见 [浏览器协议](docs/protocols/browser.md)。
 
 ## 媒体
 

@@ -8,4 +8,5 @@
 __pycache__/
 node_modules/
 /browser_extension/dist/
+/browser_extension/dist-firefox/
 /.idea-to-code/

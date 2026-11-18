@@ -56,7 +56,8 @@ const server=createServer((request,response)=>{
   const url=new URL(request.url,'http://localhost');
   if(url.pathname==='/page'){
     const route=url.searchParams.get('route')||'captured';
-    const html=`<!doctype html><meta charset="utf-8"><title>MaskPilot isolated browser fixture</title><h1>Native download handoff</h1><a id="download" href="/${route}" download="${route}.bin">Download synthetic file</a>`;
+    const links=route==='panel'?'<a id="download" href="/manual?panel=one">First owned file</a><br><a id="download2" href="/manual?panel=two">Second owned file</a>':`<a id="download" href="/${route}" download="${route}.bin">Download synthetic file</a>`;
+    const html=`<!doctype html><meta charset="utf-8"><title>MaskPilot isolated browser fixture</title><h1>Native download handoff</h1>${links}`;
     response.writeHead(200,{'Content-Type':'text/html','Content-Length':Buffer.byteLength(html)});response.end(html);return;
   }
   if(!['/manual','/captured','/fallback','/protected'].includes(url.pathname)){response.writeHead(404);response.end();return;}
@@ -183,20 +184,49 @@ try {
     log('Captured actual connected extension action-popup rendering',{file:path.join(root,'popup-real-chromium.png')});
     await browser.send('Target.closeTarget',{targetId:info.id});
   } catch(error) {evidence.popupScreenshotError=error.message;console.log('Screenshot optional boundary:',error.message);}
+  await worker.evaluate('chrome.storage.local.set({autoCapture:false,includeCookies:false,pagePanel:true})');
+  const panelPage=await openPage(`${base}/page?route=panel`);
+  await until(()=>panelPage.evaluate("!!document.getElementById('maskpilot-download-panel')?.shadowRoot?.querySelector('#panel-toggle')"),'real page panel');
+  async function panelClick(selector){
+    const point=await panelPage.evaluate(`(()=>{const e=document.getElementById('maskpilot-download-panel').shadowRoot.querySelector(${JSON.stringify(selector)});const r=e.getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2};})()`);
+    await panelPage.send('Input.dispatchMouseEvent',{type:'mousePressed',button:'left',clickCount:1,...point});
+    await panelPage.send('Input.dispatchMouseEvent',{type:'mouseReleased',button:'left',clickCount:1,...point});
+  }
+  await panelClick('#panel-toggle');
+  await until(()=>panelPage.evaluate("document.getElementById('maskpilot-download-panel').shadowRoot.querySelectorAll('#panel-items input').length===2"),'two bounded panel resources');
+  await panelClick('#panel-items input');
+  await panelPage.evaluate("(()=>{const r=document.getElementById('maskpilot-download-panel').shadowRoot;const a=[...r.querySelectorAll('input')];for(const e of a){e.checked=true;e.value=a.at(-1).value;}r.querySelector('#panel-send').click();return true;})()");
+  await delay(300);assert(!rows().some(row=>row.url.includes('?panel=')),'Synthetic click or page mutation caused native action');
+  await panelClick('#panel-send');
+  const panelTask=await until(()=>rows().find(row=>row.url===`${base}/manual?panel=one`&&row.state===9),'trusted panel selection output');
+  assert.equal(createHash('sha256').update(readFileSync(panelTask.destination)).digest('hex'),hash);
+  assert(!rows().some(row=>row.url===`${base}/manual?panel=two`),'Page-mutated DOM selected an additional resource');
+  const panelTab=await worker.evaluate(`chrome.tabs.query({}).then(tabs=>tabs.find(tab=>tab.url===${JSON.stringify(`${base}/page?route=panel`)}).id)`);
+  const denied=await worker.evaluate(`chrome.scripting.executeScript({target:{tabId:${panelTab},frameIds:[0]},func:async()=>chrome.runtime.sendMessage({kind:'native',request:{version:1,requestId:'f'.repeat(32),command:'list'}})}).then(results=>results[0].result)`);
+  assert.equal(denied.ok,false,'Page content received global native command authority');
+  const screenshot=await panelPage.send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});
+  writeFileSync(path.join(root,'page-panel-real-chromium.png'),Buffer.from(screenshot.data,'base64'));
+  log('Trusted page panel selection ignores synthetic clicks and page-mutated checkbox authority',{taskId:panelTask.id,sha256:hash,contentNativeRejected:true});
+  await worker.evaluate('chrome.storage.local.set({pagePanel:false,autoCapture:true,includeCookies:false})');
+  await until(()=>panelPage.evaluate("document.getElementById('maskpilot-download-panel').hidden"),'panel disabled');
+  assert(!rows().some(row=>row.url===`${base}/manual?panel=two`));
   await until(()=>{try{renameSync(temporaryHost,temporaryHost+'.unavailable');hostMoved=true;return true;}catch{return false;}},'temporarily disabling isolated native host');
+  const consentUi=await openPage(origin+'popup.html');
+  const revoked=await consentUi.evaluate("chrome.runtime.sendMessage({kind:'preferences',autoCapture:true,includeCookies:false,pagePanel:false})");
+  assert.equal(revoked.ok,true,'Consent revocation must not require the unavailable native host');
   const fallbackPage=await openPage(`${base}/page?route=fallback`);await fallbackPage.evaluate("document.getElementById('download').click();true");
   const fallback=await until(async()=>{const items=await worker.evaluate("chrome.downloads.search({})");return items.find(item=>item.url===`${base}/fallback`&&item.state==='complete');},'browser recovery after native host unavailable',40_000);
-  assert.equal(createHash('sha256').update(readFileSync(fallback.filename)).digest('hex'),hash);assert(!rows().some(row=>row.url===`${base}/fallback`));log('Unavailable native host restores browser download without native duplicate',{browserDownloadId:fallback.id,sha256:hash});
+  assert.equal(createHash('sha256').update(readFileSync(fallback.filename)).digest('hex'),hash);assert(!rows().some(row=>row.url===`${base}/fallback`));log('Unavailable native host restores browser download without native duplicate',{browserDownloadId:fallback.id,sha256:hash,consentRevocation:true});
   renameSync(temporaryHost+'.unavailable',temporaryHost);hostMoved=false;
   evidence.result='passed';
 } catch(error) {
   evidence.result='failed';evidence.failure=error.stack||String(error);console.error(error);process.exitCode=1;
 } finally {
-  if(hostMoved){try{renameSync(temporaryHost+'.unavailable',temporaryHost);}catch(error){evidence.hostRestoreError=error.message;}}
+  if(hostMoved){try{renameSync(temporaryHost+'.unavailable',temporaryHost);}catch(error){evidence.hostRestoreError=error.message;evidence.result='failed';process.exitCode=1;}}
   if(browser){try{await browser.send('Browser.close');}catch{}}
   for(const client of socketClients){try{client.close();}catch{}}
   for(const process_ of [browserProcess,desktopProcess])if(process_&&process_.exitCode===null){await delay(300);if(process_.exitCode===null)spawnSync('taskkill',['/PID',String(process_.pid),'/T','/F'],{windowsHide:true,stdio:'ignore'});}
   for(const timer of streams)clearInterval(timer);server.closeAllConnections();await new Promise(resolve=>server.close(resolve));
-  if(registered){try{registry('restore');evidence.registryRestored=true;}catch(error){evidence.registryRestoreError=error.message;process.exitCode=1;}}
+  if(registered){try{registry('restore');evidence.registryRestored=true;}catch(error){evidence.registryRestoreError=error.message;evidence.result='failed';process.exitCode=1;}}
   evidence.finishedAt=new Date().toISOString();writeFileSync(path.join(root,'evidence.json'),JSON.stringify(evidence,null,2));writeFileSync(path.join(root,'desktop.log'),processLogs.desktop);writeFileSync(path.join(root,'chromium.log'),processLogs.browser);console.log('Evidence:',path.join(root,'evidence.json'));
 }

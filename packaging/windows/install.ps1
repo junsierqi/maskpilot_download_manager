@@ -48,7 +48,7 @@ if ($target -ne $source) {
 $marker = @{ product='MaskPilot'; schema=2; installedAtUtc=[DateTime]::UtcNow.ToString('o'); directory=$target; files=$ownedFiles }
 $marker | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath "$target/maskpilot-install.json" -Encoding UTF8
 if (-not $NoBrowserRegistration) { & "$target/scripts/register-browser.ps1" -InstallDirectory $target }
-foreach ($name in @('native-bridge.json','com.maskpilot.downloads.json')) {
+foreach ($name in @('native-bridge.json','com.maskpilot.downloads.json','com.maskpilot.downloads.firefox.json','browser-registration.json')) {
     if (-not $NoBrowserRegistration -and (Test-Path -LiteralPath "$target/$name")) { $ownedFiles += @{ path=$name; sha256=(Get-FileHash -LiteralPath "$target/$name" -Algorithm SHA256).Hash } }
 }
 $marker.files = $ownedFiles
