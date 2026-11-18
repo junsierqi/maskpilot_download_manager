@@ -104,6 +104,9 @@ struct Task {
     // Observed by the current native HTTP run, never accepted as request authority.
     std::string responseUrl;
     std::string responseContentType;
+    // Immutable trusted project association. Recovered unfinished children always require explicit resume.
+    std::string projectId;
+    std::int64_t projectRevision = 0;
 };
 struct Segment {
     std::int64_t begin = 0, end = 0;

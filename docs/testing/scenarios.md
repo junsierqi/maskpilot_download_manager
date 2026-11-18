@@ -1,5 +1,9 @@
 # 验证场景
 
+站点项目运行 `python tests/integration/site_project_test.py --exercise <cli.exe>`，覆盖真实创建零请求、HTML／CSS 预览与资源计划、同源／路径／循环限制、明确启动、不可覆盖发布、手动更新、失败或取消后旧版本保留，以及下载中强制退出与明确恢复。设置 `MASKPILOT_TEST_BROWSER=<chromium.exe>` 并传入 `--browser tests/system/site_project_test.mjs`，会在关闭来源后用真实浏览器验证已发布文件、图片解码、CSS 导入、页面往返、零来源请求和无活动脚本。
+
+`ctest --test-dir <build> -R 'SiteProject|ProjectTask|site_project_' --output-on-failure --no-tests=error` 包含 SQLite 12→13、原子项目清单、发布回执、实际 Windows 目录联接拒绝及 Qt 项目控件流程。原生队列窗口／日额度由测试所属时钟和真实 Curl 传输驱动，不修改系统时间。保存失败、旧代回调及精确状态交错属于 fixture-only，补充实际协议、文件和界面证据。`maskpilot_site_project_system_tests.exe --screenshot <绝对路径.png>` 可保存项目视图；设置 `MASKPILOT_TEST_NATIVE_UI=1` 使用原生窗口。测试不执行真正关机。
+
 内容类型观察使用 `python tests/integration/response_metadata_test.py --exercise <cli.exe>`，覆盖实际无扩展名 HTML／CSS、字符集、最终地址、探测与正文冲突、重复／不安全／缺失头、空资源、8 路范围与动态拆分、完整缓存恢复。`ctest --test-dir <build> -R 'SiteContent|ResponseContentType' --output-on-failure --no-tests=error` 覆盖实际 SQLite 11→12、当前事件与旧代回调、HTML 树／CSS 转义、调用方异常、输出膨胀限额及声明类型与二进制签名不符。
 
 运行 `node tests/system/site_content_test.mjs --build-directory <build> --browser <chromium.exe>` 验证生产解析器与真实 `file://` 浏览器：关闭来源后，本地图片、CSS 导入和锚点跳转仍有效，页面网络请求为零，活动代码不执行。夹具保留输出、截图和 `evidence.json`，不修改真实浏览器配置或注册表。这些验证属于内容处理基础，不替代完整站点项目状态机与更新流程验收。

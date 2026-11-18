@@ -1,3 +1,4 @@
+#include "site_commands.h"
 #include <QCoreApplication>
 #include <QDir>
 #include <QJsonArray>
@@ -202,6 +203,8 @@ void inspectMedia(maskpilot::DownloadService& service, maskpilot::DownloadSpec s
 }
 } // namespace
 int runClient(int argc, char** argv) {
+    if (argc > 1 && std::string(argv[1]) == "--project")
+        return maskpilot::runSiteProjectCommand(argc, argv);
     maskpilot::TorrentRuntimeOptions torrentRuntime;
     // Runtime options precede the command, so strings used as task option values are never reinterpreted.
     if (argc > 1 && std::string(argv[1]) == "--bt-no-discovery") {

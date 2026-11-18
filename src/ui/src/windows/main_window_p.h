@@ -50,6 +50,7 @@
 #include <QToolBar>
 #include <QVBoxLayout>
 #include <algorithm>
+#include <maskpilot/application/site_project_service.h>
 #include <maskpilot/ui/add_download_dialog.h>
 #include <maskpilot/ui/main_window.h>
 #include <set>
@@ -69,6 +70,11 @@ struct MainWindow::Impl {
     MainWindow* window;
     DownloadService& service;
     MediaInspectionFunction mediaInspector;
+    SiteProjectService* projects = nullptr;
+    bool projectsUnavailable = false;
+    std::function<void(const std::filesystem::path&)> projectOpener;
+    QAction* projectsAction = nullptr;
+    std::set<std::string> projectBatchIds;
     QSettings settings;
     bool chinese, quitting = false, wasBusy = false, refreshing = false;
     bool installingMedia = false;

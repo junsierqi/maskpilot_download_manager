@@ -6,6 +6,7 @@
 #include <memory>
 
 namespace maskpilot {
+class SiteProjectService;
 class MainWindow final : public QMainWindow {
   public:
     explicit MainWindow(DownloadService& service, QWidget* parent = nullptr);
@@ -18,6 +19,9 @@ class MainWindow final : public QMainWindow {
                  std::string queueId = defaultQueueId);
     void requestQuit();
     void setMediaInspector(MediaInspectionFunction);
+    void setSiteProjectService(SiteProjectService&,
+                               std::function<void(const std::filesystem::path&)> opener = {});
+    void setSiteProjectUnavailable();
 
   protected:
     void closeEvent(QCloseEvent* event) override;

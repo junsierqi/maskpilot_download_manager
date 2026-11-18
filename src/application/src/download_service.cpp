@@ -161,6 +161,8 @@ struct DownloadService::Impl {
                 if (existing.ownerId != task.ownerId || !keyMatches)
                     continue;
                 if (existing.spec.url != spec.url || existing.spec.kind != spec.kind ||
+                    existing.projectId != task.projectId ||
+                    existing.projectRevision != task.projectRevision ||
                     existing.contextRevision != task.contextRevision || existing.spec.proxy != spec.proxy ||
                     existing.proxyCredentialRef != task.proxyCredentialRef ||
                     (!existing.requestName.empty() && existing.requestName != task.requestName) ||
@@ -272,6 +274,9 @@ struct DownloadService::Impl {
         if (const auto validationError = validateSpec(spec); !validationError.empty())
             throw std::invalid_argument(validationError);
         spec.kind = sourceKind(spec);
+        if (!old.projectId.empty() &&
+            (spec.kind != TransferKind::Http || spec.maxStoredBytes <= 0 || !spec.sameOriginRedirectOnly))
+            throw std::invalid_argument("Project child HTTP bounds cannot be removed.");
         if (spec.kind == TransferKind::BitTorrent)
             validateSelection(spec, old.torrent);
         auto candidate = old;
@@ -818,6 +823,12 @@ struct DownloadService::Impl {
             if (traffic)
                 traffic->abandonOpenRuns();
             for (auto task : repository->load()) {
+                if (!task.projectId.empty() && !isTerminal(task.state)) {
+                    task.runIntent = RunIntent::Paused;
+                    task.state = TaskState::Paused;
+                    task.error = "Recovered project resource. Resume its project to validate the saved plan.";
+                    save(task);
+                }
                 queueRegistry->get(task.queueId);
                 const bool unsupportedBudget =
                     queueRegistry->get(task.queueId).dailyPayloadBudget > 0 &&
@@ -946,6 +957,25 @@ std::future<std::string> DownloadService::add(DownloadSpec spec, std::string req
         task.queueId = std::move(queueId);
         task.spec = std::move(spec);
         return p->addPrepared(std::move(task), std::move(requestId), true, rememberProxy);
+    });
+}
+std::future<std::string> DownloadService::addProjectChild(DownloadSpec spec, std::string projectId,
+                                                          std::int64_t projectRevision, std::string requestId,
+                                                          std::string queueId) {
+    return impl_->request([p = impl_.get(), spec = std::move(spec), projectId = std::move(projectId),
+                           projectRevision, requestId = std::move(requestId),
+                           queueId = std::move(queueId)]() mutable {
+        if (!isOpaqueId(projectId) || projectRevision < 1 || projectRevision > 1000000 ||
+            !isOpaqueId(requestId) || sourceKind(spec) != TransferKind::Http || spec.maxStoredBytes <= 0 ||
+            !spec.sameOriginRedirectOnly || requiresOriginAuthentication(spec))
+            throw std::invalid_argument("Invalid public project child request.");
+        spec.startPaused = true;
+        Task task;
+        task.projectId = std::move(projectId);
+        task.projectRevision = projectRevision;
+        task.queueId = std::move(queueId);
+        task.spec = std::move(spec);
+        return p->addPrepared(std::move(task), std::move(requestId), false, false);
     });
 }
 void DownloadService::pause(const std::string& id) {
@@ -1215,6 +1245,8 @@ void DownloadService::updateUrl(const std::string& id, std::string url) {
             return; // A different torrent is a different task, never a refreshed file URL.
         auto spec = it->second.spec;
         spec.url = url;
+        if (!it->second.projectId.empty() && sourceKind(spec) != TransferKind::Http)
+            return;
         spec.cookie.clear();
         spec.authorization.clear();
         spec.headers.clear();

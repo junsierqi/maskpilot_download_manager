@@ -1,5 +1,6 @@
 #include "../dialogs/async_ui.h"
 #include "main_window_p.h"
+#include <maskpilot/ui/site_project_dialog.h>
 namespace maskpilot {
 MainWindow::Impl::Impl(MainWindow* w, DownloadService& s)
     : window(w), service(s),
@@ -82,6 +83,11 @@ void MainWindow::Impl::refresh() {
     int active = 0, complete = 0;
     std::int64_t speed = 0, upload = 0;
     bool busy = false;
+    const auto projectRows = projects ? projects->snapshot() : std::vector<SiteProjectSummary>{};
+    for (const auto& project : projectRows)
+        if (!siteProjectTerminal(project.state))
+            projectBatchIds.insert(project.id);
+    busy = projectsUnavailable || (projects && projects->hasUnfinished());
     for (const auto& task : all) {
         if (isActive(task.state)) {
             ++active;
@@ -162,26 +168,34 @@ void MainWindow::Impl::refresh() {
     }
     if (completionDialog && (busy || !pending.empty()))
         completionDialog->reject();
-    if (wasBusy && !busy && !batchIds.empty()) {
+    if (wasBusy && !busy && (!batchIds.empty() || !projectBatchIds.empty())) {
         auto stateFor = [&](const std::string& id) {
             auto it = std::find_if(all.begin(), all.end(), [&](const auto& task) { return task.id == id; });
             return it == all.end() ? TaskState::Cancelled : it->state;
         };
-        const bool successful = std::all_of(batchIds.begin(), batchIds.end(), [&](const auto& id) {
-            return stateFor(id) == TaskState::Completed;
-        });
+        const bool projectSuccess =
+            std::all_of(projectBatchIds.begin(), projectBatchIds.end(), [&](const auto& id) {
+                return std::any_of(projectRows.begin(), projectRows.end(), [&](const auto& project) {
+                    return project.id == id && project.state == SiteProjectState::Completed;
+                });
+            });
+        const bool successful =
+            projectSuccess && std::all_of(batchIds.begin(), batchIds.end(), [&](const auto& id) {
+                return stateFor(id) == TaskState::Completed;
+            });
         if (successful)
             completion();
         if (std::all_of(batchIds.begin(), batchIds.end(),
                         [&](const auto& id) { return isTerminal(stateFor(id)); }))
             batchIds.clear();
+        projectBatchIds.clear();
     }
     wasBusy = busy;
 }
 
 void MainWindow::Impl::completion() {
     const auto current = service.snapshot();
-    if (!pending.empty() ||
+    if (projectsUnavailable || (projects && projects->hasUnfinished()) || !pending.empty() ||
         std::any_of(current.begin(), current.end(), [](const auto& task) { return !isTerminal(task.state); }))
         return;
     notify("MaskPilot", t("All downloads are complete.", "所有下载任务已完成。"));
@@ -190,6 +204,7 @@ void MainWindow::Impl::completion() {
         return;
     auto* dialog = new QDialog(window);
     completionDialog = dialog;
+    dialog->setObjectName("completionCountdown");
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     dialog->setWindowTitle(t("Queue complete", "队列完成"));
     auto* layout = new QVBoxLayout(dialog);
@@ -204,8 +219,9 @@ void MainWindow::Impl::completion() {
         if (!dialog->isVisible())
             return;
         const auto current = service.snapshot();
-        if (!pending.empty() || std::any_of(current.begin(), current.end(),
-                                            [](const auto& task) { return !isTerminal(task.state); })) {
+        if (projectsUnavailable || (projects && projects->hasUnfinished()) || !pending.empty() ||
+            std::any_of(current.begin(), current.end(),
+                        [](const auto& task) { return !isTerminal(task.state); })) {
             dialog->reject();
             return;
         }
@@ -420,6 +436,15 @@ MainWindow::MainWindow(DownloadService& service, QWidget* parent)
     file->addSeparator();
     file->addAction(p.t("Quit", "退出"), QKeySequence("Ctrl+Q"), this, &MainWindow::requestQuit);
     auto* tools = menuBar()->addMenu(p.t("Tools", "工具"));
+    p.projectsAction = tools->addAction(p.t("Static site projects…", "静态站点项目…"), this, [this, &p] {
+        if (!p.projects)
+            return;
+        cancelCompletionCountdown();
+        SiteProjectDialog dialog(*p.projects, p.service, p.chinese, p.projectOpener, this);
+        dialog.exec();
+    });
+    p.projectsAction->setObjectName("siteProjectsAction");
+    p.projectsAction->setEnabled(false);
     tools->addAction(p.t("Open torrent…", "打开种子文件…"), this, [this, &p] {
         const auto file =
             QFileDialog::getOpenFileName(this, p.t("Open torrent", "打开种子"), {}, "Torrent (*.torrent)");
@@ -448,6 +473,8 @@ MainWindow::MainWindow(DownloadService& service, QWidget* parent)
                 p.service.resume(task.id);
     });
     tools->addAction(p.t("Pause all", "全部暂停"), this, [&p] {
+        if (p.projects)
+            p.projects->pauseAll();
         for (const auto& task : p.service.snapshot())
             p.service.pause(task.id);
     });
@@ -694,6 +721,23 @@ void MainWindow::cancelCompletionCountdown() {
     if (impl_->completionDialog)
         impl_->completionDialog->reject();
 }
+void MainWindow::setSiteProjectService(SiteProjectService& projects,
+                                       std::function<void(const std::filesystem::path&)> opener) {
+    impl_->projects = &projects;
+    impl_->projectOpener = std::move(opener);
+    if (impl_->projectsAction)
+        impl_->projectsAction->setEnabled(true);
+    cancelCompletionCountdown();
+}
+void MainWindow::setSiteProjectUnavailable() {
+    impl_->projectsUnavailable = true;
+    const auto message = impl_->t("Site project storage is unavailable. Ordinary downloads remain available.",
+                                  "站点项目存储不可用，普通下载仍可使用。");
+    if (impl_->projectsAction)
+        impl_->projectsAction->setToolTip(message);
+    statusBar()->showMessage(message);
+    cancelCompletionCountdown();
+}
 void MainWindow::newDownload(QString url) {
     if (url.isEmpty()) {
         auto clipboard = QApplication::clipboard()->text().trimmed();
@@ -735,6 +779,8 @@ void MainWindow::closeEvent(QCloseEvent* event) {
         return;
     }
     event->accept();
+    if (impl_->projects)
+        impl_->projects->pauseAll();
     QApplication::quit();
 }
 void MainWindow::dragEnterEvent(QDragEnterEvent* event) {

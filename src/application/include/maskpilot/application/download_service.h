@@ -18,6 +18,9 @@ class DownloadService {
     // Resolves only after the task is durably persisted. Safe for browser handoff acknowledgement.
     std::future<std::string> add(DownloadSpec spec, std::string requestId = {}, bool rememberProxy = false,
                                  std::string queueId = defaultQueueId);
+    std::future<std::string> addProjectChild(DownloadSpec spec, std::string projectId,
+                                             std::int64_t projectRevision, std::string requestId,
+                                             std::string queueId = defaultQueueId);
     // Trusted local queue administration; never accept these fields through scoped drafts.
     std::future<std::vector<DownloadQueue>> queues();
     std::future<TrafficUsage> queueTraffic(std::string queueId);

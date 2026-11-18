@@ -5,6 +5,8 @@ add_library(maskpilot_infrastructure
     src/network/ftp_transfer.cpp
     src/site/site_content.cpp
     src/site/css_content.cpp
+    src/site/site_project_repository.cpp
+    src/site/site_project_publisher.cpp
     src/transfer/transfer_router.cpp
     src/filesystem/transfer_files.cpp
     src/persistence/sqlite_repository.cpp

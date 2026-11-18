@@ -98,7 +98,19 @@ int main(int argc, char** argv) {
                                               settings.value("globalLimit", 0).toLongLong() * 1024,
                                               settings.value("globalUploadLimit", 0).toLongLong() * 1024},
                 std::move(store.traffic)});
+        std::unique_ptr<maskpilot::SiteProjectService> projects;
+        try {
+            projects = std::make_unique<maskpilot::SiteProjectService>(
+                service, maskpilot::makeSiteProjectRepository(directory / L"site-projects"),
+                maskpilot::makeSiteContentProcessor(), maskpilot::makeSiteProjectPublisher());
+        } catch (const std::exception&) {
+            // Secondary project storage must not disable the existing native download manager.
+        }
         maskpilot::MainWindow window(service);
+        if (projects)
+            window.setSiteProjectService(*projects);
+        else
+            window.setSiteProjectUnavailable();
         window.setMediaInspector([&service, inspector = maskpilot::makeMediaInspector()](
                                      maskpilot::MediaInspectionRequest request, std::stop_token stop) {
             if (stop.stop_requested())

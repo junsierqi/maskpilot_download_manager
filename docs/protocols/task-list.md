@@ -1,5 +1,7 @@
 # Task list interchange
 
+Project association (`projectId`, `projectRevision`) belongs to trusted task metadata in schema 13. It is not exported, imported or accepted in browser drafts. Plain request replay cannot claim a project child, and another project or revision cannot reuse its request binding. Import produces independent paused downloads; it does not reconstruct project manifests, publication receipts or ownership.
+
 `responseUrl` and `responseContentType` are observed output from the current native HTTP attempt. They are never exported, imported or accepted as request authority; supplying them (including database-style snake_case names) is rejected. Schema 12 keeps unknown or ambiguous observed content types empty. Downloaded filenames do not establish a content type.
 
 Desktop export writes UTF-8 JSON version 2: `{"version":2,"downloads":[...]}`. Input is limited to 32 MiB and 10,000 tasks. Unknown keys, wrong types, unsupported versions and invalid specifications fail before any task is added. Torrent metadata has its own 16 MiB per-item and 24 MiB aggregate decoded limits.

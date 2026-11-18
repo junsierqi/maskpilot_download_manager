@@ -1,6 +1,7 @@
 #pragma once
 #include <cstddef>
 #include <functional>
+#include <maskpilot/domain/site_content.h>
 #include <memory>
 #include <optional>
 #include <string>
@@ -8,7 +9,6 @@
 #include <vector>
 
 namespace maskpilot {
-enum class SiteContentKind { Html, Css, Image, Font, Media, Unsupported };
 struct SiteContentLimits {
     std::size_t maxInputBytes = 8 * 1024 * 1024;
     std::size_t maxOutputBytes = 16 * 1024 * 1024;

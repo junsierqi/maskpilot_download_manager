@@ -59,6 +59,13 @@ void validateTaskContext(const Task& task) {
 }
 void validateTransferConstraints(const Task& task) {
     const auto& spec = task.spec;
+    if (task.projectId.empty()
+            ? task.projectRevision != 0
+            : (!isOpaqueId(task.projectId) || task.projectRevision < 1 || task.projectRevision > 1000000 ||
+               task.ownerId != "standalone" || sourceKind(spec) != TransferKind::Http ||
+               spec.maxStoredBytes <= 0 || !spec.sameOriginRedirectOnly ||
+               !(spec.url.starts_with("http://") || spec.url.starts_with("https://"))))
+        throw std::invalid_argument("Invalid persistent project child association.");
     if (!validHttpResponseContentType(task.responseContentType) ||
         (!task.responseContentType.empty() &&
          (sourceKind(spec) != TransferKind::Http || task.responseUrl.empty())))
@@ -183,12 +190,12 @@ class Backend {
             int schemaVersion = 0;
             {
                 Statement version(db_, "PRAGMA user_version");
-                if (sqlite3_step(version.value) != SQLITE_ROW || sqlite3_column_int(version.value, 0) > 12 ||
+                if (sqlite3_step(version.value) != SQLITE_ROW || sqlite3_column_int(version.value, 0) > 13 ||
                     sqlite3_column_int(version.value, 0) < 0)
                     throw std::runtime_error("Database was created by a newer version.");
                 schemaVersion = sqlite3_column_int(version.value, 0);
             }
-            if (schemaVersion > 0 && schemaVersion < 12) {
+            if (schemaVersion > 0 && schemaVersion < 13) {
                 auto backupPath = path;
                 backupPath += L".before-v" + std::to_wstring(schemaVersion + 1) + L"-" +
                               std::filesystem::path(newTaskId()).wstring() + L".db";
@@ -320,6 +327,12 @@ COMMIT;)sql");
 ALTER TABLE tasks ADD COLUMN response_content_type TEXT NOT NULL DEFAULT '';
 PRAGMA user_version=12;
 COMMIT;)sql");
+            if (schemaVersion < 13)
+                execute(R"sql(BEGIN IMMEDIATE;
+ALTER TABLE tasks ADD COLUMN project_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE tasks ADD COLUMN project_revision INTEGER NOT NULL DEFAULT 0;
+PRAGMA user_version=13;
+COMMIT;)sql");
             Statement installation(
                 db_, "INSERT OR IGNORE INTO store_metadata(key,value) VALUES('installation_id',?)");
             installation.text(1, newTaskId());
@@ -438,6 +451,11 @@ COMMIT;)sql");
             if (sqlite3_column_type(q.value, 54) != SQLITE_TEXT)
                 throw std::runtime_error("Saved HTTP content type has an invalid type.");
             t.responseContentType = text(54);
+            if (sqlite3_column_type(q.value, 55) != SQLITE_TEXT ||
+                sqlite3_column_type(q.value, 56) != SQLITE_INTEGER)
+                throw std::runtime_error("Saved project association has invalid types.");
+            t.projectId = text(55);
+            t.projectRevision = sqlite3_column_int64(q.value, 56);
             validateTransferConstraints(t);
             if (!validateMediaSelection(t.spec.mediaSelection, t.spec.audioOnly).empty())
                 throw std::runtime_error("Saved media selection is invalid.");
@@ -468,8 +486,8 @@ speed_limit,scheduled_at,stop_at,state,downloaded,total,created_at,updated_at,re
 media,audio_only,media_format,media_downloader,media_muxer,ftp_tls,ftp_active,ftp_ca,kind,bt_all,bt_selection,
 bt_seed,bt_upload_limit,bt_metadata,bt_published,bt_uploaded,proxy_auth_required,owner_id,request_id,
 context_revision,proxy_credential_ref,origin_auth_required,request_name,queue_id,run_intent,
-media_selection_mode,media_primary_format,media_audio_format,media_container,max_stored_bytes,same_origin_redirect_only,response_url,response_content_type)
-VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+media_selection_mode,media_primary_format,media_audio_format,media_container,max_stored_bytes,same_origin_redirect_only,response_url,response_content_type,project_id,project_revision)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(id) DO UPDATE SET
 url=excluded.url,destination=excluded.destination,category=excluded.category,referrer=excluded.referrer,
 user_agent=excluded.user_agent,proxy=excluded.proxy,expected_sha256=excluded.expected_sha256,
@@ -489,7 +507,7 @@ queue_id=excluded.queue_id,run_intent=excluded.run_intent,media_selection_mode=e
 media_primary_format=excluded.media_primary_format,media_audio_format=excluded.media_audio_format,media_container=excluded.media_container,
 max_stored_bytes=excluded.max_stored_bytes,same_origin_redirect_only=excluded.same_origin_redirect_only,response_url=excluded.response_url,
 response_content_type=excluded.response_content_type
-WHERE tasks.owner_id=excluded.owner_id)sql");
+WHERE tasks.owner_id=excluded.owner_id AND tasks.project_id=excluded.project_id AND tasks.project_revision=excluded.project_revision)sql");
         q.text(1, t.id);
         q.text(2, t.spec.url);
         q.text(3, utf8(t.spec.destination));
@@ -552,6 +570,8 @@ WHERE tasks.owner_id=excluded.owner_id)sql");
         q.number(53, t.spec.sameOriginRedirectOnly);
         q.text(54, t.responseUrl);
         q.text(55, t.responseContentType);
+        q.text(56, t.projectId);
+        q.number(57, t.projectRevision);
         if (sqlite3_step(q.value) != SQLITE_DONE || sqlite3_changes(db_) != 1)
             throw std::runtime_error("Cannot save task ownership or request identity.");
     }
