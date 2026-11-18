@@ -1,3 +1,6 @@
+#include <QCoreApplication>
+#include <QDir>
+#include <QLockFile>
 #include <algorithm>
 #include <cctype>
 #include <charconv>
@@ -142,11 +145,22 @@ int runClient(int argc, char** argv) {
         return argc == 1 ? 0 : 2;
     }
     try {
+        int qtArgc = 1;
+        char qtName[] = "maskpilot_cli";
+        char* qtArgv[] = {qtName, nullptr};
+        QCoreApplication application(qtArgc, qtArgv);
         auto data = std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(argv[3])));
+        std::filesystem::create_directories(data);
+        QLockFile lock(QDir(QString::fromUtf8(argv[3])).absoluteFilePath("instance.lock"));
+        lock.setStaleLockTime(0);
+        if (!lock.tryLock(0))
+            throw std::runtime_error(
+                "Application data directory is already in use. Close its desktop or client first.");
+        auto store = maskpilot::makeSqliteStore(data / "tasks.db");
         maskpilot::DownloadService service(
-            maskpilot::makeSqliteRepository(data / "tasks.db"),
+            std::move(store.tasks),
             maskpilot::makeUnifiedTransferFactory(maskpilot::makeTorrentTransferFactory(torrentRuntime)),
-            data / "parts");
+            data / "parts", {}, maskpilot::QueueDependencies{std::move(store.queues)});
         std::string id;
         if (std::string(argv[1]) == "--resume" || std::string(argv[1]) == "--change-url") {
             id = argv[2];

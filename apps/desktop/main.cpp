@@ -91,7 +91,8 @@ int main(int argc, char** argv) {
         auto vault = maskpilot::makeNativeCredentialVault(store.contexts->installationId());
         maskpilot::DownloadService service(
             std::move(store.tasks), maskpilot::makeUnifiedTransferFactory(), directory / L"parts",
-            maskpilot::ContextDependencies{std::move(store.contexts), std::move(vault)});
+            maskpilot::ContextDependencies{std::move(store.contexts), std::move(vault)},
+            maskpilot::QueueDependencies{std::move(store.queues)});
         maskpilot::MainWindow window(service);
         maskpilot::DownloadBridge bridge(
             service, [&window](const QString& url) { return window.defaultSpec(url); },

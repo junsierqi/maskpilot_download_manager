@@ -229,6 +229,17 @@ def run(host, desktop):
         stack.callback(harness.stop)
         harness.start()
 
+        # A second coordinator must not open the desktop's database or shared part files.
+        cli = Path(desktop).with_name('maskpilot_cli.exe' if os.name == 'nt' else 'maskpilot_cli')
+        destination = root / 'second-coordinator.bin'
+        rejected = subprocess.run([str(cli), origin.url('cli', '/legacy'), str(destination),
+                                   str(harness.data)], capture_output=True, timeout=10)
+        assert rejected.returncode != 0 and b'already in use' in rejected.stderr
+        assert b'TASK_ID' not in rejected.stdout and not destination.exists()
+        assert not origin.snapshot(), 'Rejected coordinator contacted the origin'
+        with contextlib.closing(sqlite3.connect(harness.data / 'tasks.db')) as database:
+            assert database.execute('SELECT count(*) FROM tasks').fetchone()[0] == 0
+
         def configure(key, current=None, **changes):
             params = dict(externalKey='trusted-fixture/' + key, label='Context ' + key,
                           downloadRoot=str(root / ('context-' + key)), proxyEndpoint=routes[key].url(),
@@ -293,6 +304,7 @@ def run(host, desktop):
 
         base = dict(url=origin.url('a'), filename='hostile.bin')
         for field, value in [('ownerId', contexts['b']['id']), ('contextId', contexts['b']['id']),
+                             ('queueId', uuid.uuid4().hex), ('runIntent', 'Run'),
                              ('profileId', contexts['b']['id']), ('proxy', routes['b'].url()),
                              ('proxyEndpoint', routes['b'].url()), ('cookie', COOKIES['b']),
                              ('authorization', 'secret-extra'), ('credentialRef', uuid.uuid4().hex),

@@ -68,14 +68,15 @@ ImportReview reviewImport(QWidget* parent, const std::vector<DownloadSpec>& spec
     auto* summary = new QLabel(&dialog);
     summary->setObjectName("taskImportSummary");
     summary->setWordWrap(true);
-    auto message =
-        t("%1 tasks; %2 already imported; %3 remaining. Imported tasks belong to standalone and remain "
-          "paused. "
-          "Context bindings and credentials are not restored.",
-          "%1 个任务；已导入 %2 个；剩余 %3 个。导入的任务属于独立任务并保持暂停。不会恢复上下文绑定和凭据。")
-            .arg(specs.size())
-            .arg(completed)
-            .arg(specs.size() - completed);
+    auto message = t("%1 tasks; %2 already imported; %3 remaining. Imported tasks belong to "
+                     "standalone/default queue and remain "
+                     "paused. "
+                     "Context bindings and credentials are not restored.",
+                     "%1 个任务；已导入 %2 个；剩余 %3 "
+                     "个。导入任务属于独立下载区／默认队列并保持暂停；不会恢复环境绑定和凭据。")
+                       .arg(specs.size())
+                       .arg(completed)
+                       .arg(specs.size() - completed);
     if (contextBound)
         message += "\n" + t("%1 context-bound sources will be imported as standalone.",
                             "%1 个上下文来源将导入为独立任务。")
@@ -217,6 +218,8 @@ void MainWindow::Impl::continueImport() {
     if (batch->next == batch->specs.size()) {
         const auto count = batch->next;
         pendingImport.reset();
+        contextFilter->setCurrentIndex(contextFilter->findData("standalone"));
+        queueFilter->setCurrentIndex(queueFilter->findData(defaultQueueId));
         notify("MaskPilot",
                t("Imported %1 paused standalone tasks.", "已导入 %1 个暂停的独立任务。").arg(count));
         return;
@@ -250,9 +253,19 @@ void MainWindow::Impl::continueImport() {
 
 void MainWindow::Impl::batch() {
     QDialog dialog(window);
+    const auto targetQueue = selectedQueueId();
     dialog.resize(650, 510);
-    dialog.setWindowTitle(t("Batch downloads", "批量下载"));
+    dialog.setWindowTitle(t("Batch standalone downloads", "批量独立下载"));
     auto* layout = new QVBoxLayout(&dialog);
+    const auto foundQueue = std::find_if(knownQueues.begin(), knownQueues.end(),
+                                         [&](const auto& value) { return value.id == targetQueue; });
+    const auto queueName = foundQueue != knownQueues.end() ? qs(foundQueue->name) : t("Default", "默认队列");
+    auto* target = new QLabel(t("Adds paused tasks to %1, using standalone request settings.",
+                                "使用独立下载区的默认请求设置，加入“%1”并保持暂停。")
+                                  .arg(queueName));
+    target->setTextFormat(Qt::PlainText);
+    target->setWordWrap(true);
+    layout->addWidget(target);
     auto* label =
         new QLabel(t("One URL per line, or paste text containing links. A numeric template such as "
                      "file{001..010}.zip is supported (up to 1000 links).",
@@ -301,11 +314,13 @@ void MainWindow::Impl::batch() {
     });
     QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, [&] {
+        contextFilter->setCurrentIndex(contextFilter->findData("standalone"));
+        queueFilter->setCurrentIndex(queueFilter->findData(qs(targetQueue)));
         for (int i = 0; i < output->count(); ++i) {
             const auto url = output->item(i)->text();
             auto spec = window->defaultSpec(url);
             spec.startPaused = true;
-            window->enqueue(std::move(spec));
+            window->enqueue(std::move(spec), {}, {}, false, targetQueue);
         }
         dialog.accept();
     });

@@ -6,6 +6,7 @@
 |---|---|
 | 原生文件故障矩阵 | CTest `local_http_product_path`：Range、降级、空／未知长度、身份变化、重定向清除凭据、代理、登录、重试、重名和 SHA 失败 |
 | 动态分段 | CTest `adaptive_http_product_path`：不均速本地服务记录实际尾段内新切点、2／8 活动连接边界，布局提交后强制退出并改为单连接恢复，旧偏移迁移、损坏布局及 Windows 元数据替换失败后恢复；逐块不同内容的 SHA-256 防止组装顺序错误被重复数据掩盖 |
+| 命名队列 | CTest `QueuePolicy.*`、`QueueStorage.*`、`QueueUi.*`：队列轮转／优先级／并发与带宽、媒体启动预留、手动与策略暂停、重试与一次性计划边界、真实 SQLite 6→7 迁移／版本检查／整批移动回滚，以及真实 Qt 控件和 TCP HTTP 输出校验 |
 | FTP/FTPS | CTest `ftp_product_path`，或 `python tests/support/ftp_fixture.py --exercise <cli.exe>`：实际匿名／认证、主动／被动、显式／隐式 TLS、CA／主机名拒绝、摘要、远端变化、REST 回退及强制退出恢复；只对受控本地服务器作保证 |
 | 原生代理 | CTest `proxy_product_path`，或 `python tests/integration/proxy_test.py --exercise <cli.exe>`：记录实际 HTTP CONNECT／SOCKS5 转发与认证，验证远端 DNS、环境绕过污染、错误／缺失凭据、代理不可用不直连、FTPS 两种 TLS 模式及强制退出后的凭据标记 |
 | BT 代理隔离 | CTest `TorrentProxy.*`：实际元数据与分片通过代理，直连／不同端点／同端点不同凭据并发隔离；坏节点与坏 Tracker 不妨碍有效备用源和同路由其他任务 |
@@ -50,3 +51,5 @@ python benchmarks/run.py --desktop out/package/MaskPilot-0.1.0-windows-x64/maskp
 `ctest --test-dir <build> -R scoped_native_bridge_product_path --output-on-failure --no-tests=error` 调用实际桌面与 host。夹具验证独立管理权限、两个会话、请求去重、跨上下文拒绝、旧客户端隔离、撤销／重新签发／重启及真实代理和 Cookie 路由。大历史数据只在夹具所属桌面关闭时写入；运行时不另起数据库写入器。它也验证 v1 登录任务重启后不匿名下载、精确 URL 改变时不请求新目标，以及可选授权任务重新绑定后仍要求授权。不能据此推断浏览器侧签发已完成。
 
 `ctest --test-dir <build> -R 'ContextUi\.|TaskList|DesktopFlow\.|DownloadContexts\.' --output-on-failure --no-tests=error` 覆盖实际环境管理、筛选、新建／重新绑定、撤销／恢复／清理按钮，独立任务安全记住／忘记、重开编辑器保留认证需求，以及导入取消／中途保存失败／剩余重试。原生凭据用随机安装命名空间，结束时仅删除所属日志记录。控件测试默认 offscreen；设置 `MASKPILOT_TEST_NATIVE_UI=1` 使用真实 Windows 窗口，并可用 `MASKPILOT_TEST_CONTEXT_SCREENSHOT=<绝对路径.png>` 保存环境对话框截图。
+
+队列控件复测使用 `ctest --test-dir <build> -R '^Queue' --output-on-failure --no-tests=error`。原生截图设置 `MASKPILOT_TEST_NATIVE_UI=1`、`MASKPILOT_TEST_QUEUE_SCREENSHOT=<绝对路径.png>`，运行 `QueueUi.ActualManagerAddFilterMoveAndReopenPreservePausedMembership`。实际 HTTP 窗口测试验证队列启用不会启动手动暂停任务、保留已下载数据并完整落盘；设置失败测试只用受控媒体工作桩验证保存顺序，不替代实际媒体组件回归。测试不触发真正退出或关机动作。

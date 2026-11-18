@@ -12,6 +12,9 @@ class AddDownloadDialog final : public QDialog {
     void setSpecification(const DownloadSpec& spec);
     bool rememberProxyCredentials() const;
     void setStoredProxyCredentials(bool stored);
+    void setQueues(const std::vector<DownloadQueue>&, std::string selected = defaultQueueId,
+                   bool editable = true);
+    std::string queueId() const;
 
   private:
     struct Impl;

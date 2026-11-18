@@ -357,8 +357,10 @@ void MainWindow::Impl::newContextDownload(const QString& initialUrl) {
     auto* profileHeading = new QLabel(qs(profile.label));
     profileHeading->setTextFormat(Qt::PlainText);
     layout->addWidget(profileHeading);
-    auto* note = new QLabel(t("Web files and magnet links use this profile's fixed folder and proxy.",
-                              "网页文件与磁力任务使用此环境的固定目录和代理。"));
+    auto* note =
+        new QLabel(t("Web files and magnet links use this profile's fixed folder and proxy, in the default "
+                     "queue. Pause a task before moving it to another queue.",
+                     "网页文件与磁力任务使用此环境的固定目录、代理和默认队列；暂停任务后可移动到其他队列。"));
     note->setWordWrap(true);
     layout->addWidget(note);
     auto* form = new QFormLayout;
@@ -404,6 +406,7 @@ void MainWindow::Impl::newContextDownload(const QString& initialUrl) {
                     service.addScoped(std::move(token), draft, newTaskId()), &dialog,
                     [&](std::string) {
                         window->cancelCompletionCountdown();
+                        queueFilter->setCurrentIndex(queueFilter->findData(defaultQueueId));
                         dialog.accept();
                     },
                     fail);

@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <filesystem>
+#include <maskpilot/domain/queue.h>
 #include <maskpilot/domain/torrent.h>
 #include <maskpilot/domain/version.h>
 #include <string>
@@ -27,6 +28,7 @@ enum class TaskState {
     FetchingMetadata,
     Seeding,
     AwaitingSelection,
+    PolicyWaiting,
     Count
 };
 struct DownloadSpec {
@@ -67,6 +69,9 @@ struct Task {
     std::string id;
     // Trusted server metadata; never accepted from a browser DownloadSpec.
     std::string ownerId = "standalone";
+    // Queue membership is trusted server metadata independent of the source owner and route.
+    std::string queueId = defaultQueueId;
+    RunIntent runIntent = RunIntent::Run;
     std::string requestId;
     std::string requestName;
     std::int64_t contextRevision = 0;

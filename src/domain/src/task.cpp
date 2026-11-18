@@ -206,9 +206,10 @@ bool isActive(TaskState state) {
 bool isTerminal(TaskState state) { return state == TaskState::Completed || state == TaskState::Cancelled; }
 const char* stateName(TaskState state) {
     static constexpr const char* names[] = {
-        "Queued",        "Scheduled",       "Probing",           "Downloading", "Pausing",     "Paused",
-        "Retry waiting", "Verifying",       "Finalizing",        "Completed",   "Failed",      "Cancelling",
-        "Cancelled",     "Needs attention", "Fetching metadata", "Seeding",     "Select files"};
+        "Queued",  "Scheduled",     "Probing",          "Downloading",     "Pausing",
+        "Paused",  "Retry waiting", "Verifying",        "Finalizing",      "Completed",
+        "Failed",  "Cancelling",    "Cancelled",        "Needs attention", "Fetching metadata",
+        "Seeding", "Select files",  "Waiting for queue"};
     auto index = static_cast<int>(state);
     return index >= 0 && index < static_cast<int>(std::size(names)) ? names[index] : "Invalid";
 }

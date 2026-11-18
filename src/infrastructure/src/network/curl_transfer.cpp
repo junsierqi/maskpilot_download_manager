@@ -576,7 +576,12 @@ class CurlTransfer final : public ITransferTransport {
                 ~MultiGuard() { close(false); }
             } guard{multi, active, offsets};
             bool streamFinished = false, splittingEnabled = true;
-            const int handleLimit = resumable ? std::clamp(task.spec.connections, 1, 8) : 1;
+            auto handleLimit = [&] {
+                const int configured = resumable ? std::clamp(task.spec.connections, 1, 8) : 1;
+                const auto assigned = control.speedLimit.load();
+                return assigned > 0 ? static_cast<int>(std::min<std::int64_t>(configured, assigned))
+                                    : configured;
+            };
             auto start = [&](const http::Extent& extent) {
                 auto sink = std::make_unique<Sink>();
                 sink->extentId = extent.id;
@@ -608,7 +613,7 @@ class CurlTransfer final : public ITransferTransport {
             };
             auto fill = [&] {
                 for (const auto& extent : ranges) {
-                    if (active.size() >= static_cast<std::size_t>(handleLimit))
+                    if (active.size() >= static_cast<std::size_t>(handleLimit()))
                         break;
                     const bool unfinished =
                         extent.end < 0 ? !streamFinished : offsets.at(extent.id) < extent.end - extent.begin;
@@ -640,6 +645,10 @@ class CurlTransfer final : public ITransferTransport {
             for (;;) {
                 if (control.pause || control.cancel || !failure.empty())
                     break;
+                // A positive byte/s allocation must not become one byte/s on every connection.
+                // Detach only between multi calls, preserving each extent's durable prefix.
+                while (active.size() > static_cast<std::size_t>(handleLimit()))
+                    detach(active.rbegin()->first);
                 fill();
                 if (active.empty())
                     break;
@@ -708,7 +717,7 @@ class CurlTransfer final : public ITransferTransport {
                     break;
                 fill();
                 while (resumable && splittingEnabled &&
-                       active.size() < static_cast<std::size_t>(handleLimit) &&
+                       active.size() < static_cast<std::size_t>(handleLimit()) &&
                        layout.extents.size() < maxRecoveryExtents) {
                     int victim = -1;
                     std::int64_t largest = 2 * http::minSplitBytes - 1;

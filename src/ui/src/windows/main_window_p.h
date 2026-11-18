@@ -94,6 +94,10 @@ struct MainWindow::Impl {
     std::vector<DownloadContext> knownContexts;
     std::optional<std::future<std::vector<DownloadContext>>> contextRequest;
     std::int64_t lastContextRefresh = 0;
+    QComboBox* queueFilter = nullptr;
+    std::vector<DownloadQueue> knownQueues;
+    std::optional<std::future<std::vector<DownloadQueue>>> queueRequest;
+    std::int64_t lastQueueRefresh = 0;
     struct ImportBatch;
     std::shared_ptr<ImportBatch> pendingImport;
     explicit Impl(MainWindow* w, DownloadService& s);
@@ -113,6 +117,10 @@ struct MainWindow::Impl {
     void refreshContexts();
     void contextsDialog();
     void newContextDownload(const QString& url);
+    void refreshQueues();
+    void queuesDialog();
+    void moveToQueue();
+    std::string selectedQueueId() const;
     void batch();
 };
 } // namespace maskpilot

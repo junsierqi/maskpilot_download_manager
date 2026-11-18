@@ -38,6 +38,7 @@ struct AddDownloadDialog::Impl {
     bool chinese = false;
     QString storedProxyEndpoint;
     QComboBox* category;
+    QComboBox* queue;
     QSpinBox *connections, *speed, *priority;
     QCheckBox *paused, *schedule, *stop;
     QDateTimeEdit *startTime, *stopTime;
@@ -84,7 +85,7 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
     impl_->chinese = chinese;
     auto t = [chinese](const char* en, const char* zh) { return QString::fromUtf8(chinese ? zh : en); };
     setWindowTitle(t("New download", "新建下载"));
-    resize(660, 550);
+    resize(680, 610);
     setMinimumWidth(560);
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(24, 20, 24, 20);
@@ -154,6 +155,10 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
         impl_->destination->setText(QDir(path).filePath(safeName(impl_->url->text())));
     });
     impl_->category = new QComboBox;
+    impl_->queue = new QComboBox;
+    impl_->queue->setObjectName("downloadQueue");
+    impl_->queue->addItem(t("Default", "默认队列"), defaultQueueId);
+    form->addRow(t("Queue", "下载队列"), impl_->queue);
     impl_->category->setEditable(true);
     impl_->category->addItems({"General", "Documents", "Software", "Video", "Music", "Archives"});
     const auto extension = QFileInfo(safeName(initialUrl)).suffix().toLower();
@@ -612,5 +617,35 @@ void AddDownloadDialog::setStoredProxyCredentials(bool stored) {
     impl_->storedProxyEndpoint = impl_->proxy->text().trimmed();
     impl_->rememberProxy->setChecked(stored);
     impl_->updateStorage();
+}
+void AddDownloadDialog::setQueues(const std::vector<DownloadQueue>& queues, std::string selected,
+                                  bool editable) {
+    impl_->queue->clear();
+    const auto t = [this](const char* en, const char* zh) {
+        return QString::fromUtf8(impl_->chinese ? zh : en);
+    };
+    for (const auto& value : queues) {
+        auto name = value.id == defaultQueueId && value.name == "Default"
+                        ? t("Default", "默认队列")
+                        : QString::fromStdString(value.name);
+        if (!value.enabled)
+            name += t(" (paused)", "（已暂停）");
+        impl_->queue->addItem(name, QString::fromStdString(value.id));
+    }
+    if (queues.empty())
+        impl_->queue->addItem(t("Default", "默认队列"), defaultQueueId);
+    auto index = impl_->queue->findData(QString::fromStdString(selected));
+    if (index < 0 && !editable) {
+        impl_->queue->addItem(t("Unavailable queue", "队列不可用"), QString::fromStdString(selected));
+        index = impl_->queue->count() - 1;
+    }
+    impl_->queue->setCurrentIndex(index >= 0 ? index : 0);
+    impl_->queue->setEnabled(editable);
+    if (!editable)
+        impl_->queue->setToolTip(t("Use Move to queue from the task menu after pausing.",
+                                   "暂停任务后，可通过右键菜单移动到其他队列。"));
+}
+std::string AddDownloadDialog::queueId() const {
+    return impl_->queue->currentData().toString().toStdString();
 }
 } // namespace maskpilot

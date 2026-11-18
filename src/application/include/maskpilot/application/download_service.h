@@ -2,18 +2,28 @@
 #include <future>
 #include <maskpilot/application/download_context.h>
 #include <maskpilot/application/ports.h>
+#include <maskpilot/application/queue.h>
 #include <optional>
 
 namespace maskpilot {
 class DownloadService {
   public:
     DownloadService(std::unique_ptr<ITaskRepository> repository, TransportFactory factory,
-                    std::filesystem::path workDirectory, ContextDependencies contexts = {});
+                    std::filesystem::path workDirectory, ContextDependencies contexts = {},
+                    QueueDependencies queues = {});
     ~DownloadService();
     DownloadService(const DownloadService&) = delete;
     DownloadService& operator=(const DownloadService&) = delete;
     // Resolves only after the task is durably persisted. Safe for browser handoff acknowledgement.
-    std::future<std::string> add(DownloadSpec spec, std::string requestId = {}, bool rememberProxy = false);
+    std::future<std::string> add(DownloadSpec spec, std::string requestId = {}, bool rememberProxy = false,
+                                 std::string queueId = defaultQueueId);
+    // Trusted local queue administration; never accept these fields through scoped drafts.
+    std::future<std::vector<DownloadQueue>> queues();
+    std::future<DownloadQueue> configureQueue(QueueConfiguration);
+    std::future<void> moveToQueue(std::vector<std::string> taskIds, std::string queueId);
+    std::future<void> removeQueue(std::string queueId, std::int64_t expectedRevision);
+    std::future<void> configureLimits(int concurrentTasks, std::int64_t globalBytesPerSecond,
+                                      std::int64_t globalUploadBytesPerSecond = 0);
     // Trusted in-process administration. The IPC adapter must authenticate its own admin authority.
     std::future<DownloadContext> configureContext(ContextConfiguration, ProxyCredentials = {},
                                                   bool rememberProxy = false);
@@ -44,7 +54,7 @@ class DownloadService {
     void updateRequest(const std::string& id, DownloadSpec spec);
     // Complete trusted desktop edit; explicit persistence and source-requirement choices.
     std::future<void> updateRequestWithCredentials(const std::string& id, DownloadSpec spec,
-                                                  bool rememberProxy);
+                                                   bool rememberProxy);
     std::future<void> forgetSavedProxyCredentials(const std::string& id);
     std::future<void> retryCredentialCleanup();
     void restart(const std::string& id);

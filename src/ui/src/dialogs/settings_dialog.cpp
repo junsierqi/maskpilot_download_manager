@@ -1,7 +1,20 @@
 #include "../windows/main_window_p.h"
+#include "async_ui.h"
 namespace maskpilot {
+namespace {
+class SettingsDialog final : public QDialog {
+  public:
+    using QDialog::QDialog;
+    bool saving = false;
+    void reject() override {
+        if (!saving)
+            QDialog::reject();
+    }
+};
+} // namespace
 void MainWindow::Impl::settingsDialog() {
-    QDialog dialog(window);
+    SettingsDialog dialog(window);
+    dialog.setObjectName("settingsDialog");
     dialog.setWindowTitle(t("Settings", "设置"));
     dialog.resize(560, 450);
     auto* layout = new QVBoxLayout(&dialog);
@@ -24,6 +37,7 @@ void MainWindow::Impl::settingsDialog() {
             folder->setText(selected);
     });
     auto* concurrent = new QSpinBox;
+    concurrent->setObjectName("globalConcurrentTasks");
     concurrent->setRange(1, 8);
     concurrent->setValue(settings.value("concurrentTasks", 3).toInt());
     form->addRow(t("Simultaneous downloads", "同时下载任务数"), concurrent);
@@ -45,12 +59,14 @@ void MainWindow::Impl::settingsDialog() {
     categoryRules->setPlaceholderText("Category=ext1,ext2");
     form->addRow(t("Category rules", "分类规则"), categoryRules);
     auto* limit = new QSpinBox;
+    limit->setObjectName("globalDownloadLimit");
     limit->setRange(0, 1000000);
     limit->setSpecialValueText(t("Unlimited", "不限速"));
     limit->setSuffix(" KiB/s");
     limit->setValue(settings.value("globalLimit", 0).toInt());
     form->addRow(t("Global speed limit", "全局限速"), limit);
     auto* upload = new QSpinBox;
+    upload->setObjectName("globalUploadLimit");
     upload->setRange(0, 1000000);
     upload->setSpecialValueText(t("Unlimited", "不限速"));
     upload->setSuffix(" KiB/s");
@@ -81,9 +97,12 @@ void MainWindow::Impl::settingsDialog() {
     notice->setStyleSheet("color:#738198;");
     layout->addWidget(notice);
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel);
+    buttons->button(QDialogButtonBox::Save)->setObjectName("saveGlobalSettings");
     layout->addWidget(buttons);
     QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, [&] {
+        if (dialog.saving)
+            return;
         DownloadSpec check;
         check.url = "https://example.invalid/file";
         check.destination = std::filesystem::path(folder->text().toStdWString()) / L"test";
@@ -93,21 +112,35 @@ void MainWindow::Impl::settingsDialog() {
             QMessageBox::warning(&dialog, dialog.windowTitle(), qs(error));
             return;
         }
-        settings.setValue("downloadDirectory", folder->text());
-        settings.setValue("concurrentTasks", concurrent->value());
-        settings.setValue("connections", connections->value());
-        settings.setValue("categorySubfolders", categoryFolders->isChecked());
-        settings.setValue("categoryRules", categoryRules->toPlainText());
-        settings.setValue("globalLimit", limit->value());
-        settings.setValue("globalUploadLimit", upload->value());
-        settings.setValue("proxy", proxy->text());
-        settings.setValue("language", language->currentData());
-        settings.setValue("closeToTray", trayOption->isChecked());
-        settings.setValue("completionAction", completeAction->currentIndex());
-        settings.sync();
-        service.setLimits(concurrent->value(), static_cast<std::int64_t>(limit->value()) * 1024,
-                          static_cast<std::int64_t>(upload->value()) * 1024);
-        dialog.accept();
+        dialog.saving = true;
+        for (auto* child : dialog.findChildren<QWidget*>())
+            child->setEnabled(false);
+        ui::watchFuture(
+            service.configureLimits(concurrent->value(), static_cast<std::int64_t>(limit->value()) * 1024,
+                                    static_cast<std::int64_t>(upload->value()) * 1024),
+            &dialog,
+            [&] {
+                settings.setValue("downloadDirectory", folder->text());
+                settings.setValue("concurrentTasks", concurrent->value());
+                settings.setValue("connections", connections->value());
+                settings.setValue("categorySubfolders", categoryFolders->isChecked());
+                settings.setValue("categoryRules", categoryRules->toPlainText());
+                settings.setValue("globalLimit", limit->value());
+                settings.setValue("globalUploadLimit", upload->value());
+                settings.setValue("proxy", proxy->text());
+                settings.setValue("language", language->currentData());
+                settings.setValue("closeToTray", trayOption->isChecked());
+                settings.setValue("completionAction", completeAction->currentIndex());
+                settings.sync();
+                dialog.saving = false;
+                dialog.accept();
+            },
+            [&](QString failure) {
+                dialog.saving = false;
+                for (auto* child : dialog.findChildren<QWidget*>())
+                    child->setEnabled(true);
+                QMessageBox::warning(&dialog, dialog.windowTitle(), failure);
+            });
     });
     dialog.exec();
 }

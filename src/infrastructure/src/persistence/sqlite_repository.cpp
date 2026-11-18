@@ -1,9 +1,11 @@
 #include <algorithm>
 #include <cctype>
 #include <charconv>
+#include <limits>
 #include <maskpilot/domain/proxy.h>
 #include <maskpilot/infrastructure/adapters.h>
 #include <mutex>
+#include <set>
 #include <sqlite3.h>
 #include <sstream>
 #include <stdexcept>
@@ -51,7 +53,8 @@ void validateTaskContext(const Task& task) {
         (!task.requestId.empty() && !isOpaqueId(task.requestId)) || task.contextRevision < 0 ||
         (task.ownerId != "standalone" && task.contextRevision == 0) ||
         (!task.proxyCredentialRef.empty() && !isOpaqueId(task.proxyCredentialRef)) ||
-        task.requestName.size() > 1024 || task.requestName.find('\0') != std::string::npos)
+        task.requestName.size() > 1024 || task.requestName.find('\0') != std::string::npos ||
+        !isQueueId(task.queueId) || (task.runIntent != RunIntent::Run && task.runIntent != RunIntent::Paused))
         throw std::invalid_argument("Invalid persistent task ownership metadata.");
 }
 void validateRecord(const CredentialRecord& record) {
@@ -66,6 +69,14 @@ class Backend {
     void execute(const char* sql) {
         if (sqlite3_exec(db_, sql, nullptr, nullptr, nullptr) != SQLITE_OK)
             throw std::runtime_error("Database operation failed.");
+    }
+    bool queueExists(const std::string& id) {
+        Statement q(db_, "SELECT 1 FROM download_queues WHERE id=?");
+        q.text(1, id);
+        const auto status = sqlite3_step(q.value);
+        if (status != SQLITE_ROW && status != SQLITE_DONE)
+            throw std::runtime_error("Cannot inspect download queue membership.");
+        return status == SQLITE_ROW;
     }
 
   public:
@@ -83,12 +94,12 @@ class Backend {
             int schemaVersion = 0;
             {
                 Statement version(db_, "PRAGMA user_version");
-                if (sqlite3_step(version.value) != SQLITE_ROW || sqlite3_column_int(version.value, 0) > 6 ||
+                if (sqlite3_step(version.value) != SQLITE_ROW || sqlite3_column_int(version.value, 0) > 7 ||
                     sqlite3_column_int(version.value, 0) < 0)
                     throw std::runtime_error("Database was created by a newer version.");
                 schemaVersion = sqlite3_column_int(version.value, 0);
             }
-            if (schemaVersion > 0 && schemaVersion < 6) {
+            if (schemaVersion > 0 && schemaVersion < 7) {
                 auto backupPath = path;
                 backupPath += L".before-v" + std::to_wstring(schemaVersion + 1) + L"-" +
                               std::filesystem::path(newTaskId()).wstring() + L".db";
@@ -162,6 +173,19 @@ CREATE TABLE credential_records(reference TEXT PRIMARY KEY,owner_id TEXT NOT NUL
  ownership_nonce TEXT NOT NULL DEFAULT '');
 CREATE TABLE store_metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
 PRAGMA user_version=6;
+COMMIT;)sql");
+            if (schemaVersion < 7)
+                execute(R"sql(BEGIN IMMEDIATE;
+CREATE TABLE download_queues(id TEXT PRIMARY KEY,name TEXT NOT NULL UNIQUE,revision INTEGER NOT NULL CHECK(revision>=1),
+ enabled INTEGER NOT NULL CHECK(enabled IN(0,1)),max_active INTEGER NOT NULL CHECK(max_active BETWEEN 1 AND 8),
+ download_limit INTEGER NOT NULL CHECK(download_limit=0 OR download_limit>=1024),
+ upload_limit INTEGER NOT NULL CHECK(upload_limit=0 OR upload_limit>=1024));
+INSERT INTO download_queues VALUES('default','Default',1,1,8,0,0);
+ALTER TABLE tasks ADD COLUMN queue_id TEXT NOT NULL DEFAULT 'default';
+ALTER TABLE tasks ADD COLUMN run_intent INTEGER NOT NULL DEFAULT 1 CHECK(run_intent IN(0,1));
+UPDATE tasks SET run_intent=0 WHERE state=1;
+CREATE INDEX tasks_queue_state ON tasks(queue_id,state,priority,created_at,id);
+PRAGMA user_version=7;
 COMMIT;)sql");
             Statement installation(
                 db_, "INSERT OR IGNORE INTO store_metadata(key,value) VALUES('installation_id',?)");
@@ -265,7 +289,11 @@ COMMIT;)sql");
             t.originAuthenticationRequired = sqlite3_column_int(q.value, 43) != 0;
             t.spec.originAuthenticationRequired = t.originAuthenticationRequired;
             t.requestName = text(44);
+            t.queueId = text(45);
+            t.runIntent = static_cast<RunIntent>(sqlite3_column_int(q.value, 46));
             validateTaskContext(t);
+            if (!queueExists(t.queueId))
+                throw std::runtime_error("Saved task refers to an unavailable download queue.");
             if (t.id.size() != 32 || !std::all_of(t.id.begin(), t.id.end(), [](unsigned char c) {
                     return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
                 }))
@@ -279,13 +307,15 @@ COMMIT;)sql");
     void save(const Task& t) {
         std::lock_guard lock(mutex_);
         validateTaskContext(t);
+        if (!queueExists(t.queueId))
+            throw std::invalid_argument("Task download queue is unavailable.");
         Statement q(db_, R"sql(INSERT INTO tasks(
 id,url,destination,category,referrer,user_agent,proxy,expected_sha256,connections,priority,max_retries,
 speed_limit,scheduled_at,stop_at,state,downloaded,total,created_at,updated_at,retries,resumable,error,
 media,audio_only,media_format,media_downloader,media_muxer,ftp_tls,ftp_active,ftp_ca,kind,bt_all,bt_selection,
 bt_seed,bt_upload_limit,bt_metadata,bt_published,bt_uploaded,proxy_auth_required,owner_id,request_id,
-context_revision,proxy_credential_ref,origin_auth_required,request_name)
-VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+context_revision,proxy_credential_ref,origin_auth_required,request_name,queue_id,run_intent)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(id) DO UPDATE SET
 url=excluded.url,destination=excluded.destination,category=excluded.category,referrer=excluded.referrer,
 user_agent=excluded.user_agent,proxy=excluded.proxy,expected_sha256=excluded.expected_sha256,
@@ -300,7 +330,8 @@ bt_selection=excluded.bt_selection,bt_seed=excluded.bt_seed,bt_upload_limit=excl
 bt_metadata=excluded.bt_metadata,bt_published=excluded.bt_published,bt_uploaded=excluded.bt_uploaded,
 proxy_auth_required=excluded.proxy_auth_required,request_id=excluded.request_id,
 context_revision=excluded.context_revision,proxy_credential_ref=excluded.proxy_credential_ref,
-origin_auth_required=excluded.origin_auth_required,request_name=excluded.request_name
+origin_auth_required=excluded.origin_auth_required,request_name=excluded.request_name,
+queue_id=excluded.queue_id,run_intent=excluded.run_intent
 WHERE tasks.owner_id=excluded.owner_id)sql");
         q.text(1, t.id);
         q.text(2, t.spec.url);
@@ -354,6 +385,8 @@ WHERE tasks.owner_id=excluded.owner_id)sql");
         q.text(43, t.proxyCredentialRef);
         q.number(44, t.originAuthenticationRequired || requiresOriginAuthentication(t.spec));
         q.text(45, t.requestName);
+        q.text(46, t.queueId);
+        q.number(47, static_cast<int>(t.runIntent));
         if (sqlite3_step(q.value) != SQLITE_DONE || sqlite3_changes(db_) != 1)
             throw std::runtime_error("Cannot save task ownership or request identity.");
     }
@@ -485,6 +518,122 @@ AND credential_records.ownership_nonce=excluded.ownership_nonce)sql");
         if (sqlite3_step(q.value) != SQLITE_DONE)
             throw std::runtime_error("Cannot erase credential ownership record.");
     }
+    std::vector<DownloadQueue> loadQueues() {
+        std::lock_guard lock(mutex_);
+        Statement q(db_, "SELECT id,name,revision,enabled,max_active,download_limit,upload_limit FROM "
+                         "download_queues ORDER BY id");
+        std::vector<DownloadQueue> queues;
+        int status;
+        while ((status = sqlite3_step(q.value)) == SQLITE_ROW) {
+            DownloadQueue queue;
+            queue.id = columnText(q.value, 0);
+            queue.name = columnText(q.value, 1);
+            queue.revision = sqlite3_column_int64(q.value, 2);
+            queue.enabled = sqlite3_column_int(q.value, 3) != 0;
+            queue.maxActive = sqlite3_column_int(q.value, 4);
+            queue.downloadLimit = sqlite3_column_int64(q.value, 5);
+            queue.uploadLimit = sqlite3_column_int64(q.value, 6);
+            if (!validateDownloadQueue(queue).empty() || queues.size() >= maxDownloadQueues)
+                throw std::runtime_error("Saved download queue policy is invalid.");
+            queues.push_back(std::move(queue));
+        }
+        if (status != SQLITE_DONE)
+            throw std::runtime_error("Cannot read download queue policies.");
+        return queues;
+    }
+    void saveQueue(const DownloadQueue& queue, std::int64_t expectedRevision) {
+        std::lock_guard lock(mutex_);
+        if (!validateDownloadQueue(queue).empty() || expectedRevision < 0 ||
+            expectedRevision == std::numeric_limits<std::int64_t>::max() ||
+            queue.revision != expectedRevision + 1)
+            throw std::invalid_argument("Invalid queue policy revision or limits.");
+        if (expectedRevision == 0) {
+            Statement count(db_, "SELECT COUNT(*) FROM download_queues");
+            if (sqlite3_step(count.value) != SQLITE_ROW ||
+                sqlite3_column_int64(count.value, 0) >= static_cast<std::int64_t>(maxDownloadQueues))
+                throw std::runtime_error("Download queue policy limit reached.");
+        }
+        Statement q(db_, expectedRevision == 0 ? "INSERT INTO "
+                                                 "download_queues(id,name,revision,enabled,max_active,"
+                                                 "download_limit,upload_limit) VALUES(?,?,?,?,?,?,?)"
+                                               : "UPDATE download_queues SET "
+                                                 "name=?,revision=?,enabled=?,max_active=?,download_limit=?,"
+                                                 "upload_limit=? WHERE id=? AND revision=?");
+        if (expectedRevision == 0) {
+            q.text(1, queue.id);
+            q.text(2, queue.name);
+            q.number(3, queue.revision);
+            q.number(4, queue.enabled);
+            q.number(5, queue.maxActive);
+            q.number(6, queue.downloadLimit);
+            q.number(7, queue.uploadLimit);
+        } else {
+            q.text(1, queue.name);
+            q.number(2, queue.revision);
+            q.number(3, queue.enabled);
+            q.number(4, queue.maxActive);
+            q.number(5, queue.downloadLimit);
+            q.number(6, queue.uploadLimit);
+            q.text(7, queue.id);
+            q.number(8, expectedRevision);
+        }
+        if (sqlite3_step(q.value) != SQLITE_DONE || sqlite3_changes(db_) != 1)
+            throw std::runtime_error("Queue changed or its name is already used. Refresh before retrying.");
+    }
+    void eraseQueue(const std::string& id, std::int64_t expectedRevision) {
+        std::lock_guard lock(mutex_);
+        if (!isQueueId(id) || id == defaultQueueId || expectedRevision < 1)
+            throw std::invalid_argument("The default queue cannot be removed or queue identity is invalid.");
+        Statement q(db_, "DELETE FROM download_queues WHERE id=? AND revision=? AND NOT EXISTS(SELECT 1 FROM "
+                         "tasks WHERE queue_id=download_queues.id)");
+        q.text(1, id);
+        q.number(2, expectedRevision);
+        if (sqlite3_step(q.value) != SQLITE_DONE || sqlite3_changes(db_) != 1)
+            throw std::runtime_error("Queue changed, is unavailable or still contains tasks.");
+    }
+    void moveTasks(const std::vector<QueueMove>& moves, const std::string& target, std::int64_t updatedAt) {
+        std::lock_guard lock(mutex_);
+        if (!isQueueId(target) || moves.size() > 10000 || updatedAt < 0)
+            throw std::invalid_argument("Invalid download queue move.");
+        std::set<std::string> ids;
+        for (const auto& move : moves)
+            if (!isOpaqueId(move.taskId) || !isQueueId(move.expectedQueueId) ||
+                !ids.insert(move.taskId).second)
+                throw std::invalid_argument("Invalid or duplicate task in queue move.");
+        execute("BEGIN IMMEDIATE");
+        try {
+            if (!queueExists(target))
+                throw std::invalid_argument("Target queue is unavailable.");
+            for (const auto& move : moves) {
+                int state;
+                {
+                    Statement current(db_, "SELECT queue_id,state FROM tasks WHERE id=?");
+                    current.text(1, move.taskId);
+                    if (sqlite3_step(current.value) != SQLITE_ROW ||
+                        columnText(current.value, 0) != move.expectedQueueId)
+                        throw std::runtime_error("Task queue membership changed. Refresh before retrying.");
+                    state = sqlite3_column_int(current.value, 1);
+                    if (state < 0 || state >= static_cast<int>(TaskState::Count) ||
+                        isActive(static_cast<TaskState>(state)))
+                        throw std::invalid_argument(
+                            "Pause active tasks before moving them to another queue.");
+                }
+                Statement update(
+                    db_, "UPDATE tasks SET queue_id=?,updated_at=? WHERE id=? AND queue_id=? AND state=?");
+                update.text(1, target);
+                update.number(2, updatedAt);
+                update.text(3, move.taskId);
+                update.text(4, move.expectedQueueId);
+                update.number(5, state);
+                if (sqlite3_step(update.value) != SQLITE_DONE || sqlite3_changes(db_) != 1)
+                    throw std::runtime_error("Task queue membership changed. Refresh before retrying.");
+            }
+            execute("COMMIT");
+        } catch (...) {
+            sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr);
+            throw;
+        }
+    }
 };
 class TaskRepository final : public ITaskRepository {
     std::shared_ptr<Backend> backend_;
@@ -513,11 +662,28 @@ class ContextRepository final : public IContextRepository {
         backend_->eraseCredentialRecord(reference);
     }
 };
+class QueueRepository final : public IQueueRepository {
+    std::shared_ptr<Backend> backend_;
+
+  public:
+    explicit QueueRepository(std::shared_ptr<Backend> backend) : backend_(std::move(backend)) {}
+    std::vector<DownloadQueue> loadQueues() override { return backend_->loadQueues(); }
+    void saveQueue(const DownloadQueue& queue, std::int64_t expected) override {
+        backend_->saveQueue(queue, expected);
+    }
+    void eraseQueue(const std::string& id, std::int64_t expected) override {
+        backend_->eraseQueue(id, expected);
+    }
+    void moveTasks(const std::vector<QueueMove>& moves, const std::string& target,
+                   std::int64_t updatedAt) override {
+        backend_->moveTasks(moves, target, updatedAt);
+    }
+};
 } // namespace
 SqliteStore makeSqliteStore(const std::filesystem::path& path) {
     auto backend = std::make_shared<Backend>(path);
-    return {std::make_unique<TaskRepository>(backend),
-            std::make_unique<ContextRepository>(std::move(backend))};
+    return {std::make_unique<TaskRepository>(backend), std::make_unique<ContextRepository>(backend),
+            std::make_unique<QueueRepository>(std::move(backend))};
 }
 std::unique_ptr<ITaskRepository> makeSqliteRepository(const std::filesystem::path& path) {
     return makeSqliteStore(path).tasks;

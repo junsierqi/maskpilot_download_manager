@@ -1,4 +1,5 @@
 #include "context_registry.h"
+#include "queue_registry.h"
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
@@ -7,6 +8,7 @@
 #include <maskpilot/application/download_service.h>
 #include <maskpilot/domain/proxy.h>
 #include <mutex>
+#include <set>
 #include <string_view>
 #include <thread>
 #include <type_traits>
@@ -63,6 +65,8 @@ struct DownloadService::Impl {
     struct Job {
         std::shared_ptr<TransferControl> control = std::make_shared<TransferControl>();
         std::jthread thread;
+        std::int64_t mediaRate = -1;
+        bool policyPause = false;
     };
     std::unique_ptr<ITaskRepository> repository;
     TransportFactory factory;
@@ -70,6 +74,8 @@ struct DownloadService::Impl {
     std::map<std::string, Task> tasks;
     std::map<std::string, std::unique_ptr<Job>> jobs;
     std::unique_ptr<ContextRegistry> contexts;
+    std::unique_ptr<QueueRegistry> queueRegistry;
+    std::string lastQueue;
     std::map<std::string, std::vector<std::shared_ptr<std::promise<void>>>> pendingRevocations;
     mutable std::mutex mutex;
     std::condition_variable cv;
@@ -80,7 +86,7 @@ struct DownloadService::Impl {
     std::jthread coordinator;
     std::atomic_bool stopping{false};
     bool healthy = true;
-    int concurrentTasks = 3, mediaSlots = 3;
+    int concurrentTasks = 3;
     std::int64_t globalLimit = 0, globalUploadLimit = 0;
 
     template <class Function> auto request(Function function) -> std::future<std::invoke_result_t<Function>> {
@@ -111,6 +117,7 @@ struct DownloadService::Impl {
     std::string addPrepared(Task task, std::string requestId, bool legacy, bool rememberProxy) {
         if (!healthy)
             throw std::runtime_error("Task storage unavailable.");
+        queueRegistry->get(task.queueId);
         auto& spec = task.spec;
         task.originAuthenticationRequired =
             task.originAuthenticationRequired || requiresOriginAuthentication(spec);
@@ -167,6 +174,7 @@ struct DownloadService::Impl {
         task.requestId = std::move(requestId);
         task.createdAt = unixTime();
         task.updatedAt = task.createdAt;
+        task.runIntent = spec.startPaused ? RunIntent::Paused : RunIntent::Run;
         task.state = spec.startPaused
                          ? TaskState::Paused
                          : (spec.scheduledAt > unixTime() ? TaskState::Scheduled : TaskState::Queued);
@@ -253,6 +261,7 @@ struct DownloadService::Impl {
             } else
                 throw std::invalid_argument("Enter proxy credentials before choosing Remember.");
         }
+        candidate.runIntent = RunIntent::Paused;
         candidate.state = TaskState::Paused;
         candidate.error.clear();
         try {
@@ -278,9 +287,11 @@ struct DownloadService::Impl {
         auto& task = it->second;
         switch (command) {
         case ScopedTaskCommand::Pause:
+            task.runIntent = RunIntent::Paused;
             if (jobs.contains(id)) {
                 jobs[id]->control->pause = true;
                 task.state = TaskState::Pausing;
+                save(task);
             } else if (!isTerminal(task.state)) {
                 task.state = TaskState::Paused;
                 save(task);
@@ -291,6 +302,9 @@ struct DownloadService::Impl {
                 return false;
             if (!contexts->enabled(task.ownerId))
                 return false;
+            task.runIntent = RunIntent::Run;
+            task.retryAt = 0;
+            task.spec.scheduledAt = 0;
             task.error.clear();
             task.retries = 0;
             if (task.spec.stopAt <= unixTime())
@@ -299,11 +313,13 @@ struct DownloadService::Impl {
             save(task);
             return true;
         case ScopedTaskCommand::Cancel:
+            task.runIntent = RunIntent::Paused;
             if (isTerminal(task.state))
                 return true;
             if (jobs.contains(id)) {
                 jobs[id]->control->cancel = true;
                 task.state = TaskState::Cancelling;
+                save(task);
             } else {
                 task.state = TaskState::Cancelled;
                 save(task);
@@ -442,6 +458,7 @@ struct DownloadService::Impl {
             // Transfer metadata, not progress counters, determines resumable bytes after a crash.
             return;
         }
+        const bool policyPause = jobs.at(id)->policyPause;
         jobs.erase(id); // The worker has enqueued its terminal event and no longer uses service state.
         task.bytesPerSecond = 0;
         task.uploadSpeed = 0;
@@ -451,7 +468,12 @@ struct DownloadService::Impl {
             task.state = TaskState::Completed;
             break;
         case TransferOutcome::Paused:
-            task.state = TaskState::Paused;
+            task.state = task.runIntent == RunIntent::Run && policyPause
+                             ? (queueRegistry->get(task.queueId).enabled ? TaskState::Queued
+                                                                         : TaskState::PolicyWaiting)
+                             : TaskState::Paused;
+            if (task.state == TaskState::Paused)
+                task.runIntent = RunIntent::Paused;
             break;
         case TransferOutcome::Cancelled:
             task.state = TaskState::Cancelled;
@@ -477,41 +499,96 @@ struct DownloadService::Impl {
         if (isTerminal(task.state))
             clearOwnedParts(task);
     }
+    std::vector<RateClaim> claims(const Task* candidate = nullptr, std::int64_t reservation = -1,
+                                  bool upload = false) const {
+        std::vector<RateClaim> result;
+        for (const auto& [id, job] : jobs) {
+            const auto& t = tasks.at(id);
+            if (upload && t.spec.kind != TransferKind::BitTorrent)
+                continue;
+            result.push_back({id, t.queueId, upload ? t.spec.torrent.uploadLimit : t.spec.speedLimit,
+                              upload ? -1 : job->mediaRate});
+        }
+        if (candidate && (!upload || candidate->spec.kind == TransferKind::BitTorrent))
+            result.push_back({candidate->id, candidate->queueId,
+                              upload ? candidate->spec.torrent.uploadLimit : candidate->spec.speedLimit,
+                              upload ? -1 : reservation});
+        return result;
+    }
+    void validateLimits(int count, std::int64_t down, std::int64_t up,
+                        const std::vector<DownloadQueue>& policies) const {
+        if (count < 1 || count > 8 || down < 0 || up < 0 || up > 2147483647LL)
+            throw std::invalid_argument("Invalid global download limits.");
+        allocateQueueRates(down, policies, claims());
+        allocateQueueRates(up, policies, claims(nullptr, -1, true), true);
+    }
     void schedule() {
         if (!healthy || stopping)
             return;
-        if (jobs.empty())
-            mediaSlots = concurrentTasks;
         const auto now = unixTime();
-        for (auto& [id, task] : tasks) {
-            if ((task.state == TaskState::Scheduled && now >= task.spec.scheduledAt) ||
-                (task.state == TaskState::RetryWaiting && now >= task.retryAt)) {
-                task.state = TaskState::Queued;
-                save(task);
+        for (auto& [id, t] : tasks) {
+            const auto& q = queueRegistry->get(t.queueId);
+            if (t.runIntent == RunIntent::Run &&
+                (t.state == TaskState::Queued || t.state == TaskState::Scheduled ||
+                 t.state == TaskState::RetryWaiting || t.state == TaskState::PolicyWaiting)) {
+                auto desired = !q.enabled
+                                   ? TaskState::PolicyWaiting
+                                   : (t.spec.scheduledAt > now
+                                          ? TaskState::Scheduled
+                                          : (t.retryAt > now ? TaskState::RetryWaiting : TaskState::Queued));
+                // A bandwidth-held task remains waiting until admission succeeds. Persisting
+                // Queued first would alternate two FULL database writes on every actor tick.
+                if (t.state != desired &&
+                    !(t.state == TaskState::PolicyWaiting && desired == TaskState::Queued)) {
+                    t.state = desired;
+                    save(t);
+                }
             }
-            if (isActive(task.state) && task.spec.stopAt > 0 && now >= task.spec.stopAt &&
-                jobs.contains(id)) {
-                jobs[id]->control->pause = true;
-                task.state = TaskState::Pausing;
+            if (jobs.contains(id) && t.spec.stopAt > 0 && now >= t.spec.stopAt) {
+                t.runIntent = RunIntent::Paused;
+                jobs.at(id)->control->pause = true;
+                t.state = TaskState::Pausing;
+                save(t);
             }
         }
-        std::vector<Task*> ready;
-        for (auto& [id, task] : tasks)
-            if (task.state == TaskState::Queued)
-                ready.push_back(&task);
-        std::stable_sort(ready.begin(), ready.end(), [](auto a, auto b) {
-            return a->spec.priority == b->spec.priority ? a->createdAt < b->createdAt
-                                                        : a->spec.priority > b->spec.priority;
-        });
-        for (auto* task : ready) {
-            if (const auto validationError = validateSpec(task->spec); !validationError.empty()) {
+        std::set<std::string> attempted;
+        while (jobs.size() < static_cast<std::size_t>(concurrentTasks)) {
+            std::map<std::string, Task*> candidates;
+            for (auto& [id, t] : tasks) {
+                const bool retryHeld =
+                    t.state == TaskState::PolicyWaiting && t.spec.scheduledAt <= now && t.retryAt <= now;
+                if ((t.state != TaskState::Queued && !retryHeld) || t.runIntent != RunIntent::Run ||
+                    jobs.contains(id) || attempted.contains(id) || !contexts->enabled(t.ownerId))
+                    continue;
+                const auto& q = queueRegistry->get(t.queueId);
+                if (!q.enabled)
+                    continue;
+                auto active = std::count_if(jobs.begin(), jobs.end(), [&](const auto& item) {
+                    return tasks.at(item.first).queueId == t.queueId;
+                });
+                if (active >= q.maxActive)
+                    continue;
+                auto found = candidates.find(t.queueId);
+                if (found == candidates.end() || t.spec.priority > found->second->spec.priority ||
+                    (t.spec.priority == found->second->spec.priority &&
+                     (t.createdAt < found->second->createdAt ||
+                      (t.createdAt == found->second->createdAt && t.id < found->second->id))))
+                    candidates[t.queueId] = &t;
+            }
+            if (candidates.empty())
+                break;
+            auto next = candidates.upper_bound(lastQueue);
+            if (next == candidates.end())
+                next = candidates.begin();
+            auto* task = next->second;
+            lastQueue = next->first;
+            attempted.insert(task->id);
+            if (auto message = validateSpec(task->spec); !message.empty()) {
                 task->state = TaskState::NeedsAttention;
-                task->error = "Invalid saved task: " + validationError;
+                task->error = "Invalid saved task: " + message;
                 save(*task);
                 continue;
             }
-            if (jobs.size() >= static_cast<size_t>(concurrentTasks))
-                break;
             DownloadSpec resolved;
             try {
                 resolved = contexts->resolve(*task);
@@ -523,22 +600,32 @@ struct DownloadService::Impl {
                 continue;
             }
             if (task->spec.stopAt > 0 && now >= task->spec.stopAt) {
+                task->runIntent = RunIntent::Paused;
                 task->state = TaskState::Paused;
                 save(*task);
                 continue;
             }
             auto job = std::make_unique<Job>();
             auto control = job->control;
-            const auto initialShare =
-                globalLimit > 0 ? std::max<std::int64_t>(1, globalLimit / mediaSlots) : 0;
-            control->speedLimit = initialShare > 0 && task->spec.speedLimit > 0
-                                      ? std::min(initialShare, task->spec.speedLimit)
-                                      : std::max(initialShare, task->spec.speedLimit);
-            const auto initialUploadShare =
-                globalUploadLimit > 0 ? std::max<std::int64_t>(1, globalUploadLimit / mediaSlots) : 0;
-            control->uploadLimit = initialUploadShare > 0 && task->spec.torrent.uploadLimit > 0
-                                       ? std::min(initialUploadShare, task->spec.torrent.uploadLimit)
-                                       : std::max(initialUploadShare, task->spec.torrent.uploadLimit);
+            try {
+                if (task->spec.kind == TransferKind::Media)
+                    job->mediaRate =
+                        mediaReservation(globalLimit, concurrentTasks, queueRegistry->get(task->queueId),
+                                         task->spec.speedLimit);
+                const auto rates =
+                    allocateQueueRates(globalLimit, queueRegistry->list(), claims(task, job->mediaRate));
+                const auto uploads = allocateQueueRates(globalUploadLimit, queueRegistry->list(),
+                                                        claims(task, job->mediaRate, true), true);
+                control->speedLimit = rates.at(task->id);
+                if (uploads.contains(task->id))
+                    control->uploadLimit = uploads.at(task->id);
+            } catch (const std::invalid_argument&) {
+                if (task->state != TaskState::PolicyWaiting) {
+                    task->state = TaskState::PolicyWaiting;
+                    save(*task);
+                }
+                continue;
+            }
             task->state = TaskState::Probing;
             task->error.clear();
             ++task->generation;
@@ -565,48 +652,20 @@ struct DownloadService::Impl {
                 });
             jobs[task->id] = std::move(job);
         }
-        const auto mediaShare = globalLimit > 0 ? std::max<std::int64_t>(1, globalLimit / mediaSlots) : 0;
-        std::int64_t reserved = 0, nativeCount = 0;
-        for (const auto& [id, job] : jobs) {
-            (void)job;
-            const auto& spec = tasks.at(id).spec;
-            if (spec.kind != maskpilot::TransferKind::Media) {
-                ++nativeCount;
-                continue;
-            }
-            auto rate = mediaShare > 0 && spec.speedLimit > 0 ? std::min(mediaShare, spec.speedLimit)
-                                                              : std::max(mediaShare, spec.speedLimit);
-            if (globalLimit > 0)
-                reserved += rate;
-        }
-        const auto share =
-            globalLimit > 0
-                ? std::max<std::int64_t>(1, (globalLimit - reserved) / std::max<std::int64_t>(1, nativeCount))
-                : 0;
+        const auto rates = allocateQueueRates(globalLimit, queueRegistry->list(), claims());
+        const auto uploads =
+            allocateQueueRates(globalUploadLimit, queueRegistry->list(), claims(nullptr, -1, true), true);
         for (auto& [id, job] : jobs) {
-            auto limit = tasks.at(id).spec.speedLimit;
-            auto allocation = (tasks.at(id).spec.kind == maskpilot::TransferKind::Media) ? mediaShare : share;
-            job->control->speedLimit =
-                allocation > 0 && limit > 0 ? std::min(allocation, limit) : std::max(allocation, limit);
-        }
-        const auto torrentCount = std::count_if(jobs.begin(), jobs.end(), [&](const auto& job) {
-            return tasks.at(job.first).spec.kind == TransferKind::BitTorrent;
-        });
-        const auto uploadShare =
-            globalUploadLimit > 0
-                ? std::max<std::int64_t>(1, globalUploadLimit / std::max<std::int64_t>(1, torrentCount))
-                : 0;
-        for (auto& [id, job] : jobs) {
-            if (tasks.at(id).spec.kind != TransferKind::BitTorrent)
-                continue;
-            const auto limit = tasks.at(id).spec.torrent.uploadLimit;
-            job->control->uploadLimit =
-                uploadShare > 0 && limit > 0 ? std::min(uploadShare, limit) : std::max(uploadShare, limit);
+            if (job->mediaRate < 0)
+                job->control->speedLimit = rates.at(id);
+            if (uploads.contains(id))
+                job->control->uploadLimit = uploads.at(id);
         }
     }
     void loop(std::promise<void> ready) {
         try {
             for (auto task : repository->load()) {
+                queueRegistry->get(task.queueId);
                 if (task.spec.kind == TransferKind::BitTorrent) {
                     try {
                         task.torrent = factory()->describe(task.spec);
@@ -618,7 +677,9 @@ struct DownloadService::Impl {
                     }
                 }
                 if (isActive(task.state) || task.state == TaskState::Queued ||
-                    task.state == TaskState::RetryWaiting) {
+                    task.state == TaskState::RetryWaiting ||
+                    (task.state == TaskState::PolicyWaiting && queueRegistry->get(task.queueId).enabled)) {
+                    task.runIntent = RunIntent::Paused;
                     task.state = TaskState::Paused;
                     task.error = "Recovered after exit. Resume to validate local parts and remote identity.";
                     save(task);
@@ -669,12 +730,14 @@ struct DownloadService::Impl {
 };
 
 DownloadService::DownloadService(std::unique_ptr<ITaskRepository> repository, TransportFactory factory,
-                                 std::filesystem::path workDirectory, ContextDependencies contexts)
+                                 std::filesystem::path workDirectory, ContextDependencies contexts,
+                                 QueueDependencies queues)
     : impl_(std::make_unique<Impl>()) {
     impl_->repository = std::move(repository);
     impl_->factory = std::move(factory);
     impl_->workDirectory = std::move(workDirectory);
     impl_->contexts = std::make_unique<ContextRegistry>(std::move(contexts));
+    impl_->queueRegistry = std::make_unique<QueueRegistry>(std::move(queues));
     std::promise<void> ready;
     auto result = ready.get_future();
     impl_->coordinator =
@@ -690,13 +753,15 @@ DownloadService::~DownloadService() {
     if (impl_->coordinator.joinable())
         impl_->coordinator.join();
 }
-std::future<std::string> DownloadService::add(DownloadSpec spec, std::string requestId, bool rememberProxy) {
-    return impl_->request(
-        [p = impl_.get(), spec = std::move(spec), requestId = std::move(requestId), rememberProxy]() mutable {
-            Task task;
-            task.spec = std::move(spec);
-            return p->addPrepared(std::move(task), std::move(requestId), true, rememberProxy);
-        });
+std::future<std::string> DownloadService::add(DownloadSpec spec, std::string requestId, bool rememberProxy,
+                                              std::string queueId) {
+    return impl_->request([p = impl_.get(), spec = std::move(spec), requestId = std::move(requestId),
+                           rememberProxy, queueId = std::move(queueId)]() mutable {
+        Task task;
+        task.queueId = std::move(queueId);
+        task.spec = std::move(spec);
+        return p->addPrepared(std::move(task), std::move(requestId), true, rememberProxy);
+    });
 }
 void DownloadService::pause(const std::string& id) {
     impl_->post([p = impl_.get(), id] { p->control(id, ScopedTaskCommand::Pause); });
@@ -748,6 +813,7 @@ std::future<void> DownloadService::revokeContext(const std::string& ownerId) {
             for (auto& [id, task] : p->tasks) {
                 if (task.ownerId != ownerId || isTerminal(task.state))
                     continue;
+                task.runIntent = RunIntent::Paused;
                 task.state = p->jobs.contains(id) ? TaskState::Pausing : TaskState::Paused;
                 p->save(task);
             }
@@ -766,6 +832,7 @@ std::future<void> DownloadService::rebindTask(const std::string& taskId, std::st
             throw std::invalid_argument("Pause an unfinished task before rebinding it.");
         auto task = found->second;
         p->contexts->rebind(task, grantId);
+        task.runIntent = RunIntent::Paused;
         task.state = TaskState::Paused;
         task.error.clear();
         p->save(task);
@@ -821,15 +888,81 @@ std::future<void> DownloadService::controlScoped(std::string token, ScopedTaskCo
         p->publish();
     });
 }
-void DownloadService::setLimits(int concurrentTasks, std::int64_t globalBytesPerSecond,
-                                std::int64_t globalUploadBytesPerSecond) {
-    impl_->post([p = impl_.get(), concurrentTasks, globalBytesPerSecond, globalUploadBytesPerSecond] {
-        p->concurrentTasks = std::clamp(concurrentTasks, 1, 8);
-        // Retain stable reservations while a batch drains. Reducing configured concurrency
-        // must not multiply the budget of existing media subprocesses.
-        p->mediaSlots = std::max(p->concurrentTasks, static_cast<int>(p->jobs.size()));
-        p->globalLimit = std::max<std::int64_t>(0, globalBytesPerSecond);
-        p->globalUploadLimit = std::clamp<std::int64_t>(globalUploadBytesPerSecond, 0, 2147483647LL);
+std::future<void> DownloadService::configureLimits(int count, std::int64_t down, std::int64_t up) {
+    return impl_->request([p = impl_.get(), count, down, up] {
+        p->validateLimits(count, down, up, p->queueRegistry->list());
+        p->concurrentTasks = count;
+        p->globalLimit = down;
+        p->globalUploadLimit = up;
+    });
+}
+void DownloadService::setLimits(int count, std::int64_t down, std::int64_t up) {
+    // Compatibility API intentionally ignores ordinary validation denials; checked callers await
+    // configureLimits.
+    (void)configureLimits(count, down, up);
+}
+std::future<std::vector<DownloadQueue>> DownloadService::queues() {
+    return impl_->request([p = impl_.get()] { return p->queueRegistry->list(); });
+}
+std::future<DownloadQueue> DownloadService::configureQueue(QueueConfiguration config) {
+    return impl_->request([p = impl_.get(), config = std::move(config)]() mutable {
+        auto candidate = p->queueRegistry->prepare(config);
+        auto policies = p->queueRegistry->list();
+        auto it = std::find_if(policies.begin(), policies.end(),
+                               [&](const auto& q) { return q.id == candidate.id; });
+        if (it == policies.end())
+            policies.push_back(candidate);
+        else
+            *it = candidate;
+        p->validateLimits(p->concurrentTasks, p->globalLimit, p->globalUploadLimit, policies);
+        p->queueRegistry->commit(candidate, config.expectedRevision);
+        if (!candidate.enabled)
+            for (auto& [id, t] : p->tasks)
+                if (t.queueId == candidate.id && t.runIntent == RunIntent::Run) {
+                    if (p->jobs.contains(id)) {
+                        p->jobs.at(id)->policyPause = true;
+                        p->jobs.at(id)->control->pause = true;
+                        t.state = TaskState::Pausing;
+                        p->save(t);
+                    } else if (t.state == TaskState::Queued || t.state == TaskState::Scheduled ||
+                               t.state == TaskState::RetryWaiting) {
+                        t.state = TaskState::PolicyWaiting;
+                        p->save(t);
+                    }
+                }
+        p->publish();
+        return candidate;
+    });
+}
+std::future<void> DownloadService::moveToQueue(std::vector<std::string> ids, std::string target) {
+    return impl_->request([p = impl_.get(), ids = std::move(ids), target = std::move(target)] {
+        p->queueRegistry->get(target);
+        if (ids.empty() || ids.size() > 10000)
+            throw std::invalid_argument("Choose tasks to move.");
+        std::set<std::string> unique;
+        std::vector<QueueMove> moves;
+        for (const auto& id : ids) {
+            auto it = p->tasks.find(id);
+            if (!unique.insert(id).second || it == p->tasks.end() || p->jobs.contains(id) ||
+                isActive(it->second.state))
+                throw std::invalid_argument("Pause every selected task before moving queues.");
+            moves.push_back({id, it->second.queueId});
+        }
+        const auto now = unixTime();
+        p->queueRegistry->move(moves, target, now);
+        for (const auto& id : ids) {
+            p->tasks.at(id).queueId = target;
+            p->tasks.at(id).updatedAt = now;
+        }
+        p->publish();
+    });
+}
+std::future<void> DownloadService::removeQueue(std::string id, std::int64_t revision) {
+    return impl_->request([p = impl_.get(), id = std::move(id), revision] {
+        for (auto& [key, t] : p->tasks)
+            if (t.queueId == id)
+                throw std::invalid_argument("Move all tasks and history before removing a queue.");
+        p->queueRegistry->remove(id, revision);
     });
 }
 void DownloadService::setPriority(const std::string& id, int priority) {
@@ -867,6 +1000,7 @@ void DownloadService::updateUrl(const std::string& id, std::string url) {
         if (it->second.spec.url != spec.url)
             it->second.originGrantId.clear();
         it->second.spec = std::move(spec);
+        it->second.runIntent = RunIntent::Paused;
         it->second.state = TaskState::Paused;
         p->save(it->second);
     });
@@ -892,6 +1026,9 @@ void DownloadService::restart(const std::string& id) {
         task.error.clear();
         if (task.spec.stopAt <= unixTime())
             task.spec.stopAt = 0;
+        task.runIntent = RunIntent::Run;
+        task.retryAt = 0;
+        task.spec.scheduledAt = 0;
         task.state = TaskState::Queued;
         p->save(task);
     });
@@ -932,12 +1069,14 @@ std::future<void> DownloadService::forgetSavedProxyCredentials(const std::string
         candidate.spec.proxyUsername.clear();
         candidate.spec.proxyPassword.clear();
         candidate.spec.proxyAuthenticationRequired = true;
+        candidate.runIntent = RunIntent::Paused;
         candidate.state = TaskState::Paused;
         candidate.error.clear();
         p->save(candidate);
         found->second = std::move(candidate);
+        const bool cleaned = p->releaseUnusedReference(old);
         p->publish();
-        if (!p->releaseUnusedReference(old))
+        if (!cleaned)
             throw std::runtime_error(
                 "Task binding was removed, but native credential cleanup requires retry.");
     });
@@ -971,6 +1110,7 @@ std::future<std::string> DownloadService::selectTorrentFiles(const std::string& 
                 throw std::invalid_argument(error);
             validateSelection(spec, it->second.torrent);
             it->second.spec = std::move(spec);
+            it->second.runIntent = RunIntent::Paused;
             it->second.state = TaskState::Paused;
             it->second.error.clear();
             p->save(it->second);
@@ -1023,6 +1163,8 @@ void DownloadService::schedule(const std::string& id, std::int64_t startAt, std:
         auto& task = it->second;
         task.spec.scheduledAt = startAt;
         task.spec.stopAt = stopAt;
+        task.runIntent = RunIntent::Run;
+        task.retryAt = 0;
         task.state = startAt > unixTime() ? TaskState::Scheduled : TaskState::Queued;
         p->save(task);
     });

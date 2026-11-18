@@ -438,15 +438,17 @@ TEST(Storage, MigratesPreviousSchemaWithoutChangingExistingProtocolsOrFiles) {
     sqlite3* connection = nullptr;
     ASSERT_EQ(sqlite3_open(database.string().c_str(), &connection), SQLITE_OK);
     std::unique_ptr<sqlite3, decltype(&sqlite3_close)> close(connection, sqlite3_close);
-    ASSERT_EQ(sqlite3_exec(connection,
-                           "DROP INDEX tasks_owner_request; DROP TABLE download_contexts; "
-                           "DROP TABLE credential_records; DROP TABLE store_metadata;",
-                           nullptr, nullptr, nullptr),
-              SQLITE_OK);
+    ASSERT_EQ(
+        sqlite3_exec(
+            connection,
+            "DROP INDEX tasks_owner_request; DROP INDEX tasks_queue_state; DROP TABLE download_contexts; "
+            "DROP TABLE credential_records; DROP TABLE store_metadata; DROP TABLE download_queues;",
+            nullptr, nullptr, nullptr),
+        SQLITE_OK);
     for (const auto* column :
          {"kind", "bt_all", "bt_selection", "bt_seed", "bt_upload_limit", "bt_metadata", "bt_published",
           "bt_uploaded", "proxy_auth_required", "owner_id", "request_id", "context_revision",
-          "proxy_credential_ref", "origin_auth_required", "request_name"}) {
+          "proxy_credential_ref", "origin_auth_required", "request_name", "queue_id", "run_intent"}) {
         const auto sql = std::string("ALTER TABLE tasks DROP COLUMN ") + column;
         ASSERT_EQ(sqlite3_exec(connection, sql.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
     }

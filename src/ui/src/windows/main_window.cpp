@@ -32,7 +32,8 @@ void MainWindow::Impl::updateActions() {
     }));
     pauseAction->setEnabled(std::any_of(tasks.begin(), tasks.end(), [](const auto& task) {
         return isActive(task.state) || task.state == TaskState::Queued ||
-               task.state == TaskState::Scheduled || task.state == TaskState::RetryWaiting;
+               task.state == TaskState::Scheduled || task.state == TaskState::RetryWaiting ||
+               task.state == TaskState::PolicyWaiting;
     }));
     cancelAction->setEnabled(
         std::any_of(tasks.begin(), tasks.end(), [](const auto& task) { return !isTerminal(task.state); }));
@@ -46,6 +47,7 @@ void MainWindow::Impl::refresh() {
         return;
     QScopedValueRollback<bool> refreshGuard(refreshing, true);
     refreshContexts();
+    refreshQueues();
     std::vector<Pending> ready;
     for (auto it = pending.begin(); it != pending.end();) {
         if (it->result.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
@@ -94,14 +96,16 @@ void MainWindow::Impl::refresh() {
         }
         busy = busy || isActive(task.state) || task.state == TaskState::Queued ||
                task.state == TaskState::Scheduled || task.state == TaskState::RetryWaiting ||
-               task.state == TaskState::AwaitingSelection;
+               task.state == TaskState::AwaitingSelection || task.state == TaskState::PolicyWaiting;
         if (isActive(task.state) || task.state == TaskState::Queued || task.state == TaskState::Scheduled ||
-            task.state == TaskState::RetryWaiting || task.state == TaskState::AwaitingSelection)
+            task.state == TaskState::RetryWaiting || task.state == TaskState::AwaitingSelection ||
+            task.state == TaskState::PolicyWaiting)
             batchIds.insert(task.id);
         bool match = filter == "all" ||
                      (filter == "active" && (isActive(task.state) || task.state == TaskState::Queued ||
                                              task.state == TaskState::RetryWaiting)) ||
-                     (filter == "paused" && task.state == TaskState::Paused) ||
+                     (filter == "paused" &&
+                      (task.state == TaskState::Paused || task.state == TaskState::PolicyWaiting)) ||
                      (filter == "scheduled" && task.state == TaskState::Scheduled) ||
                      (filter == "completed" && task.state == TaskState::Completed) ||
                      (filter == "attention" &&
@@ -112,6 +116,8 @@ void MainWindow::Impl::refresh() {
                      (filter.startsWith("category:") && qs(task.spec.category) == filter.mid(9));
         const auto owner = contextFilter ? contextFilter->currentData().toString() : QString{};
         match = match && (owner.isEmpty() || owner.toStdString() == task.ownerId);
+        const auto queue = queueFilter ? queueFilter->currentData().toString() : QString{};
+        match = match && (queue.isEmpty() || queue.toStdString() == task.queueId);
         if (match && (query.isEmpty() ||
                       pathString(task.spec.destination.filename()).contains(query, Qt::CaseInsensitive) ||
                       qs(task.torrent.name).contains(query, Qt::CaseInsensitive) ||
@@ -174,6 +180,10 @@ void MainWindow::Impl::refresh() {
 }
 
 void MainWindow::Impl::completion() {
+    const auto current = service.snapshot();
+    if (!pending.empty() ||
+        std::any_of(current.begin(), current.end(), [](const auto& task) { return !isTerminal(task.state); }))
+        return;
     notify("MaskPilot", t("All downloads are complete.", "所有下载任务已完成。"));
     const auto action = settings.value("completionAction", 0).toInt();
     if (action != 1 && action != 2)
@@ -272,7 +282,9 @@ MainWindow::MainWindow(DownloadService& service, QWidget* parent)
         return toolbar->addAction(ui::icon(icon), text);
     };
     p.resumeAction = addAction(p.t("Start", "开始"), ui::Icon::Start);
+    p.resumeAction->setObjectName("resumeTasksAction");
     p.pauseAction = addAction(p.t("Pause", "暂停"), ui::Icon::Pause);
+    p.pauseAction->setObjectName("pauseTasksAction");
     p.cancelAction = addAction(p.t("Cancel", "取消"), ui::Icon::Cancel);
     toolbar->addSeparator();
     p.removeAction = addAction(p.t("Remove", "移除"), ui::Icon::Remove);
@@ -280,9 +292,14 @@ MainWindow::MainWindow(DownloadService& service, QWidget* parent)
     toolbar->addSeparator();
     auto* batch = addAction(p.t("Batch", "批量"), ui::Icon::Batch);
     auto* settings = addAction(p.t("Settings", "设置"), ui::Icon::Settings);
-    auto* contexts = addAction(p.t("Profiles & credentials", "环境与凭据"), ui::Icon::Settings);
+    settings->setObjectName("globalSettingsAction");
+    auto* contexts = addAction(p.t("Profiles", "环境与凭据"), ui::Icon::Settings);
+    contexts->setToolTip(p.t("Manage profiles and saved proxy credentials", "管理环境与安全保存的代理凭据"));
     contexts->setObjectName("manageContextsAction");
     connect(contexts, &QAction::triggered, this, [&p] { p.contextsDialog(); });
+    auto* queues = addAction(p.t("Queues", "下载队列"), ui::Icon::Batch);
+    queues->setObjectName("manageQueuesAction");
+    connect(queues, &QAction::triggered, this, [&p] { p.queuesDialog(); });
     connect(p.contextFilter, &QComboBox::currentIndexChanged, this, [&p] { p.refresh(); });
     auto* body = new QHBoxLayout;
     body->setContentsMargins(0, 0, 0, 0);
@@ -326,6 +343,14 @@ MainWindow::MainWindow(DownloadService& service, QWidget* parent)
     p.heading->setObjectName("sectionTitle");
     p.heading->setTextFormat(Qt::PlainText);
     section->addWidget(p.heading);
+    p.queueFilter = new QComboBox;
+    p.queueFilter->setObjectName("queueFilter");
+    p.queueFilter->setMinimumWidth(130);
+    p.queueFilter->setMaximumWidth(220);
+    p.queueFilter->addItem(p.t("All queues", "全部队列"), QString{});
+    p.queueFilter->addItem(p.t("Default", "默认队列"), defaultQueueId);
+    section->addWidget(p.queueFilter);
+    connect(p.queueFilter, &QComboBox::currentIndexChanged, this, [&p] { p.refresh(); });
     section->addStretch();
     p.summary = new QLabel;
     p.summary->setObjectName("taskSummary");
@@ -405,9 +430,11 @@ MainWindow::MainWindow(DownloadService& service, QWidget* parent)
         spec.kind = maskpilot::TransferKind::Media;
         spec.destination.replace_extension(L".mkv");
         dialog.setSpecification(spec);
+        dialog.setQueues(p.knownQueues, p.selectedQueueId());
         if (dialog.exec() == QDialog::Accepted) {
             p.contextFilter->setCurrentIndex(p.contextFilter->findData("standalone"));
-            enqueue(dialog.specification(), {}, {}, dialog.rememberProxyCredentials());
+            p.queueFilter->setCurrentIndex(p.queueFilter->findData(qs(dialog.queueId())));
+            enqueue(dialog.specification(), {}, {}, dialog.rememberProxyCredentials(), dialog.queueId());
         }
     });
     tools->addAction(p.t("Media support…", "媒体支持…"), this, [&p] { p.mediaSupport(); });
@@ -471,6 +498,12 @@ MainWindow::MainWindow(DownloadService& service, QWidget* parent)
         menu.addAction(p.resumeAction);
         menu.addAction(p.pauseAction);
         menu.addAction(p.cancelAction);
+        auto* move = menu.addAction(p.t("Move to queue…", "移动到队列…"), this, [&p] { p.moveToQueue(); });
+        move->setObjectName("moveToQueueAction");
+        move->setEnabled(std::none_of(tasks.begin(), tasks.end(),
+                                      [](const auto& value) { return isActive(value.state); }));
+        move->setToolTip(
+            p.t("Pause active tasks before moving the selection.", "请先暂停选中的活动任务再移动。"));
         menu.addSeparator();
         auto task = tasks.front();
         menu.addAction(p.t("Finish seeding", "结束做种"), this,
@@ -493,6 +526,7 @@ MainWindow::MainWindow(DownloadService& service, QWidget* parent)
                        [this, &p, task] {
                            AddDownloadDialog dialog(p.chinese, this);
                            dialog.setSpecification(task.spec);
+                           dialog.setQueues(p.knownQueues, task.queueId, false);
                            dialog.setWindowTitle(p.t("Edit request", "编辑下载请求"));
                            if (auto* destination = dialog.findChild<QLineEdit*>("downloadDestination"))
                                destination->setReadOnly(true);
@@ -668,15 +702,20 @@ void MainWindow::newDownload(QString url) {
         return;
     }
     AddDownloadDialog dialog(impl_->chinese, this, url);
-    if (dialog.exec() == QDialog::Accepted)
-        enqueue(dialog.specification(), {}, {}, dialog.rememberProxyCredentials());
+    dialog.setQueues(impl_->knownQueues, impl_->selectedQueueId());
+    if (dialog.exec() == QDialog::Accepted) {
+        impl_->queueFilter->setCurrentIndex(impl_->queueFilter->findData(qs(dialog.queueId())));
+        enqueue(dialog.specification(), {}, {}, dialog.rememberProxyCredentials(), dialog.queueId());
+    }
 }
 void MainWindow::enqueue(DownloadSpec spec, QString requestId,
-                         std::function<void(QString, QString)> completion, bool rememberProxy) {
+                         std::function<void(QString, QString)> completion, bool rememberProxy,
+                         std::string queueId) {
     if (impl_->completionDialog)
         impl_->completionDialog->reject();
     impl_->pending.push_back(
-        {impl_->service.add(std::move(spec), requestId.toStdString(), rememberProxy), std::move(completion)});
+        {impl_->service.add(std::move(spec), requestId.toStdString(), rememberProxy, std::move(queueId)),
+         std::move(completion)});
 }
 void MainWindow::requestQuit() {
     impl_->quitting = true;

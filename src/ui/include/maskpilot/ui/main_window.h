@@ -14,7 +14,8 @@ class MainWindow final : public QMainWindow {
     DownloadSpec defaultSpec(const QString& url) const;
     void cancelCompletionCountdown();
     void enqueue(DownloadSpec spec, QString requestId = {},
-                 std::function<void(QString, QString)> completion = {}, bool rememberProxy = false);
+                 std::function<void(QString, QString)> completion = {}, bool rememberProxy = false,
+                 std::string queueId = defaultQueueId);
     void requestQuit();
 
   protected:

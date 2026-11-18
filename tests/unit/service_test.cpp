@@ -320,7 +320,8 @@ TEST(TaskControl, TorrentUploadBudgetRespectsGlobalAndTaskLimitsAndRebalancesAft
         return false;
     };
     ASSERT_TRUE(waitRate(first, 16 * 1024));
-    ASSERT_TRUE(waitRate(second, 32 * 1024));
+    // Queue allocation redistributes the first task's unused fair share without exceeding 64 KiB/s.
+    ASSERT_TRUE(waitRate(second, 48 * 1024));
     service.setLimits(3, 0, 32 * 1024);
     ASSERT_TRUE(waitRate(second, 16 * 1024));
     ASSERT_TRUE(waitRate(first, 16 * 1024));
