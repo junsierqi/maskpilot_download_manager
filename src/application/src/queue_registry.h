@@ -8,6 +8,8 @@ class QueueRegistry {
     explicit QueueRegistry(QueueDependencies);
     const DownloadQueue& get(const std::string&) const;
     std::vector<DownloadQueue> list() const;
+    std::int64_t now() const;
+    bool available(const std::string&, std::int64_t utc) const;
     DownloadQueue prepare(QueueConfiguration) const;
     void commit(const DownloadQueue&, std::int64_t expected);
     void remove(const std::string&, std::int64_t);
@@ -16,6 +18,9 @@ class QueueRegistry {
   private:
     std::unique_ptr<IQueueRepository> repository_;
     std::map<std::string, DownloadQueue> queues_;
+    std::shared_ptr<IQueueCivilTime> clock_;
+    mutable std::optional<std::int64_t> cachedMinute_;
+    mutable std::map<std::string, std::optional<CivilMinute>> civilCache_;
 };
 // A fixed rate of -1 denotes a native task; 0 is an unlimited media reservation.
 struct RateClaim {

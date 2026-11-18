@@ -1,6 +1,8 @@
 #include "../windows/main_window_p.h"
 #include "async_ui.h"
+#include <QTimeEdit>
 #include <QTreeWidget>
+#include <array>
 #include <limits>
 
 namespace maskpilot {
@@ -19,6 +21,10 @@ class QueueManagerDialog final : public QDialog {
     QLineEdit* name_;
     QSpinBox *active_, *download_, *upload_;
     QCheckBox* enabled_;
+    QCheckBox* weekly_;
+    std::array<QCheckBox*, 7> days_{};
+    QTimeEdit *start_, *end_;
+    QLineEdit* zone_;
     QLabel* status_;
     QWidget* editor_;
     QPushButton *save_, *create_, *pause_, *enable_, *remove_;
@@ -54,8 +60,17 @@ class QueueManagerDialog final : public QDialog {
         upload_->setValue(static_cast<int>(
             std::min<std::int64_t>(value->uploadLimit / 1024, std::numeric_limits<int>::max())));
         enabled_->setChecked(value->enabled);
+        weekly_->setChecked(value->schedule.enabled);
+        for (int day = 0; day < 7; ++day)
+            days_[day]->setChecked((value->schedule.weekdays & (1 << day)) != 0);
+        start_->setTime(QTime(value->schedule.startMinute / 60, value->schedule.startMinute % 60));
+        end_->setTime(QTime(value->schedule.endMinute / 60, value->schedule.endMinute % 60));
+        zone_->setText(qs(value->schedule.timeZone));
         status_->setText(
-            value->enabled
+            value->enabled && value->schedule.enabled
+                ? tr("Weekly window configured. Eligible tasks wait outside its local hours.",
+                     "已设置每周运行窗口；窗口外，待运行任务会等待。")
+            : value->enabled
                 ? tr("Available. Global and task limits also apply.", "队列可用，同时遵守全局与任务限制。")
                 : tr("Paused. Enabling this queue keeps manually paused tasks stopped.",
                      "队列已暂停；启用后，手动暂停的任务仍保持停止。"));
@@ -70,6 +85,12 @@ class QueueManagerDialog final : public QDialog {
         download_->setValue(0);
         upload_->setValue(0);
         enabled_->setChecked(true);
+        weekly_->setChecked(false);
+        for (auto* day : days_)
+            day->setChecked(true);
+        start_->setTime(QTime(0, 0));
+        end_->setTime(QTime(0, 0));
+        zone_->setText("UTC");
         status_->setText(tr("Create a queue for its own concurrency and bandwidth limits.",
                             "新建队列，可分别设置任务并发与带宽。"));
         busy(false);
@@ -88,10 +109,12 @@ class QueueManagerDialog final : public QDialog {
                     const auto members = std::count_if(tasks.begin(), tasks.end(), [&](const auto& task) {
                         return task.queueId == value.id;
                     });
-                    auto* item = new QTreeWidgetItem(
-                        list_, {queueName(value, chinese_),
-                                value.enabled ? tr("Available", "可用") : tr("Paused", "已暂停"),
-                                QString::number(members)});
+                    auto* item =
+                        new QTreeWidgetItem(list_, {queueName(value, chinese_),
+                                                    !value.enabled           ? tr("Paused", "已暂停")
+                                                    : value.schedule.enabled ? tr("Weekly window", "每周窗口")
+                                                                             : tr("Available", "可用"),
+                                                    QString::number(members)});
                     item->setData(0, Qt::UserRole, qs(value.id));
                     if (value.id == selected_)
                         list_->setCurrentItem(item);
@@ -121,6 +144,18 @@ class QueueManagerDialog final : public QDialog {
         draft.uploadLimit =
             enabled && previous ? previous->uploadLimit : static_cast<std::int64_t>(upload_->value()) * 1024;
         draft.enabled = enabled.value_or(enabled_->isChecked());
+        if (enabled && previous)
+            draft.schedule = previous->schedule;
+        else {
+            draft.schedule.enabled = weekly_->isChecked();
+            draft.schedule.weekdays = 0;
+            for (int day = 0; day < 7; ++day)
+                if (days_[day]->isChecked())
+                    draft.schedule.weekdays |= 1 << day;
+            draft.schedule.startMinute = start_->time().hour() * 60 + start_->time().minute();
+            draft.schedule.endMinute = end_->time().hour() * 60 + end_->time().minute();
+            draft.schedule.timeZone = zone_->text().trimmed().toStdString();
+        }
         busy(true);
         status_->setText(tr("Saving queue…", "正在保存队列…"));
         ui::watchFuture(
@@ -137,7 +172,7 @@ class QueueManagerDialog final : public QDialog {
         : QDialog(parent), service_(service), chinese_(chinese) {
         setObjectName("queueManagerDialog");
         setWindowTitle(tr("Download queues", "下载队列"));
-        resize(920, 560);
+        resize(920, 720);
         auto* outer = new QVBoxLayout(this);
         auto* note = new QLabel(
             tr("Queues share the global connection and bandwidth limits. Moving a task keeps its profile, "
@@ -179,6 +214,45 @@ class QueueManagerDialog final : public QDialog {
         enabled_ = new QCheckBox(tr("Allow this queue to run", "允许此队列运行"));
         enabled_->setObjectName("queueEnabled");
         form->addRow(enabled_);
+        weekly_ = new QCheckBox(tr("Use a weekly running window", "按每周窗口运行"));
+        weekly_->setObjectName("queueWeeklyEnabled");
+        form->addRow(weekly_);
+        auto* days = new QWidget;
+        auto* dayLayout = new QHBoxLayout(days);
+        dayLayout->setContentsMargins(0, 0, 0, 0);
+        const std::array<const char*, 7> english{"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"};
+        const std::array<const char*, 7> chineseDays{"一", "二", "三", "四", "五", "六", "日"};
+        for (int day = 0; day < 7; ++day) {
+            days_[day] = new QCheckBox(tr(english[day], chineseDays[day]));
+            days_[day]->setObjectName("queueWeekday" + QString::number(day));
+            dayLayout->addWidget(days_[day]);
+        }
+        form->addRow(tr("Starting days", "开始日期"), days);
+        auto* times = new QWidget;
+        auto* timeLayout = new QHBoxLayout(times);
+        timeLayout->setContentsMargins(0, 0, 0, 0);
+        start_ = new QTimeEdit;
+        end_ = new QTimeEdit;
+        start_->setObjectName("queueWindowStart");
+        end_->setObjectName("queueWindowEnd");
+        start_->setDisplayFormat("HH:mm");
+        end_->setDisplayFormat("HH:mm");
+        timeLayout->addWidget(start_);
+        timeLayout->addWidget(new QLabel(tr("to", "至")));
+        timeLayout->addWidget(end_);
+        form->addRow(tr("Local hours", "当地时间"), times);
+        zone_ = new QLineEdit("UTC");
+        zone_->setObjectName("queueTimeZone");
+        zone_->setMaxLength(128);
+        zone_->setPlaceholderText("UTC / Asia/Shanghai / America/Los_Angeles");
+        form->addRow(tr("IANA time zone", "IANA 时区"), zone_);
+        auto* scheduleNote = new QLabel(
+            tr("End at or before start crosses midnight. Equal times mean 24 hours. Days select the "
+               "window's start; only unfinished tasks with running intent reopen.",
+               "结束时间不晚于开始时间时跨午夜；时间相同表示24小时。星期选择窗口开始的日期；"
+               "仅待运行且未完成的任务会在窗口内继续。"));
+        scheduleNote->setWordWrap(true);
+        form->addRow(scheduleNote);
         auto* media = new QLabel(
             tr("Pause running media downloads before reducing limits that their current rate cannot meet.",
                "降低限速时，若活动媒体任务的当前速度无法满足新限制，请先暂停这些任务。"));

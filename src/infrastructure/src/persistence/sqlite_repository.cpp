@@ -94,12 +94,12 @@ class Backend {
             int schemaVersion = 0;
             {
                 Statement version(db_, "PRAGMA user_version");
-                if (sqlite3_step(version.value) != SQLITE_ROW || sqlite3_column_int(version.value, 0) > 7 ||
+                if (sqlite3_step(version.value) != SQLITE_ROW || sqlite3_column_int(version.value, 0) > 8 ||
                     sqlite3_column_int(version.value, 0) < 0)
                     throw std::runtime_error("Database was created by a newer version.");
                 schemaVersion = sqlite3_column_int(version.value, 0);
             }
-            if (schemaVersion > 0 && schemaVersion < 7) {
+            if (schemaVersion > 0 && schemaVersion < 8) {
                 auto backupPath = path;
                 backupPath += L".before-v" + std::to_wstring(schemaVersion + 1) + L"-" +
                               std::filesystem::path(newTaskId()).wstring() + L".db";
@@ -186,6 +186,15 @@ ALTER TABLE tasks ADD COLUMN run_intent INTEGER NOT NULL DEFAULT 1 CHECK(run_int
 UPDATE tasks SET run_intent=0 WHERE state=1;
 CREATE INDEX tasks_queue_state ON tasks(queue_id,state,priority,created_at,id);
 PRAGMA user_version=7;
+COMMIT;)sql");
+            if (schemaVersion < 8)
+                execute(R"sql(BEGIN IMMEDIATE;
+ALTER TABLE download_queues ADD COLUMN schedule_enabled INTEGER NOT NULL DEFAULT 0 CHECK(schedule_enabled IN(0,1));
+ALTER TABLE download_queues ADD COLUMN schedule_weekdays INTEGER NOT NULL DEFAULT 127 CHECK(schedule_weekdays BETWEEN 1 AND 127);
+ALTER TABLE download_queues ADD COLUMN schedule_start INTEGER NOT NULL DEFAULT 0 CHECK(schedule_start BETWEEN 0 AND 1439);
+ALTER TABLE download_queues ADD COLUMN schedule_end INTEGER NOT NULL DEFAULT 0 CHECK(schedule_end BETWEEN 0 AND 1439);
+ALTER TABLE download_queues ADD COLUMN schedule_timezone TEXT NOT NULL DEFAULT 'UTC';
+PRAGMA user_version=8;
 COMMIT;)sql");
             Statement installation(
                 db_, "INSERT OR IGNORE INTO store_metadata(key,value) VALUES('installation_id',?)");
@@ -520,8 +529,9 @@ AND credential_records.ownership_nonce=excluded.ownership_nonce)sql");
     }
     std::vector<DownloadQueue> loadQueues() {
         std::lock_guard lock(mutex_);
-        Statement q(db_, "SELECT id,name,revision,enabled,max_active,download_limit,upload_limit FROM "
-                         "download_queues ORDER BY id");
+        Statement q(db_, "SELECT id,name,revision,enabled,max_active,download_limit,upload_limit,"
+                         "schedule_enabled,schedule_weekdays,schedule_start,schedule_end,schedule_timezone "
+                         "FROM download_queues ORDER BY id");
         std::vector<DownloadQueue> queues;
         int status;
         while ((status = sqlite3_step(q.value)) == SQLITE_ROW) {
@@ -533,6 +543,11 @@ AND credential_records.ownership_nonce=excluded.ownership_nonce)sql");
             queue.maxActive = sqlite3_column_int(q.value, 4);
             queue.downloadLimit = sqlite3_column_int64(q.value, 5);
             queue.uploadLimit = sqlite3_column_int64(q.value, 6);
+            queue.schedule.enabled = sqlite3_column_int(q.value, 7) != 0;
+            queue.schedule.weekdays = sqlite3_column_int(q.value, 8);
+            queue.schedule.startMinute = sqlite3_column_int(q.value, 9);
+            queue.schedule.endMinute = sqlite3_column_int(q.value, 10);
+            queue.schedule.timeZone = columnText(q.value, 11);
             if (!validateDownloadQueue(queue).empty() || queues.size() >= maxDownloadQueues)
                 throw std::runtime_error("Saved download queue policy is invalid.");
             queues.push_back(std::move(queue));
@@ -553,12 +568,16 @@ AND credential_records.ownership_nonce=excluded.ownership_nonce)sql");
                 sqlite3_column_int64(count.value, 0) >= static_cast<std::int64_t>(maxDownloadQueues))
                 throw std::runtime_error("Download queue policy limit reached.");
         }
-        Statement q(db_, expectedRevision == 0 ? "INSERT INTO "
-                                                 "download_queues(id,name,revision,enabled,max_active,"
-                                                 "download_limit,upload_limit) VALUES(?,?,?,?,?,?,?)"
-                                               : "UPDATE download_queues SET "
-                                                 "name=?,revision=?,enabled=?,max_active=?,download_limit=?,"
-                                                 "upload_limit=? WHERE id=? AND revision=?");
+        Statement q(db_,
+                    expectedRevision == 0
+                        ? "INSERT INTO "
+                          "download_queues(id,name,revision,enabled,max_active,"
+                          "download_limit,upload_limit,schedule_enabled,schedule_weekdays,"
+                          "schedule_start,schedule_end,schedule_timezone) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)"
+                        : "UPDATE download_queues SET "
+                          "name=?,revision=?,enabled=?,max_active=?,download_limit=?,"
+                          "upload_limit=?,schedule_enabled=?,schedule_weekdays=?,schedule_start=?,"
+                          "schedule_end=?,schedule_timezone=? WHERE id=? AND revision=?");
         if (expectedRevision == 0) {
             q.text(1, queue.id);
             q.text(2, queue.name);
@@ -567,6 +586,11 @@ AND credential_records.ownership_nonce=excluded.ownership_nonce)sql");
             q.number(5, queue.maxActive);
             q.number(6, queue.downloadLimit);
             q.number(7, queue.uploadLimit);
+            q.number(8, queue.schedule.enabled);
+            q.number(9, queue.schedule.weekdays);
+            q.number(10, queue.schedule.startMinute);
+            q.number(11, queue.schedule.endMinute);
+            q.text(12, queue.schedule.timeZone);
         } else {
             q.text(1, queue.name);
             q.number(2, queue.revision);
@@ -574,8 +598,13 @@ AND credential_records.ownership_nonce=excluded.ownership_nonce)sql");
             q.number(4, queue.maxActive);
             q.number(5, queue.downloadLimit);
             q.number(6, queue.uploadLimit);
-            q.text(7, queue.id);
-            q.number(8, expectedRevision);
+            q.number(7, queue.schedule.enabled);
+            q.number(8, queue.schedule.weekdays);
+            q.number(9, queue.schedule.startMinute);
+            q.number(10, queue.schedule.endMinute);
+            q.text(11, queue.schedule.timeZone);
+            q.text(12, queue.id);
+            q.number(13, expectedRevision);
         }
         if (sqlite3_step(q.value) != SQLITE_DONE || sqlite3_changes(db_) != 1)
             throw std::runtime_error("Queue changed or its name is already used. Refresh before retrying.");

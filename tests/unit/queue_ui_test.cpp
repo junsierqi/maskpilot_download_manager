@@ -3,7 +3,9 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDateTime>
 #include <QDialog>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QLineEdit>
 #include <QMenu>
@@ -14,6 +16,7 @@
 #include <QStatusBar>
 #include <QTableView>
 #include <QTemporaryDir>
+#include <QTimeEdit>
 #include <QTimer>
 #include <QTreeWidget>
 #include <atomic>
@@ -73,8 +76,11 @@ struct Store {
     QTemporaryDir temporary;
     std::filesystem::path root;
     TransportFactory factory;
+    std::shared_ptr<IQueueCivilTime> clock;
     std::unique_ptr<DownloadService> service;
-    explicit Store(bool real = false, TransportFactory custom = {}) {
+    explicit Store(bool real = false, TransportFactory custom = {},
+                   std::shared_ptr<IQueueCivilTime> civilTime = {})
+        : clock(std::move(civilTime)) {
         if (!temporary.isValid())
             throw std::runtime_error("Cannot create owned queue fixture");
         root = std::filesystem::path(temporary.path().toStdWString());
@@ -94,9 +100,10 @@ struct Store {
     }
     void open() {
         auto store = makeSqliteStore(root / L"tasks.db");
-        service = std::make_unique<DownloadService>(std::move(store.tasks), factory, root / L"parts",
-                                                    ContextDependencies{std::move(store.contexts), {}},
-                                                    QueueDependencies{std::move(store.queues)});
+        service = std::make_unique<DownloadService>(
+            std::move(store.tasks), factory, root / L"parts",
+            ContextDependencies{std::move(store.contexts), {}},
+            QueueDependencies{std::move(store.queues), clock ? clock : makeQueueCivilTime()});
     }
     Task task(const std::string& id) {
         for (const auto& value : service->snapshot())
@@ -165,11 +172,21 @@ TEST(QueueUi, ActualManagerAddFilterMoveAndReopenPreservePausedMembership) {
                 widget<QSpinBox>(dialog, "queueMaxActive")->setValue(2);
                 widget<QSpinBox>(dialog, "queueDownloadLimit")->setValue(64);
                 widget<QSpinBox>(dialog, "queueUploadLimit")->setValue(16);
+                widget<QCheckBox>(dialog, "queueWeeklyEnabled")->setChecked(true);
+                widget<QTimeEdit>(dialog, "queueWindowStart")->setTime(QTime(22, 15));
+                widget<QTimeEdit>(dialog, "queueWindowEnd")->setTime(QTime(6, 30));
+                widget<QLineEdit>(dialog, "queueTimeZone")->setText("Asia/Shanghai");
+                widget<QCheckBox>(dialog, "queueWeekday6")->setChecked(false);
                 stage = 1;
                 widget<QPushButton>(dialog, "queueSave")->click();
             } else if (stage == 1 && widget<QTreeWidget>(dialog, "queueList")->topLevelItemCount() == 2 &&
                        widget<QPushButton>(dialog, "queueSave")->isEnabled()) {
                 const auto screenshot = qEnvironmentVariable("MASKPILOT_TEST_QUEUE_SCREENSHOT");
+                EXPECT_TRUE(widget<QCheckBox>(dialog, "queueWeeklyEnabled")->isChecked());
+                EXPECT_EQ(widget<QTimeEdit>(dialog, "queueWindowStart")->time(), QTime(22, 15));
+                EXPECT_EQ(widget<QTimeEdit>(dialog, "queueWindowEnd")->time(), QTime(6, 30));
+                EXPECT_EQ(widget<QLineEdit>(dialog, "queueTimeZone")->text(), "Asia/Shanghai");
+                EXPECT_FALSE(widget<QCheckBox>(dialog, "queueWeekday6")->isChecked());
                 if (!screenshot.isEmpty())
                     EXPECT_TRUE(dialog->grab().save(screenshot));
                 stage = 2;
@@ -245,8 +262,75 @@ TEST(QueueUi, ActualManagerAddFilterMoveAndReopenPreservePausedMembership) {
     const auto policies = store.service->queues().get();
     EXPECT_TRUE(std::any_of(policies.begin(), policies.end(), [&](const auto& q) {
         return q.id == queueId && q.maxActive == 2 && q.downloadLimit == 64 * 1024 &&
-               q.uploadLimit == 16 * 1024;
+               q.uploadLimit == 16 * 1024 && q.schedule.enabled && q.schedule.weekdays == 63 &&
+               q.schedule.startMinute == 22 * 60 + 15 && q.schedule.endMinute == 6 * 60 + 30 &&
+               q.schedule.timeZone == "Asia/Shanghai";
     }));
+}
+
+TEST(QueueUi, RealHttpWeeklyWindowPausesAndReopensWithoutResumingManualTasks) {
+    platform();
+    int argc = 1;
+    char program[] = "QueueWeeklyNativeFlow";
+    char* argv[]{program, nullptr};
+    QApplication app(argc, argv);
+    QCoreApplication::setOrganizationName("MaskPilotTests");
+    QCoreApplication::setApplicationName(program);
+    struct Clock final : IQueueCivilTime {
+        std::atomic<std::int64_t> utc{
+            QDateTime::fromString("2026-11-16T09:00:00Z", Qt::ISODate).toSecsSinceEpoch()};
+        std::shared_ptr<IQueueCivilTime> actual = makeQueueCivilTime();
+        std::int64_t utcNow() const override { return utc.load(); }
+        std::optional<CivilMinute> at(const std::string& zone, std::int64_t value) const override {
+            return actual->at(zone, value);
+        }
+    };
+    auto clock = std::make_shared<Clock>();
+    Store store(true, {}, clock);
+    LocalHttpServer origin;
+    QueueConfiguration draft;
+    draft.name = "Weekly HTTP";
+    draft.maxActive = 1;
+    draft.schedule = {true, 1, 540, 600, "UTC"};
+    const auto queue = store.service->configureQueue(draft).get();
+    MainWindow window(*store.service);
+    window.show();
+    ModalBudget budget;
+    auto* filter = widget<QComboBox>(&window, "queueFilter");
+    ASSERT_TRUE(untilGui([&] { return filter->findData(QString::fromStdString(queue.id)) >= 0; }));
+    addPaused(window, store, origin.url("/weekly"), queue.id, "weekly.bin");
+    addPaused(window, store, origin.url("/manual-weekly"), queue.id, "manual-weekly.bin");
+    const auto running = findTask(store, origin.url("/weekly"));
+    const auto manual = findTask(store, origin.url("/manual-weekly"));
+    ASSERT_TRUE(untilGui([&] { return selectTask(window, running); }));
+    widget<QAction>(&window, "resumeTasksAction")->trigger();
+    ASSERT_TRUE(untilGui([&] { return store.task(running).downloaded >= 32768; }));
+    clock->utc += 3600;
+    ASSERT_TRUE(untilGui([&] { return store.task(running).state == TaskState::PolicyWaiting; }));
+    EXPECT_EQ(store.task(running).runIntent, RunIntent::Run);
+    EXPECT_TRUE(std::filesystem::exists(store.root / L"parts" / running));
+    const auto held = store.task(running).downloaded;
+    const auto requests = origin.requests("/weekly");
+    QElapsedTimer wait;
+    wait.start();
+    ASSERT_TRUE(untilGui([&] { return wait.elapsed() > 350; }));
+    EXPECT_EQ(store.task(running).downloaded, held);
+    EXPECT_EQ(origin.requests("/weekly"), requests);
+    // A backward wall-clock jump reevaluates current eligibility without replaying work.
+    clock->utc -= 3000;
+    ASSERT_TRUE(untilGui([&] { return store.task(running).state == TaskState::Completed; }));
+    QFile output(QString::fromStdWString(store.task(running).spec.destination.wstring()));
+    ASSERT_TRUE(output.open(QIODevice::ReadOnly));
+    EXPECT_EQ(output.readAll(), origin.data());
+    EXPECT_GE(origin.bodyRequests("/weekly"), 2);
+    EXPECT_EQ(store.task(manual).state, TaskState::Paused);
+    EXPECT_EQ(origin.requests("/manual-weekly"), 0);
+    clock->utc += 3600;
+    window.requestQuit();
+    store.service.reset();
+    store.open();
+    EXPECT_EQ(store.task(running).state, TaskState::Completed);
+    EXPECT_EQ(store.task(manual).runIntent, RunIntent::Paused);
 }
 
 TEST(QueueUi, RealHttpQueuesPauseEnableWithoutResumingManualTasks) {

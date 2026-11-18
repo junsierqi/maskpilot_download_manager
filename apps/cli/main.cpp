@@ -160,7 +160,9 @@ int runClient(int argc, char** argv) {
         maskpilot::DownloadService service(
             std::move(store.tasks),
             maskpilot::makeUnifiedTransferFactory(maskpilot::makeTorrentTransferFactory(torrentRuntime)),
-            data / "parts", {}, maskpilot::QueueDependencies{std::move(store.queues)});
+            data / "parts", {},
+            maskpilot::QueueDependencies{std::move(store.queues), maskpilot::makeQueueCivilTime(),
+                                         maskpilot::InitialQueueLimits{}});
         std::string id;
         if (std::string(argv[1]) == "--resume" || std::string(argv[1]) == "--change-url") {
             id = argv[2];

@@ -8,6 +8,14 @@ inline constexpr char defaultQueueId[] = "default";
 inline constexpr std::size_t maxDownloadQueues = 256;
 inline constexpr std::int64_t minimumQueueRate = 1024;
 enum class RunIntent { Run, Paused };
+struct WeeklySchedule {
+    bool enabled = false;
+    int weekdays = 127; // Monday is bit 0.
+    int startMinute = 0, endMinute = 0;
+    std::string timeZone = "UTC";
+};
+// Equal endpoints mean 24 hours from the selected starting weekday's local time.
+bool weeklyWindowContains(const WeeklySchedule&, int weekday, int minute);
 struct DownloadQueue {
     std::string id = defaultQueueId;
     std::string name = "Default";
@@ -15,6 +23,7 @@ struct DownloadQueue {
     bool enabled = true;
     int maxActive = 8;
     std::int64_t downloadLimit = 0, uploadLimit = 0;
+    WeeklySchedule schedule;
 };
 bool isQueueId(const std::string&);
 std::string validateDownloadQueue(const DownloadQueue&);

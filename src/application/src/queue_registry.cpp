@@ -1,9 +1,28 @@
 #include "queue_registry.h"
 #include <algorithm>
+#include <chrono>
 #include <limits>
 #include <stdexcept>
 namespace maskpilot {
 namespace {
+class UtcCivilTime final : public IQueueCivilTime {
+  public:
+    std::int64_t utcNow() const override {
+        return std::chrono::duration_cast<std::chrono::seconds>(
+                   std::chrono::system_clock::now().time_since_epoch())
+            .count();
+    }
+    std::optional<CivilMinute> at(const std::string& zone, std::int64_t utc) const override {
+        if (zone != "UTC")
+            return std::nullopt;
+        auto day = utc / 86400, second = utc % 86400;
+        if (second < 0) {
+            second += 86400;
+            --day;
+        }
+        return CivilMinute{static_cast<int>((day % 7 + 10) % 7), static_cast<int>(second / 60)};
+    }
+};
 constexpr auto infinity = std::numeric_limits<std::int64_t>::max() / 4;
 std::int64_t bounded(std::int64_t value) { return value == 0 ? infinity : std::min(value, infinity); }
 std::vector<std::int64_t> share(std::int64_t budget, const std::vector<std::int64_t>& caps) {
@@ -37,7 +56,8 @@ std::vector<std::int64_t> share(std::int64_t budget, const std::vector<std::int6
 }
 } // namespace
 QueueRegistry::QueueRegistry(QueueDependencies dependencies)
-    : repository_(std::move(dependencies.repository)) {
+    : repository_(std::move(dependencies.repository)),
+      clock_(dependencies.clock ? std::move(dependencies.clock) : std::make_shared<UtcCivilTime>()) {
     if (!repository_) {
         queues_.emplace(defaultQueueId, DownloadQueue{});
         return;
@@ -67,6 +87,35 @@ std::vector<DownloadQueue> QueueRegistry::list() const {
         result.push_back(q);
     return result;
 }
+std::int64_t QueueRegistry::now() const { return clock_->utcNow(); }
+bool QueueRegistry::available(const std::string& id, std::int64_t utc) const {
+    const auto& q = get(id);
+    if (!q.enabled)
+        return false;
+    if (!q.schedule.enabled)
+        return true;
+    auto minute = utc / 60;
+    if (utc % 60 < 0)
+        --minute;
+    if (!cachedMinute_ || *cachedMinute_ != minute) {
+        civilCache_.clear();
+        cachedMinute_ = minute;
+    }
+    auto found = civilCache_.find(q.schedule.timeZone);
+    if (found == civilCache_.end()) {
+        std::optional<CivilMinute> value;
+        try {
+            value = clock_->at(q.schedule.timeZone, utc);
+        } catch (const std::exception&) {
+        }
+        if (civilCache_.size() >= maxDownloadQueues)
+            civilCache_.clear();
+        found = civilCache_.emplace(q.schedule.timeZone, value).first;
+    }
+    if (!found->second)
+        return false;
+    return weeklyWindowContains(q.schedule, found->second->weekday, found->second->minute);
+}
 DownloadQueue QueueRegistry::prepare(QueueConfiguration config) const {
     if (!repository_)
         throw std::invalid_argument("Queue configuration requires persistent queue storage.");
@@ -81,9 +130,17 @@ DownloadQueue QueueRegistry::prepare(QueueConfiguration config) const {
     if (config.expectedRevision == std::numeric_limits<std::int64_t>::max())
         throw std::invalid_argument("Queue revision is exhausted.");
     DownloadQueue q{config.id,        config.name,          config.expectedRevision + 1, config.enabled,
-                    config.maxActive, config.downloadLimit, config.uploadLimit};
+                    config.maxActive, config.downloadLimit, config.uploadLimit,          config.schedule};
     if (auto error = validateDownloadQueue(q); !error.empty())
         throw std::invalid_argument(error);
+    if (q.schedule.enabled) {
+        try {
+            if (!clock_->at(q.schedule.timeZone, now()))
+                throw std::invalid_argument("The selected queue time zone is unavailable.");
+        } catch (const std::exception&) {
+            throw std::invalid_argument("The selected queue time zone is unavailable.");
+        }
+    }
     for (auto& [id, old] : queues_)
         if (id != q.id && old.name == q.name)
             throw std::invalid_argument("Choose a unique queue name.");
@@ -92,6 +149,7 @@ DownloadQueue QueueRegistry::prepare(QueueConfiguration config) const {
 void QueueRegistry::commit(const DownloadQueue& q, std::int64_t expected) {
     repository_->saveQueue(q, expected);
     queues_.insert_or_assign(q.id, q);
+    civilCache_.clear();
 }
 void QueueRegistry::remove(const std::string& id, std::int64_t expected) {
     if (!repository_ || id == defaultQueueId || get(id).revision != expected)

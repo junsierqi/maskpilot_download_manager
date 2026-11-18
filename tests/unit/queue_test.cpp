@@ -1,6 +1,7 @@
 #include "../../src/application/src/queue_registry.h"
 #include <QTemporaryDir>
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <gtest/gtest.h>
 #include <maskpilot/application/download_service.h>
@@ -143,16 +144,34 @@ Task find(DownloadService& service, const std::string& id) {
     return {};
 }
 QueueConfiguration config(const DownloadQueue& q) {
-    return {q.id, q.name, q.revision, q.enabled, q.maxActive, q.downloadLimit, q.uploadLimit};
+    return {q.id, q.name, q.revision, q.enabled, q.maxActive, q.downloadLimit, q.uploadLimit, q.schedule};
 }
+struct FakeCivilTime final : IQueueCivilTime {
+    std::atomic<std::int64_t> utc{600};
+    std::int64_t utcNow() const override { return utc.load(); }
+    std::optional<CivilMinute> at(const std::string& zone, std::int64_t instant) const override {
+        if (zone != "UTC" && zone != "Test/Zone")
+            return std::nullopt;
+        auto minutes = instant / 60;
+        auto day = minutes / 1440;
+        auto minute = minutes % 1440;
+        if (minute < 0) {
+            minute += 1440;
+            --day;
+        }
+        return CivilMinute{static_cast<int>((day % 7 + 7) % 7), static_cast<int>(minute)};
+    }
+};
 struct Fixture {
     QTemporaryDir temporary;
     std::shared_ptr<State> s = std::make_shared<State>();
+    std::shared_ptr<IQueueCivilTime> clock;
+    explicit Fixture(std::shared_ptr<IQueueCivilTime> time = {}) : clock(std::move(time)) {}
     DownloadService service{std::make_unique<Tasks>(s),
                             [state = s] { return std::make_unique<Worker>(state); },
                             std::filesystem::path(temporary.path().toStdWString()) / L"parts",
                             {},
-                            QueueDependencies{std::make_unique<Queues>(s)}};
+                            QueueDependencies{std::make_unique<Queues>(s), clock}};
     DownloadQueue queue(std::string name, int activeSlots = 1) {
         QueueConfiguration c;
         c.name = std::move(name);
@@ -318,9 +337,7 @@ TEST(QueuePolicy, RotationUsesQueueTurnsAndPriorityWithinEachQueue) {
     auto qa = f.queue("A"), qb = f.queue("B");
     // The default queue ran last. Opaque IDs can sort on either side of "default";
     // select the next queue in cyclic order rather than assuming both sort before it.
-    const auto turn = [](const DownloadQueue& q) {
-        return std::pair{q.id <= defaultQueueId, q.id};
-    };
+    const auto turn = [](const DownloadQueue& q) { return std::pair{q.id <= defaultQueueId, q.id}; };
     if (turn(qa) > turn(qb))
         std::swap(qa, qb);
     auto low = f.add(qa.id, true), high = f.add(qa.id, true), other = f.add(qb.id, true);
@@ -482,4 +499,154 @@ TEST(QueuePolicy, RecoveryStopsEnabledBandwidthWaitButPreservesExplicitDisabledQ
     service.configureQueue(edit).get();
     ASSERT_TRUE(waitFor([&] { return find(service, disabledTask.id).state == TaskState::Downloading; }));
     EXPECT_EQ(find(service, enabledTask.id).state, TaskState::Paused);
+}
+
+TEST(QueueWindows, ClosurePreservesRunAndOpeningDoesNotResumeManualPauseOrCompletedTasks) {
+    auto clock = std::make_shared<FakeCivilTime>();
+    Fixture f(clock);
+    auto q = f.queue("Window", 3);
+    auto c = config(q);
+    c.schedule = {true, 127, 10, 20, "Test/Zone"};
+    q = f.service.configureQueue(c).get();
+    auto running = f.add(q.id), manual = f.add(q.id, true), complete = f.add(q.id);
+    ASSERT_TRUE(waitFor([&] {
+        return find(f.service, running).state == TaskState::Downloading &&
+               find(f.service, complete).state == TaskState::Downloading;
+    }));
+    {
+        std::lock_guard lock(f.s->mutex);
+        f.s->release.insert(complete);
+    }
+    ASSERT_TRUE(waitFor([&] { return find(f.service, complete).state == TaskState::Completed; }));
+    clock->utc = 20 * 60;
+    ASSERT_TRUE(waitFor([&] { return find(f.service, running).state == TaskState::PolicyWaiting; }));
+    EXPECT_EQ(find(f.service, running).runIntent, RunIntent::Run);
+    std::size_t saves;
+    {
+        std::lock_guard lock(f.s->mutex);
+        saves = f.s->saves;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(350));
+    f.service.queues().get();
+    {
+        std::lock_guard lock(f.s->mutex);
+        EXPECT_EQ(f.s->saves, saves);
+    }
+    clock->utc = (1440 + 10) * 60;
+    ASSERT_TRUE(waitFor([&] { return find(f.service, running).state == TaskState::Downloading; }));
+    EXPECT_EQ(find(f.service, manual).state, TaskState::Paused);
+    EXPECT_EQ(find(f.service, complete).state, TaskState::Completed);
+    f.service.pause(running);
+    ASSERT_TRUE(waitFor([&] { return find(f.service, running).state == TaskState::Paused; }));
+    clock->utc = (1440 + 20) * 60;
+    f.service.queues().get();
+    clock->utc = (2880 + 10) * 60;
+    f.service.queues().get();
+    EXPECT_EQ(find(f.service, running).runIntent, RunIntent::Paused);
+}
+TEST(QueueWindows, BackwardAndForwardJumpsRespectWindowAndAbsoluteOneShotGates) {
+    auto clock = std::make_shared<FakeCivilTime>();
+    Fixture f(clock);
+    auto q = f.queue("Jumps");
+    auto c = config(q);
+    c.schedule = {true, 127, 10, 20, "UTC"};
+    q = f.service.configureQueue(c).get();
+    auto id = f.add(q.id, true);
+    f.service.schedule(id, 12 * 60, 14 * 60);
+    f.service.queues().get();
+    EXPECT_EQ(find(f.service, id).state, TaskState::Scheduled);
+    clock->utc = 13 * 60;
+    ASSERT_TRUE(waitFor([&] { return find(f.service, id).state == TaskState::Downloading; }));
+    clock->utc = 9 * 60;
+    ASSERT_TRUE(waitFor([&] { return find(f.service, id).state == TaskState::PolicyWaiting; }));
+    clock->utc = 11 * 60;
+    ASSERT_TRUE(waitFor([&] { return find(f.service, id).state == TaskState::Scheduled; }));
+    clock->utc = 13 * 60;
+    ASSERT_TRUE(waitFor([&] { return find(f.service, id).state == TaskState::Downloading; }));
+    clock->utc = 14 * 60;
+    ASSERT_TRUE(waitFor([&] { return find(f.service, id).state == TaskState::Paused; }));
+    EXPECT_EQ(find(f.service, id).runIntent, RunIntent::Paused);
+}
+TEST(QueueWindows, RetryDeadlinesUseTheSameClockAsCivilAdmission) {
+    auto clock = std::make_shared<FakeCivilTime>();
+    Fixture f(clock);
+    auto q = f.queue("Retry clock");
+    auto id = f.add(q.id, true);
+    {
+        std::lock_guard lock(f.s->mutex);
+        f.s->failFirst.insert(id);
+    }
+    f.service.resume(id);
+    ASSERT_TRUE(waitFor([&] { return find(f.service, id).state == TaskState::RetryWaiting; }));
+    EXPECT_EQ(find(f.service, id).retryAt, 660);
+    clock->utc = 659;
+    f.service.queues().get();
+    EXPECT_EQ(find(f.service, id).state, TaskState::RetryWaiting);
+    clock->utc = 660;
+    ASSERT_TRUE(waitFor([&] { return find(f.service, id).state == TaskState::Downloading; }));
+}
+TEST(QueueWindows, DefaultClockIsUtcOnlyAndUnavailableSavedZonesFailClosed) {
+    auto state = std::make_shared<State>();
+    auto q = DownloadQueue{};
+    q.schedule = {true, 127, 0, 0, "Unavailable/Zone"};
+    state->queues = {q};
+    QueueRegistry registry(QueueDependencies{std::make_unique<Queues>(state)});
+    EXPECT_FALSE(registry.available(defaultQueueId, 0));
+    auto c = config(q);
+    EXPECT_THROW(registry.prepare(c), std::invalid_argument);
+    c.schedule.enabled = false;
+    EXPECT_NO_THROW(registry.prepare(c));
+    state->queues.front().schedule = {true, 8, 0, 1, "UTC"};
+    QueueRegistry utc(QueueDependencies{std::make_unique<Queues>(state)});
+    EXPECT_TRUE(utc.available(defaultQueueId, 0));
+    EXPECT_FALSE(utc.available(defaultQueueId, 60));
+}
+TEST(QueueWindows, StartupClosedWindowHoldsRunAndFirstDueWorkerUsesInitialLimits) {
+    QTemporaryDir temporary;
+    ASSERT_TRUE(temporary.isValid());
+    auto state = std::make_shared<State>();
+    auto clock = std::make_shared<FakeCivilTime>();
+    auto scheduled = DownloadQueue{};
+    scheduled.schedule = {true, 127, 11, 20, "Test/Zone"};
+    state->queues = {scheduled};
+    Task task;
+    task.id = newTaskId();
+    task.spec.url = "https://example.test/window";
+    task.spec.destination = std::filesystem::path(temporary.path().toStdWString()) / L"one.bin";
+    task.state = TaskState::Downloading;
+    task.runIntent = RunIntent::Run;
+    auto second = task;
+    second.id = newTaskId();
+    second.spec.destination.replace_filename(L"two.bin");
+    state->saved = {task, second};
+    DownloadService service(
+        std::make_unique<Tasks>(state), [state] { return std::make_unique<Worker>(state); },
+        std::filesystem::path(temporary.path().toStdWString()) / L"parts", {},
+        QueueDependencies{std::make_unique<Queues>(state), clock, InitialQueueLimits{1, 7, 0}});
+    EXPECT_EQ(find(service, task.id).state, TaskState::PolicyWaiting);
+    EXPECT_EQ(find(service, task.id).runIntent, RunIntent::Run);
+    {
+        std::lock_guard lock(state->mutex);
+        EXPECT_TRUE(state->starts.empty());
+    }
+    clock->utc = 11 * 60;
+    ASSERT_TRUE(waitFor([&] {
+        std::lock_guard lock(state->mutex);
+        return state->starts.size() == 1 && state->rates[state->starts.front()] == 7;
+    }));
+    {
+        std::lock_guard lock(state->mutex);
+        EXPECT_EQ(state->starts.size(), 1);
+    }
+}
+TEST(QueueWindows, InvalidInitialLimitsRejectBeforeAnyWorkerCanStart) {
+    QTemporaryDir temporary;
+    auto state = std::make_shared<State>();
+    EXPECT_THROW((DownloadService(
+                     std::make_unique<Tasks>(state), [state] { return std::make_unique<Worker>(state); },
+                     std::filesystem::path(temporary.path().toStdWString()), {},
+                     QueueDependencies{std::make_unique<Queues>(state), {}, InitialQueueLimits{0, 0, 0}})),
+                 std::invalid_argument);
+    std::lock_guard lock(state->mutex);
+    EXPECT_TRUE(state->starts.empty());
 }

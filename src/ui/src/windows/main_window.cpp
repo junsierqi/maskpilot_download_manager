@@ -640,9 +640,6 @@ MainWindow::MainWindow(DownloadService& service, QWidget* parent)
             activateWindow();
         }
     });
-    p.service.setLimits(p.settings.value("concurrentTasks", 3).toInt(),
-                        p.settings.value("globalLimit", 0).toLongLong() * 1024,
-                        p.settings.value("globalUploadLimit", 0).toLongLong() * 1024);
     p.timer = new QTimer(this);
     connect(p.timer, &QTimer::timeout, this, [&p] { p.refresh(); });
     p.timer->start(400);

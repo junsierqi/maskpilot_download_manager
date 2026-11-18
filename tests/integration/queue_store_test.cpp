@@ -164,6 +164,147 @@ TEST(QueueStorage, PersistsQueueCASAndRejectsDuplicateNamesStaleWritesAndDefault
     EXPECT_EQ(reopened.queues->loadQueues().size(), 1);
 }
 
+TEST(QueueStorage, MigratesRealVersionSevenAndPersistsWeeklyWindowCASWithoutChangingTaskIdentity) {
+    QueueTemp temporary;
+    const auto path = temporary.path / "tasks.db";
+    const auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path();
+    sqlite3* raw = nullptr;
+    ASSERT_EQ(sqlite3_open(path.string().c_str(), &raw), SQLITE_OK);
+    std::unique_ptr<sqlite3, decltype(&sqlite3_close)> connection(raw, sqlite3_close);
+    for (const auto* name : {"0001_initial.sql", "0002_media.sql", "0003_ftp.sql", "0004_torrents.sql",
+                             "0005_proxy.sql", "0006_contexts.sql", "0007_queues.sql"}) {
+        std::ifstream input(root / "database" / "migrations" / name);
+        ASSERT_TRUE(input.good()) << name;
+        const std::string sql((std::istreambuf_iterator<char>(input)), {});
+        ASSERT_EQ(sqlite3_exec(raw, sql.c_str(), nullptr, nullptr, nullptr), SQLITE_OK) << name;
+    }
+    ASSERT_EQ(sqlite3_exec(
+                  raw,
+                  "INSERT INTO store_metadata VALUES('installation_id','dddddddddddddddddddddddddddddddd');"
+                  "INSERT INTO download_queues VALUES('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','Night "
+                  "work',3,1,2,4096,2048);"
+                  "INSERT INTO "
+                  "tasks(id,url,destination,category,referrer,user_agent,proxy,expected_sha256,connections,"
+                  "priority,max_retries,"
+                  "speed_limit,scheduled_at,stop_at,state,downloaded,total,created_at,updated_at,retries,"
+                  "resumable,error,owner_id,request_id,"
+                  "context_revision,proxy_credential_ref,origin_auth_required,queue_id,run_intent) "
+                  "VALUES('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb','https://example.test/"
+                  "file','preserved.bin','General','','MaskPilot','',"
+                  "'',4,0,3,0,0,0,17,100,1000,1,1,0,1,'','cccccccccccccccccccccccccccccccc',"
+                  "'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',2,'ffffffffffffffffffffffffffffffff',1,'"
+                  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',0);",
+                  nullptr, nullptr, nullptr),
+              SQLITE_OK);
+    connection.reset();
+    const auto part = temporary.path / "part-0";
+    {
+        std::ofstream output(part);
+        output << "existing scheduled payload";
+    }
+    maskpilot::DownloadQueue changed;
+    {
+        auto store = maskpilot::makeSqliteStore(path);
+        EXPECT_EQ(store.contexts->installationId(), "dddddddddddddddddddddddddddddddd");
+        const auto queues = store.queues->loadQueues();
+        ASSERT_EQ(queues.size(), 2);
+        for (const auto& queue : queues) {
+            EXPECT_FALSE(queue.schedule.enabled);
+            EXPECT_EQ(queue.schedule.weekdays, 127);
+            EXPECT_EQ(queue.schedule.startMinute, 0);
+            EXPECT_EQ(queue.schedule.endMinute, 0);
+            EXPECT_EQ(queue.schedule.timeZone, "UTC");
+        }
+        const auto original = std::find_if(queues.begin(), queues.end(),
+                                           [](const auto& queue) { return queue.name == "Night work"; });
+        ASSERT_NE(original, queues.end());
+        changed = *original;
+        EXPECT_EQ(changed.revision, 3);
+        ++changed.revision;
+        changed.schedule = {true, 65, 1380, 60, "America/New_York"};
+        store.queues->saveQueue(changed, 3);
+        EXPECT_THROW(store.queues->saveQueue(changed, 3), std::exception);
+        const auto tasks = store.tasks->load();
+        ASSERT_EQ(tasks.size(), 1);
+        EXPECT_EQ(tasks[0].id, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        EXPECT_EQ(tasks[0].ownerId, "cccccccccccccccccccccccccccccccc");
+        EXPECT_EQ(tasks[0].contextRevision, 2);
+        EXPECT_EQ(tasks[0].proxyCredentialRef, "ffffffffffffffffffffffffffffffff");
+        EXPECT_EQ(tasks[0].queueId, changed.id);
+        EXPECT_EQ(tasks[0].runIntent, maskpilot::RunIntent::Run);
+        EXPECT_EQ(tasks[0].state, maskpilot::TaskState::PolicyWaiting);
+        EXPECT_EQ(tasks[0].spec.destination, "preserved.bin");
+    }
+    {
+        auto reopened = maskpilot::makeSqliteStore(path);
+        const auto queues = reopened.queues->loadQueues();
+        const auto saved = std::find_if(queues.begin(), queues.end(),
+                                        [&](const auto& queue) { return queue.id == changed.id; });
+        ASSERT_NE(saved, queues.end());
+        EXPECT_EQ(saved->revision, 4);
+        EXPECT_TRUE(saved->schedule.enabled);
+        EXPECT_EQ(saved->schedule.weekdays, 65);
+        EXPECT_EQ(saved->schedule.startMinute, 1380);
+        EXPECT_EQ(saved->schedule.endMinute, 60);
+        EXPECT_EQ(saved->schedule.timeZone, "America/New_York");
+        changed = *saved;
+        ++changed.revision;
+        changed.schedule.enabled = false;
+        reopened.queues->saveQueue(changed, 4);
+        for (const auto invalid : {0, 128}) {
+            auto bad = changed;
+            ++bad.revision;
+            bad.schedule.weekdays = invalid;
+            EXPECT_THROW(reopened.queues->saveQueue(bad, 5), std::exception);
+        }
+        for (const auto invalid : {-1, 1440}) {
+            auto bad = changed;
+            ++bad.revision;
+            bad.schedule.startMinute = invalid;
+            EXPECT_THROW(reopened.queues->saveQueue(bad, 5), std::exception);
+            bad = changed;
+            ++bad.revision;
+            bad.schedule.endMinute = invalid;
+            EXPECT_THROW(reopened.queues->saveQueue(bad, 5), std::exception);
+        }
+        for (const auto* invalid : {"", "bad zone", "UTC\nprivate", "../UTC"}) {
+            auto bad = changed;
+            ++bad.revision;
+            bad.schedule.timeZone = invalid;
+            EXPECT_THROW(reopened.queues->saveQueue(bad, 5), std::exception);
+        }
+    }
+    {
+        auto reopened = maskpilot::makeSqliteStore(path);
+        const auto queues = reopened.queues->loadQueues();
+        const auto saved = std::find_if(queues.begin(), queues.end(),
+                                        [&](const auto& queue) { return queue.id == changed.id; });
+        ASSERT_NE(saved, queues.end());
+        EXPECT_EQ(saved->revision, 5);
+        EXPECT_FALSE(saved->schedule.enabled);
+        EXPECT_EQ(saved->schedule.weekdays, 65);
+        EXPECT_EQ(saved->schedule.timeZone, "America/New_York");
+    }
+    int backups = 0;
+    for (const auto& file : std::filesystem::directory_iterator(temporary.path)) {
+        if (file.path().filename().string().find(".before-v8-") == std::string::npos)
+            continue;
+        ++backups;
+        sqlite3* backup = nullptr;
+        ASSERT_EQ(sqlite3_open_v2(file.path().string().c_str(), &backup, SQLITE_OPEN_READONLY, nullptr),
+                  SQLITE_OK);
+        std::unique_ptr<sqlite3, decltype(&sqlite3_close)> close(backup, sqlite3_close);
+        sqlite3_stmt* q = nullptr;
+        ASSERT_EQ(sqlite3_prepare_v2(backup, "PRAGMA user_version", -1, &q, nullptr), SQLITE_OK);
+        std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> statement(q, sqlite3_finalize);
+        ASSERT_EQ(sqlite3_step(q), SQLITE_ROW);
+        EXPECT_EQ(sqlite3_column_int(q, 0), 7);
+    }
+    EXPECT_EQ(backups, 1);
+    std::ifstream input(part);
+    EXPECT_EQ(std::string((std::istreambuf_iterator<char>(input)), {}), "existing scheduled payload");
+}
+
 TEST(QueueStorage, MixedOwnerMoveCommitsAtomicallyAndFailedBatchRollsBackEveryMembershipAndTimestamp) {
     QueueTemp temporary;
     auto store = maskpilot::makeSqliteStore(temporary.path / "tasks.db");

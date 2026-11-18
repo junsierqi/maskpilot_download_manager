@@ -10,6 +10,7 @@ struct SqliteStore {
     std::unique_ptr<IQueueRepository> queues;
 };
 SqliteStore makeSqliteStore(const std::filesystem::path& path);
+std::shared_ptr<IQueueCivilTime> makeQueueCivilTime();
 std::unique_ptr<ITaskRepository> makeSqliteRepository(const std::filesystem::path& path);
 std::unique_ptr<ITransferTransport> makeCurlTransfer();
 std::unique_ptr<ITransferTransport> makeFtpTransfer();

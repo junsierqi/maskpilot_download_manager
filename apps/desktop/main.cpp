@@ -92,7 +92,11 @@ int main(int argc, char** argv) {
         maskpilot::DownloadService service(
             std::move(store.tasks), maskpilot::makeUnifiedTransferFactory(), directory / L"parts",
             maskpilot::ContextDependencies{std::move(store.contexts), std::move(vault)},
-            maskpilot::QueueDependencies{std::move(store.queues)});
+            maskpilot::QueueDependencies{
+                std::move(store.queues), maskpilot::makeQueueCivilTime(),
+                maskpilot::InitialQueueLimits{settings.value("concurrentTasks", 3).toInt(),
+                                              settings.value("globalLimit", 0).toLongLong() * 1024,
+                                              settings.value("globalUploadLimit", 0).toLongLong() * 1024}});
         maskpilot::MainWindow window(service);
         maskpilot::DownloadBridge bridge(
             service, [&window](const QString& url) { return window.defaultSpec(url); },

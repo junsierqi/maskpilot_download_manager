@@ -175,9 +175,9 @@ struct DownloadService::Impl {
         task.createdAt = unixTime();
         task.updatedAt = task.createdAt;
         task.runIntent = spec.startPaused ? RunIntent::Paused : RunIntent::Run;
-        task.state = spec.startPaused
-                         ? TaskState::Paused
-                         : (spec.scheduledAt > unixTime() ? TaskState::Scheduled : TaskState::Queued);
+        task.state = spec.startPaused ? TaskState::Paused
+                                      : (spec.scheduledAt > queueRegistry->now() ? TaskState::Scheduled
+                                                                                 : TaskState::Queued);
         if (spec.kind == TransferKind::BitTorrent && task.torrent.files && !spec.torrent.allFiles &&
             spec.torrent.selectedFiles.empty())
             task.state = TaskState::AwaitingSelection;
@@ -307,7 +307,7 @@ struct DownloadService::Impl {
             task.spec.scheduledAt = 0;
             task.error.clear();
             task.retries = 0;
-            if (task.spec.stopAt <= unixTime())
+            if (task.spec.stopAt <= queueRegistry->now())
                 task.spec.stopAt = 0;
             task.state = TaskState::Queued;
             save(task);
@@ -469,8 +469,9 @@ struct DownloadService::Impl {
             break;
         case TransferOutcome::Paused:
             task.state = task.runIntent == RunIntent::Run && policyPause
-                             ? (queueRegistry->get(task.queueId).enabled ? TaskState::Queued
-                                                                         : TaskState::PolicyWaiting)
+                             ? (queueRegistry->available(task.queueId, queueRegistry->now())
+                                    ? TaskState::Queued
+                                    : TaskState::PolicyWaiting)
                              : TaskState::Paused;
             if (task.state == TaskState::Paused)
                 task.runIntent = RunIntent::Paused;
@@ -487,7 +488,8 @@ struct DownloadService::Impl {
         case TransferOutcome::Failed:
             if (event.retryable && task.retries < task.spec.maxRetries && !stopping) {
                 ++task.retries;
-                task.retryAt = unixTime() + std::max(event.retryAfter, std::min(60, 1 << task.retries));
+                task.retryAt =
+                    queueRegistry->now() + std::max(event.retryAfter, std::min(60, 1 << task.retries));
                 task.state = TaskState::RetryWaiting;
             } else
                 task.state = TaskState::Failed;
@@ -525,13 +527,20 @@ struct DownloadService::Impl {
     void schedule() {
         if (!healthy || stopping)
             return;
-        const auto now = unixTime();
+        const auto now = queueRegistry->now();
         for (auto& [id, t] : tasks) {
-            const auto& q = queueRegistry->get(t.queueId);
+            const bool available = queueRegistry->available(t.queueId, now);
+            if (jobs.contains(id) && t.runIntent == RunIntent::Run && !available &&
+                !jobs.at(id)->control->pause && !jobs.at(id)->control->cancel) {
+                jobs.at(id)->policyPause = true;
+                jobs.at(id)->control->pause = true;
+                t.state = TaskState::Pausing;
+                save(t);
+            }
             if (t.runIntent == RunIntent::Run &&
                 (t.state == TaskState::Queued || t.state == TaskState::Scheduled ||
                  t.state == TaskState::RetryWaiting || t.state == TaskState::PolicyWaiting)) {
-                auto desired = !q.enabled
+                auto desired = !available
                                    ? TaskState::PolicyWaiting
                                    : (t.spec.scheduledAt > now
                                           ? TaskState::Scheduled
@@ -561,7 +570,7 @@ struct DownloadService::Impl {
                     jobs.contains(id) || attempted.contains(id) || !contexts->enabled(t.ownerId))
                     continue;
                 const auto& q = queueRegistry->get(t.queueId);
-                if (!q.enabled)
+                if (!queueRegistry->available(t.queueId, now))
                     continue;
                 auto active = std::count_if(jobs.begin(), jobs.end(), [&](const auto& item) {
                     return tasks.at(item.first).queueId == t.queueId;
@@ -677,12 +686,20 @@ struct DownloadService::Impl {
                     }
                 }
                 if (isActive(task.state) || task.state == TaskState::Queued ||
-                    task.state == TaskState::RetryWaiting ||
-                    (task.state == TaskState::PolicyWaiting && queueRegistry->get(task.queueId).enabled)) {
-                    task.runIntent = RunIntent::Paused;
-                    task.state = TaskState::Paused;
-                    task.error = "Recovered after exit. Resume to validate local parts and remote identity.";
-                    save(task);
+                    task.state == TaskState::RetryWaiting || task.state == TaskState::PolicyWaiting) {
+                    if (task.runIntent == RunIntent::Run &&
+                        !queueRegistry->available(task.queueId, queueRegistry->now())) {
+                        if (task.state != TaskState::PolicyWaiting) {
+                            task.state = TaskState::PolicyWaiting;
+                            save(task);
+                        }
+                    } else {
+                        task.runIntent = RunIntent::Paused;
+                        task.state = TaskState::Paused;
+                        task.error =
+                            "Recovered after exit. Resume to validate local parts and remote identity.";
+                        save(task);
+                    }
                 }
                 tasks.emplace(task.id, std::move(task));
             }
@@ -737,7 +754,15 @@ DownloadService::DownloadService(std::unique_ptr<ITaskRepository> repository, Tr
     impl_->factory = std::move(factory);
     impl_->workDirectory = std::move(workDirectory);
     impl_->contexts = std::make_unique<ContextRegistry>(std::move(contexts));
+    const auto initialLimits = queues.initialLimits;
     impl_->queueRegistry = std::make_unique<QueueRegistry>(std::move(queues));
+    if (initialLimits) {
+        impl_->validateLimits(initialLimits->concurrentTasks, initialLimits->downloadLimit,
+                              initialLimits->uploadLimit, impl_->queueRegistry->list());
+        impl_->concurrentTasks = initialLimits->concurrentTasks;
+        impl_->globalLimit = initialLimits->downloadLimit;
+        impl_->globalUploadLimit = initialLimits->uploadLimit;
+    }
     std::promise<void> ready;
     auto result = ready.get_future();
     impl_->coordinator =
@@ -916,10 +941,11 @@ std::future<DownloadQueue> DownloadService::configureQueue(QueueConfiguration co
             *it = candidate;
         p->validateLimits(p->concurrentTasks, p->globalLimit, p->globalUploadLimit, policies);
         p->queueRegistry->commit(candidate, config.expectedRevision);
-        if (!candidate.enabled)
+        if (!p->queueRegistry->available(candidate.id, p->queueRegistry->now()))
             for (auto& [id, t] : p->tasks)
                 if (t.queueId == candidate.id && t.runIntent == RunIntent::Run) {
-                    if (p->jobs.contains(id)) {
+                    if (p->jobs.contains(id) && !p->jobs.at(id)->control->pause &&
+                        !p->jobs.at(id)->control->cancel) {
                         p->jobs.at(id)->policyPause = true;
                         p->jobs.at(id)->control->pause = true;
                         t.state = TaskState::Pausing;
@@ -1024,7 +1050,7 @@ void DownloadService::restart(const std::string& id) {
         task.total = -1;
         task.retries = 0;
         task.error.clear();
-        if (task.spec.stopAt <= unixTime())
+        if (task.spec.stopAt <= p->queueRegistry->now())
             task.spec.stopAt = 0;
         task.runIntent = RunIntent::Run;
         task.retryAt = 0;
@@ -1165,7 +1191,7 @@ void DownloadService::schedule(const std::string& id, std::int64_t startAt, std:
         task.spec.stopAt = stopAt;
         task.runIntent = RunIntent::Run;
         task.retryAt = 0;
-        task.state = startAt > unixTime() ? TaskState::Scheduled : TaskState::Queued;
+        task.state = startAt > p->queueRegistry->now() ? TaskState::Scheduled : TaskState::Queued;
         p->save(task);
     });
 }
