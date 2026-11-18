@@ -1,6 +1,7 @@
 #pragma once
 #include <future>
 #include <maskpilot/application/download_context.h>
+#include <maskpilot/application/media.h>
 #include <maskpilot/application/ports.h>
 #include <maskpilot/application/queue.h>
 #include <optional>
@@ -20,6 +21,8 @@ class DownloadService {
     // Trusted local queue administration; never accept these fields through scoped drafts.
     std::future<std::vector<DownloadQueue>> queues();
     std::future<TrafficUsage> queueTraffic(std::string queueId);
+    // Trusted local inspection only; returns ephemeral resolved material, never a wire response.
+    std::future<DownloadSpec> resolveMediaInspection(MediaInspectionRequest);
     std::future<DownloadQueue> configureQueue(QueueConfiguration);
     std::future<void> moveToQueue(std::vector<std::string> taskIds, std::string queueId);
     std::future<void> removeQueue(std::string queueId, std::int64_t expectedRevision);

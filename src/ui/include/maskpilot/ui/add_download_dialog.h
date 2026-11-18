@@ -1,5 +1,6 @@
 #pragma once
 #include <QDialog>
+#include <maskpilot/application/media.h>
 #include <maskpilot/domain/task.h>
 #include <memory>
 
@@ -15,6 +16,7 @@ class AddDownloadDialog final : public QDialog {
     void setQueues(const std::vector<DownloadQueue>&, std::string selected = defaultQueueId,
                    bool editable = true);
     std::string queueId() const;
+    void setMediaInspector(MediaInspectionFunction, std::string taskId = {});
 
   private:
     struct Impl;

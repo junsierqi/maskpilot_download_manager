@@ -1,5 +1,8 @@
 #include <QCoreApplication>
 #include <QDir>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLockFile>
 #include <algorithm>
 #include <cctype>
@@ -9,6 +12,7 @@
 #include <iostream>
 #include <maskpilot/application/download_service.h>
 #include <maskpilot/infrastructure/adapters.h>
+#include <maskpilot/infrastructure/media_tools.h>
 #include <maskpilot/infrastructure/torrent_engine.h>
 #include <memory>
 #include <thread>
@@ -40,10 +44,19 @@ std::string credentialFromEnvironment(const std::string& name) {
     return secret;
 #endif
 }
-void readOptions(maskpilot::DownloadSpec& spec, int argc, char** argv, int start) {
+bool readOptions(maskpilot::DownloadSpec& spec, int argc, char** argv, int start) {
+    bool inspection = false;
     for (int n = start; n < argc; ++n) {
         const std::string option = argv[n];
-        if (option == "--origin-auth-required")
+        if (option == "--media")
+            spec.kind = maskpilot::TransferKind::Media;
+        else if (option == "--inspect-media") {
+            spec.kind = maskpilot::TransferKind::Media;
+            inspection = true;
+        } else if (option == "--audio-only") {
+            spec.kind = maskpilot::TransferKind::Media;
+            spec.audioOnly = true;
+        } else if (option == "--origin-auth-required")
             spec.originAuthenticationRequired = true;
         else if (option == "--allow-anonymous")
             spec.originAuthenticationRequired = false;
@@ -67,7 +80,50 @@ void readOptions(maskpilot::DownloadSpec& spec, int argc, char** argv, int start
             if (++n >= argc)
                 throw std::invalid_argument("Missing option value.");
             const std::string value = argv[n];
-            if (option == "--connections") {
+            if (option.starts_with("--media-"))
+                spec.kind = maskpilot::TransferKind::Media;
+            if (option == "--media-parser" || option == "--media-muxer") {
+                (option == "--media-parser" ? spec.mediaDownloader : spec.mediaMuxer) =
+                    std::filesystem::path(std::u8string(value.begin(), value.end()));
+            } else if (option == "--media-format-id")
+                spec.mediaSelection.primaryFormat = value;
+            else if (option == "--media-audio-id")
+                spec.mediaSelection.audioFormat = value;
+            else if (option == "--media-mode") {
+                using Mode = maskpilot::MediaSelectionMode;
+                if (value == "auto")
+                    spec.mediaSelection.mode = Mode::Automatic;
+                else if (value == "muxed")
+                    spec.mediaSelection.mode = Mode::Muxed;
+                else if (value == "video-audio")
+                    spec.mediaSelection.mode = Mode::VideoAudio;
+                else if (value == "audio")
+                    spec.mediaSelection.mode = Mode::AudioOnly;
+                else if (value == "video")
+                    spec.mediaSelection.mode = Mode::VideoOnly;
+                else
+                    throw std::invalid_argument("Unknown media selection mode.");
+            } else if (option == "--media-container") {
+                using Container = maskpilot::MediaContainer;
+                if (value == "auto")
+                    spec.mediaSelection.container = Container::Automatic;
+                else if (value == "mkv")
+                    spec.mediaSelection.container = Container::Mkv;
+                else if (value == "mp4")
+                    spec.mediaSelection.container = Container::Mp4;
+                else if (value == "webm")
+                    spec.mediaSelection.container = Container::Webm;
+                else if (value == "m4a")
+                    spec.mediaSelection.container = Container::M4a;
+                else if (value == "mp3")
+                    spec.mediaSelection.container = Container::Mp3;
+                else if (value == "opus")
+                    spec.mediaSelection.container = Container::Opus;
+                else if (value == "flac")
+                    spec.mediaSelection.container = Container::Flac;
+                else
+                    throw std::invalid_argument("Unknown media output container.");
+            } else if (option == "--connections") {
                 const auto count = integerValue(value);
                 if (count < 1 || count > 8)
                     throw std::invalid_argument("Connections must be between 1 and 8.");
@@ -114,6 +170,29 @@ void readOptions(maskpilot::DownloadSpec& spec, int argc, char** argv, int start
                 throw std::invalid_argument("Unknown option.");
         }
     }
+    return inspection;
+}
+void inspectMedia(maskpilot::DownloadService& service, maskpilot::DownloadSpec spec,
+                  const std::string& taskId = {}) {
+    auto resolved = service.resolveMediaInspection({std::move(spec), taskId}).get();
+    auto inventory = maskpilot::makeMediaInspector()->inspect(resolved, {});
+    QJsonArray formats;
+    for (const auto& format : inventory.formats)
+        formats.append(QJsonObject{{"id", QString::fromStdString(format.id)},
+                                   {"extension", QString::fromStdString(format.extension)},
+                                   {"videoCodec", QString::fromStdString(format.videoCodec)},
+                                   {"audioCodec", QString::fromStdString(format.audioCodec)},
+                                   {"protocol", QString::fromStdString(format.protocol)},
+                                   {"width", format.width},
+                                   {"height", format.height},
+                                   {"fps", format.fps},
+                                   {"bitrate", format.bitrate},
+                                   {"bytes", static_cast<qint64>(format.bytes)},
+                                   {"estimated", format.estimated},
+                                   {"hasVideo", format.hasVideo},
+                                   {"hasAudio", format.hasAudio}});
+    const QJsonObject result{{"title", QString::fromStdString(inventory.title)}, {"formats", formats}};
+    std::cout << QJsonDocument(result).toJson(QJsonDocument::Compact).constData() << '\n';
 }
 } // namespace
 int runClient(int argc, char** argv) {
@@ -142,6 +221,9 @@ int runClient(int argc, char** argv) {
                      "Global --bt-no-discovery disables DHT, local discovery and automatic port mapping; "
                      "explicit trackers and peers remain enabled.\n"
                      "This verification client pauses unfinished transfers after 180 seconds.\n";
+        std::cout << "Media: --media --inspect-media --media-parser EXE --media-muxer EXE\n"
+                     "       --media-mode auto|muxed|video-audio|audio|video --media-format-id ID\n"
+                     "       --media-audio-id ID --media-container auto|mkv|mp4|webm|m4a|mp3|opus|flac\n";
         return argc == 1 ? 0 : 2;
     }
     try {
@@ -193,7 +275,10 @@ int runClient(int argc, char** argv) {
                     spec.ftpCaBundle.clear();
                 }
             }
-            readOptions(spec, argc, argv, start);
+            if (readOptions(spec, argc, argv, start)) {
+                inspectMedia(service, std::move(spec), id);
+                return 0;
+            }
             if (const auto error = maskpilot::validateSpec(spec); !error.empty())
                 throw std::invalid_argument(error);
             const bool keepStored = !existing->proxyCredentialRef.empty() &&
@@ -225,7 +310,10 @@ int runClient(int argc, char** argv) {
                     *value = argv[next++];
                 }
             }
-            readOptions(spec, argc, argv, next);
+            if (readOptions(spec, argc, argv, next)) {
+                inspectMedia(service, std::move(spec));
+                return 0;
+            }
             id = service.add(spec).get();
         }
         std::cout << "TASK_ID " << id << std::endl;

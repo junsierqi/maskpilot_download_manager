@@ -1,3 +1,4 @@
+#include "media_process.h"
 #include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDir>
@@ -17,6 +18,7 @@
 #include <map>
 #include <maskpilot/infrastructure/adapters.h>
 #include <maskpilot/infrastructure/media_tools.h>
+#include <thread>
 #ifdef _WIN32
 #include <io.h>
 #include <windows.h>
@@ -24,7 +26,7 @@
 
 namespace maskpilot {
 namespace {
-QString pathString(const std::filesystem::path& path) { return QString::fromStdWString(path.wstring()); }
+using media_process::pathString;
 std::int64_t progressNumber(const QString& text, std::int64_t fallback = 0) {
     bool valid = false;
     auto value = text.toDouble(&valid);
@@ -32,81 +34,7 @@ std::int64_t progressNumber(const QString& text, std::int64_t fallback = 0) {
         return fallback;
     return static_cast<std::int64_t>(value);
 }
-class ProcessTree {
-#ifdef _WIN32
-    struct Handle {
-        HANDLE value = nullptr;
-        ~Handle() {
-            if (value)
-                CloseHandle(value);
-        }
-    } job_;
-    struct Attributes {
-        std::vector<unsigned char> memory;
-        LPPROC_THREAD_ATTRIBUTE_LIST value = nullptr;
-        ~Attributes() {
-            if (value)
-                DeleteProcThreadAttributeList(value);
-        }
-    } attributes_;
-    STARTUPINFOEXW startup_{};
-    std::array<HANDLE, 3> inherited_{};
-#endif
-  public:
-    ProcessTree() {
-#ifdef _WIN32
-        job_.value = CreateJobObjectW(nullptr, nullptr);
-        if (!job_.value)
-            throw std::runtime_error("Cannot create media process group.");
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
-        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        if (!SetInformationJobObject(job_.value, JobObjectExtendedLimitInformation, &limits, sizeof(limits)))
-            throw std::runtime_error("Cannot isolate media process group.");
-        SIZE_T size = 0;
-        InitializeProcThreadAttributeList(nullptr, 2, 0, &size);
-        attributes_.memory.resize(size);
-        auto* list = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attributes_.memory.data());
-        if (!InitializeProcThreadAttributeList(list, 2, 0, &size))
-            throw std::runtime_error("Cannot initialize media launch policy.");
-        attributes_.value = list;
-        if (!UpdateProcThreadAttribute(list, 0, PROC_THREAD_ATTRIBUTE_JOB_LIST, &job_.value, sizeof(HANDLE),
-                                       nullptr, nullptr))
-            throw std::runtime_error("Cannot bind media process group.");
-#endif
-    }
-    ProcessTree(const ProcessTree&) = delete;
-    ProcessTree& operator=(const ProcessTree&) = delete;
-    void prepare(QProcess& process) {
-#ifdef _WIN32
-        process.setCreateProcessArgumentsModifier([this](QProcess::CreateProcessArguments* args) {
-            startup_.StartupInfo = *reinterpret_cast<STARTUPINFOW*>(args->startupInfo);
-            startup_.StartupInfo.cb = sizeof(startup_);
-            startup_.lpAttributeList = attributes_.value;
-            inherited_ = {startup_.StartupInfo.hStdInput, startup_.StartupInfo.hStdOutput,
-                          startup_.StartupInfo.hStdError};
-            if (!UpdateProcThreadAttribute(attributes_.value, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-                                           inherited_.data(), sizeof(HANDLE) * inherited_.size(), nullptr,
-                                           nullptr)) {
-                args->applicationName = L"";
-                return;
-            }
-            args->startupInfo = reinterpret_cast<Q_STARTUPINFO*>(&startup_);
-            args->flags |= EXTENDED_STARTUPINFO_PRESENT;
-            args->inheritHandles = true;
-        });
-#else
-        (void)process;
-#endif
-    }
-    void stop(QProcess& process) {
-#ifdef _WIN32
-        TerminateJobObject(job_.value, 130);
-#else
-        process.kill();
-#endif
-        process.waitForFinished(5000);
-    }
-};
+using media_process::ProcessTree;
 void copyStage(const std::filesystem::path& source, const std::filesystem::path& stage,
                TransferControl& control) {
 #ifdef _WIN32
@@ -178,11 +106,10 @@ class MediaTransfer final : public ITransferTransport {
             finish(TransferOutcome::Attention, error);
             return;
         }
-        if (task.spec.proxyAuthenticationRequired || !task.spec.proxyUsername.empty() ||
-            !task.spec.proxyPassword.empty()) {
-            finish(TransferOutcome::Attention,
-                   "Authenticated media proxy requires a private credential handoff. "
-                   "Use a direct file task until that capability is available.");
+        try {
+            media_process::validateRequest(authenticatedSpec);
+        } catch (const std::exception& e) {
+            finish(TransferOutcome::Attention, e.what());
             return;
         }
         auto stopped = [&]() {
@@ -203,6 +130,31 @@ class MediaTransfer final : public ITransferTransport {
                    "Media support components are missing. Open media settings to install or locate them.");
             return;
         }
+        if (task.spec.mediaSelection.mode != MediaSelectionMode::Automatic) {
+            std::stop_source inspectionStop;
+            std::jthread cancellation([&](std::stop_token stop) {
+                while (!stop.stop_requested()) {
+                    if (control.pause || control.cancel) {
+                        inspectionStop.request_stop();
+                        break;
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                }
+            });
+            try {
+                auto inventory = makeMediaInspector()->inspect(authenticatedSpec, inspectionStop.get_token());
+                if (auto error =
+                        validateMediaChoice(task.spec.mediaSelection, inventory, task.spec.audioOnly);
+                    !error.empty())
+                    throw std::invalid_argument(error);
+            } catch (const std::exception& e) {
+                if (!stopped())
+                    finish(TransferOutcome::Attention, e.what());
+                return;
+            }
+            if (stopped())
+                return;
+        }
         const auto media = work / L"media";
         event.resumable = false;
         QString resultPath;
@@ -221,30 +173,23 @@ class MediaTransfer final : public ITransferTransport {
             event.downloaded = 0;
             event.total = -1;
             QProcess process;
-            auto environment = QProcessEnvironment::systemEnvironment();
-            for (const auto& name : environment.keys())
-                if (const auto lower = name.toLower(); lower == "http_proxy" || lower == "https_proxy" ||
-                                                       lower == "ftp_proxy" || lower == "all_proxy" ||
-                                                       lower == "no_proxy")
-                    environment.remove(name);
-            process.setProcessEnvironment(environment);
             ProcessTree tree;
-            process.setProgram(pathString(task.spec.mediaDownloader));
-            process.setArguments(mediaArguments(task, media, limit));
-            process.setWorkingDirectory(pathString(media));
-            process.setProcessChannelMode(QProcess::SeparateChannels);
-            tree.prepare(process);
-            process.start();
-            if (!process.waitForStarted(15000)) {
-                finish(TransferOutcome::Attention,
-                       "Unable to start the media parser. Check its configured path.");
+            try {
+                if (!media_process::launch(process, tree, authenticatedSpec,
+                                           mediaArguments(task, media, limit), media,
+                                           [&] { return control.pause.load() || control.cancel.load(); })) {
+                    stopped();
+                    return;
+                }
+            } catch (const std::exception& e) {
+                if (!stopped())
+                    finish(TransferOutcome::Attention, e.what());
                 return;
             }
-            process.closeWriteChannel();
-            QByteArray buffer, diagnosticTail;
-            bool reconfigure = false;
             event.phase = TaskState::Downloading;
             callback(event);
+            QByteArray buffer, diagnosticTail;
+            bool reconfigure = false;
             const auto started = std::chrono::steady_clock::now();
             auto lastActivity = started;
             while (process.state() != QProcess::NotRunning) {
@@ -326,17 +271,19 @@ class MediaTransfer final : public ITransferTransport {
             if (stopped())
                 return;
             if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
-                auto detail = QString::fromUtf8(diagnosticTail).trimmed().split('\n').last().trimmed();
-                detail.replace(QRegularExpression("https?://[^\\s]+"), "[address]");
-                finish(TransferOutcome::Attention,
-                       "Media download failed: " + detail.left(700).toStdString());
+                finish(
+                    TransferOutcome::Attention,
+                    "Media download failed. Check the source, proxy credentials and supported components.");
                 return;
             }
             break;
         }
         QFileInfo result(resultPath);
-        if (!result.exists() || !result.isFile() ||
-            result.fileName() != (task.spec.audioOnly ? "media.m4a" : "media.mkv") ||
+        const auto expectedName =
+            "media." + QString::fromStdString(mediaContainerExtension(
+                           task.spec.mediaSelection.container,
+                           mediaAudioOnly(task.spec.mediaSelection, task.spec.audioOnly)));
+        if (!result.exists() || !result.isFile() || result.fileName() != expectedName ||
             result.canonicalPath() != QFileInfo(pathString(media)).canonicalFilePath()) {
             finish(TransferOutcome::Attention, "Media helper did not return a valid output file.");
             return;
@@ -381,59 +328,31 @@ class MediaTransfer final : public ITransferTransport {
 };
 } // namespace
 QStringList mediaArguments(const Task& task, const std::filesystem::path& work, std::int64_t speedLimit) {
-    QStringList args{"--no-continue",
-                     "--match-filter",
-                     "!is_live",
-                     "--ignore-config",
-                     "--no-plugin-dirs",
-                     "--no-playlist",
-                     "--no-cache-dir",
-                     "--newline",
-                     "--progress",
-                     "--encoding",
-                     "utf-8",
-                     "--windows-filenames",
-                     "--no-mtime",
-                     "--retries",
-                     "3",
-                     "--fragment-retries",
-                     "3",
-                     "--socket-timeout",
-                     "20",
-                     "--progress-template",
-                     "download:MASKPILOT_PROGRESS:%(info.format_id)s|%(progress.downloaded_bytes)s|%("
-                     "progress.total_bytes,progress.total_bytes_estimate)s|%(progress.speed)s",
-                     "--progress-template",
-                     "postprocess:MASKPILOT_POSTPROCESS",
-                     "--print",
-                     "after_move:MASKPILOT_FILE:%(filepath)s"};
-    args << "--ffmpeg-location" << pathString(task.spec.mediaMuxer);
+    auto args = media_process::commonArguments();
+    args << "--no-continue" << "--match-filter" << "!is_live" << "--newline" << "--progress"
+         << "--windows-filenames" << "--no-mtime" << "--retries" << "3" << "--fragment-retries" << "3"
+         << "--progress-template"
+         << "download:MASKPILOT_PROGRESS:%(info.format_id)s|%(progress.downloaded_bytes)s|%(progress.total_"
+            "bytes,progress.total_bytes_estimate)s|%(progress.speed)s"
+         << "--progress-template" << "postprocess:MASKPILOT_POSTPROCESS" << "--print"
+         << "after_move:MASKPILOT_FILE:%(filepath)s";
     const auto node = QStandardPaths::findExecutable("node");
     if (!node.isEmpty())
         args << "--js-runtimes" << ("node:" + node);
-    if (task.spec.audioOnly)
-        args << "--extract-audio" << "--audio-format" << "m4a" << "--format" << "bestaudio/best";
+    const auto& selection = task.spec.mediaSelection;
+    const bool audio = mediaAudioOnly(selection, task.spec.audioOnly);
+    const auto container = QString::fromStdString(mediaContainerExtension(selection.container, audio));
+    auto format = selection.mode == MediaSelectionMode::Automatic
+                      ? (audio ? std::string("bestaudio/best") : task.spec.mediaFormat)
+                      : selectedMediaFormat(selection);
+    args << "--format" << QString::fromStdString(format);
+    if (audio)
+        args << "--extract-audio" << "--audio-format" << container;
     else
-        args << "--format" << QString::fromStdString(task.spec.mediaFormat) << "--merge-output-format"
-             << "mkv" << "--remux-video" << "mkv";
+        args << "--merge-output-format" << container << "--remux-video" << container;
     if (speedLimit > 0)
         args << "--limit-rate" << QString::number(speedLimit);
-    // An explicit empty proxy prevents the helper from inheriting ambient proxy configuration.
-    args << "--proxy" << QString::fromStdString(task.spec.proxy);
-    if (!task.spec.referrer.empty()) {
-        auto referrer = QUrl(QString::fromStdString(task.spec.referrer));
-        if ((referrer.scheme() == "http" || referrer.scheme() == "https") && !referrer.host().isEmpty()) {
-            referrer.setPath("/");
-            referrer.setQuery(QString());
-            referrer.setFragment(QString());
-            referrer.setUserInfo(QString());
-            args << "--referer" << referrer.toString();
-        }
-    }
-    if (!task.spec.userAgent.empty())
-        args << "--user-agent" << QString::fromStdString(task.spec.userAgent);
-    auto output = QDir(pathString(work)).filePath("media.%(ext)s");
-    args << "--output" << output << "--" << QString::fromStdString(task.spec.url);
+    args << "--output" << QDir(pathString(work)).filePath("media.%(ext)s");
     return args;
 }
 std::unique_ptr<ITransferTransport> makeMediaTransfer() { return std::make_unique<MediaTransfer>(); }

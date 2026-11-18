@@ -1,4 +1,8 @@
+#include "../../src/infrastructure/src/media/media_process.h"
 #include <QDir>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QTemporaryDir>
 #include <fstream>
 #include <iostream>
@@ -37,7 +41,7 @@ TEST(MediaBoundary, UnresolvedOriginRequirementNeverStartsAHelper) {
     }
 }
 
-TEST(MediaArguments, IsolatesSecretsAndPassesUrlAsData) {
+TEST(MediaArguments, IsolatesSecretsAndPassesUrlPrivately) {
     maskpilot::Task task;
     task.spec.url = "https://example.test/video?x=1&y=2";
     task.spec.kind = maskpilot::TransferKind::Media;
@@ -46,8 +50,9 @@ TEST(MediaArguments, IsolatesSecretsAndPassesUrlAsData) {
     task.spec.mediaMuxer = L"C:/Program Files/processor.exe";
     auto args = maskpilot::mediaArguments(task, std::filesystem::temp_directory_path(), 12345);
     EXPECT_FALSE(maskpilot::validateSpec(task.spec).empty());
-    EXPECT_EQ(args.last().toStdString(), task.spec.url);
-    EXPECT_EQ(args[args.size() - 2], "--");
+    EXPECT_FALSE(args.contains(QString::fromStdString(task.spec.url)));
+    EXPECT_TRUE(args.contains("--config-locations"));
+    EXPECT_TRUE(args.contains("ffmpeg_i:-protocol_whitelist pipe"));
     EXPECT_TRUE(args.contains("12345"));
     EXPECT_TRUE(args.contains("--ignore-config"));
     EXPECT_TRUE(args.contains("--no-continue"));
@@ -78,8 +83,7 @@ TEST(MediaProxy, RequiresPrivateCredentialsBeforeLaunchingAnyHelper) {
     task.spec.url = "https://example.test/video";
     task.spec.destination = std::filesystem::path(temporary.filePath("video.mkv").toStdWString());
     task.spec.proxy = "http://127.0.0.1:1080";
-    task.spec.proxyUsername = "media-private-user";
-    task.spec.proxyPassword = "media-private-password";
+    task.spec.proxyAuthenticationRequired = true;
     const auto args = maskpilot::mediaArguments(task, std::filesystem::temp_directory_path(), 0);
     EXPECT_FALSE(args.join(' ').contains("media-private-user"));
     EXPECT_FALSE(args.join(' ').contains("media-private-password"));
@@ -92,10 +96,24 @@ TEST(MediaProxy, RequiresPrivateCredentialsBeforeLaunchingAnyHelper) {
                 return;
             ++terminals;
             EXPECT_EQ(event.outcome, maskpilot::TransferOutcome::Attention);
-            EXPECT_NE(event.error.find("private credential"), std::string::npos);
-            EXPECT_EQ(event.error.find(task.spec.proxyPassword), std::string::npos);
+            EXPECT_NE(event.error.find("Proxy authentication"), std::string::npos);
+            if (!task.spec.proxyPassword.empty())
+                EXPECT_EQ(event.error.find(task.spec.proxyPassword), std::string::npos);
         });
     EXPECT_EQ(terminals, 1);
+    task.spec.proxyUsername = "nonempty-proxy-user";
+    task.spec.proxyPassword = "nonempty-proxy-secret";
+    maskpilot::makeMediaTransfer()->run(
+        task, std::filesystem::path(temporary.path().toStdWString()) / "work", control,
+        [&](const auto& event) {
+            if (event.outcome == maskpilot::TransferOutcome::Progress)
+                return;
+            ++terminals;
+            EXPECT_EQ(event.outcome, maskpilot::TransferOutcome::Attention);
+            EXPECT_EQ(event.error.find(task.spec.proxyPassword), std::string::npos);
+            EXPECT_EQ(event.error.find(task.spec.proxyUsername), std::string::npos);
+        });
+    EXPECT_EQ(terminals, 2);
     EXPECT_FALSE(std::filesystem::exists(task.spec.destination));
     EXPECT_TRUE(QDir(temporary.path()).entryList(QDir::NoDotAndDotDot | QDir::AllEntries).isEmpty());
 }
@@ -206,3 +224,118 @@ TEST(MediaPublication, HonorsStopAtFinalizingBeforePublishing) {
     }
 }
 #endif
+
+TEST(MediaPrivateInput, EncodesProxyCredentialsAndQuotesUrlWithoutArgvOrPlaintextFiles) {
+    maskpilot::Task task;
+    task.spec.kind = maskpilot::TransferKind::Media;
+    task.spec.url = "https://example.test/watch?token=a'b&next=%22x%22";
+    task.spec.destination = std::filesystem::temp_directory_path() / L"media.mkv";
+    task.spec.proxy = "socks5://127.0.0.1:1080";
+    task.spec.proxyUsername = "user name@x";
+    task.spec.proxyPassword = "pass:#%?";
+    task.spec.proxyAuthenticationRequired = true;
+    task.spec.userAgent = "Agent 'quoted'";
+    auto input = maskpilot::media_process::privateInput(task.spec);
+    EXPECT_TRUE(input.contains("socks5h://user%20name%40x:pass%3A%23%25%3F@127.0.0.1:1080"));
+    EXPECT_TRUE(input.contains("'\\''"));
+    EXPECT_FALSE(input.contains("\n--\n"));
+    EXPECT_TRUE(input.endsWith("\n"));
+    auto args = maskpilot::mediaArguments(task, std::filesystem::temp_directory_path(), 0).join(' ');
+    EXPECT_FALSE(args.contains("user name@x"));
+    EXPECT_FALSE(args.contains("pass:#%?"));
+    EXPECT_FALSE(args.contains("token="));
+    EXPECT_FALSE(args.contains("Agent"));
+    task.spec.proxy.clear();
+    task.spec.proxyUsername.clear();
+    task.spec.proxyPassword.clear();
+    task.spec.proxyAuthenticationRequired = false;
+    EXPECT_TRUE(maskpilot::media_process::privateInput(task.spec).contains("--proxy ''"));
+}
+namespace {
+QJsonObject inventoryFormat(QString id, QString video = "avc1.64001f", QString audio = "mp4a.40.2",
+                            QString protocol = "https") {
+    return {{"format_id", id},
+            {"ext", "mp4"},
+            {"vcodec", video},
+            {"acodec", audio},
+            {"protocol", protocol},
+            {"url", "https://private.invalid/?token=never-return"},
+            {"http_headers", QJsonObject{{"Cookie", "never-return"}}},
+            {"width", 1920},
+            {"height", 1080},
+            {"fps", 30.0},
+            {"filesize", 1234}};
+}
+QByteArray inventoryJson(const QJsonArray& formats) {
+    return QJsonDocument(QJsonObject{{"title", "Sample title"},
+                                     {"formats", formats},
+                                     {"webpage_url", "https://private.invalid/?token=never-return"}})
+        .toJson();
+}
+} // namespace
+TEST(MediaInventory, KeepsOnlyTypedMetadataAndFiltersExternalProtocolsAndDrm) {
+    auto valid = inventoryFormat("muxed"), external = inventoryFormat("rtmp", "avc1", "aac", "rtmp"),
+         protectedFormat = inventoryFormat("encrypted");
+    protectedFormat["has_drm"] = true;
+    auto result =
+        maskpilot::media_process::parseInventory(inventoryJson(QJsonArray{valid, external, protectedFormat}));
+    ASSERT_EQ(result.formats.size(), 1);
+    EXPECT_EQ(result.formats.front().id, "muxed");
+    EXPECT_EQ(result.formats.front().bytes, 1234);
+    EXPECT_EQ(result.title, "Sample title");
+    EXPECT_TRUE(result.formats.front().hasVideo);
+    EXPECT_TRUE(result.formats.front().hasAudio);
+}
+TEST(MediaInventory, RejectsAmbiguousIdsUnsafeSelectorsAndMalformedNumbers) {
+    auto format = inventoryFormat("one");
+    EXPECT_THROW(maskpilot::media_process::parseInventory(inventoryJson(QJsonArray{format, format})),
+                 std::runtime_error);
+    format["format_id"] = "best/other";
+    EXPECT_THROW(maskpilot::media_process::parseInventory(inventoryJson(QJsonArray{format})),
+                 std::runtime_error);
+    format = inventoryFormat("one");
+    format["filesize"] = 9007199254740992.0;
+    EXPECT_THROW(maskpilot::media_process::parseInventory(inventoryJson(QJsonArray{format})),
+                 std::runtime_error);
+    format["filesize"] = 1.5;
+    EXPECT_THROW(maskpilot::media_process::parseInventory(inventoryJson(QJsonArray{format})),
+                 std::runtime_error);
+    format["filesize"] = "123";
+    EXPECT_THROW(maskpilot::media_process::parseInventory(inventoryJson(QJsonArray{format})),
+                 std::runtime_error);
+}
+TEST(MediaInventory, RejectsLivePlaylistsAndBoundedOutputOverflow) {
+    auto object = QJsonDocument::fromJson(inventoryJson(QJsonArray{inventoryFormat("one")})).object();
+    object["is_live"] = true;
+    EXPECT_THROW(maskpilot::media_process::parseInventory(QJsonDocument(object).toJson()),
+                 std::runtime_error);
+    object["is_live"] = false;
+    object["entries"] = QJsonArray{};
+    EXPECT_THROW(maskpilot::media_process::parseInventory(QJsonDocument(object).toJson()),
+                 std::runtime_error);
+    EXPECT_THROW(maskpilot::media_process::parseInventory(QByteArray(8 * 1024 * 1024 + 1, ' ')),
+                 std::runtime_error);
+    QJsonArray many;
+    for (int i = 0; i < 2001; ++i)
+        many.push_back(inventoryFormat(QString::number(i)));
+    EXPECT_THROW(maskpilot::media_process::parseInventory(inventoryJson(many)), std::runtime_error);
+}
+TEST(MediaArguments, ExplicitModesUseOnlySelectedIdentifiersAndRequestedContainers) {
+    maskpilot::Task task;
+    task.spec.mediaSelection = {maskpilot::MediaSelectionMode::VideoAudio, "video-1080", "audio-aac",
+                                maskpilot::MediaContainer::Mp4};
+    auto args = maskpilot::mediaArguments(task, std::filesystem::temp_directory_path(), 0);
+    EXPECT_EQ(args.value(args.indexOf("--format") + 1),
+              "best*[format_id='video-1080']+best*[format_id='audio-aac']");
+    EXPECT_EQ(args.value(args.indexOf("--remux-video") + 1), "mp4");
+    task.spec.mediaSelection = {
+        maskpilot::MediaSelectionMode::VideoOnly, "video-720", {}, maskpilot::MediaContainer::Webm};
+    args = maskpilot::mediaArguments(task, std::filesystem::temp_directory_path(), 0);
+    EXPECT_EQ(args.value(args.indexOf("--format") + 1), "best*[format_id='video-720']");
+    EXPECT_FALSE(args.contains("--extract-audio"));
+    task.spec.mediaSelection = {
+        maskpilot::MediaSelectionMode::AudioOnly, "combined", {}, maskpilot::MediaContainer::Mp3};
+    args = maskpilot::mediaArguments(task, std::filesystem::temp_directory_path(), 0);
+    EXPECT_EQ(args.value(args.indexOf("--format") + 1), "best*[format_id='combined']");
+    EXPECT_EQ(args.value(args.indexOf("--audio-format") + 1), "mp3");
+}

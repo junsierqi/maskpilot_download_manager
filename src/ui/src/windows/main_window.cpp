@@ -308,6 +308,9 @@ MainWindow::MainWindow(DownloadService& service, QWidget* parent)
     p.sidebar = new QListWidget;
     p.sidebar->setObjectName("downloadSidebar");
     p.sidebar->setFixedWidth(200);
+    p.sidebar->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    p.sidebar->setTextElideMode(Qt::ElideRight);
+    p.sidebar->setResizeMode(QListView::Adjust);
     p.sidebar->setIconSize(QSize(18, 18));
     body->addWidget(p.sidebar);
     auto addFilter = [&](QString label, QString key, ui::Icon icon = ui::Icon::Folder) {
@@ -426,6 +429,7 @@ MainWindow::MainWindow(DownloadService& service, QWidget* parent)
     tools->addAction(p.t("Add magnet link…", "添加磁力链接…"), this, [this] { newDownload("magnet:?"); });
     tools->addAction(p.t("New standalone media download…", "新建独立媒体下载…"), this, [this, &p] {
         AddDownloadDialog dialog(p.chinese, this);
+        dialog.setMediaInspector(p.mediaInspector);
         auto spec = defaultSpec("https://");
         spec.kind = maskpilot::TransferKind::Media;
         spec.destination.replace_extension(L".mkv");
@@ -525,6 +529,7 @@ MainWindow::MainWindow(DownloadService& service, QWidget* parent)
         menu.addAction(p.t("Edit request / sign-in…", "编辑请求 / 登录信息…"), this,
                        [this, &p, task] {
                            AddDownloadDialog dialog(p.chinese, this);
+                           dialog.setMediaInspector(p.mediaInspector, task.id);
                            dialog.setSpecification(task.spec);
                            dialog.setQueues(p.knownQueues, task.queueId, false);
                            dialog.setWindowTitle(p.t("Edit request", "编辑下载请求"));
@@ -647,6 +652,9 @@ MainWindow::MainWindow(DownloadService& service, QWidget* parent)
     p.refresh();
 }
 MainWindow::~MainWindow() = default;
+void MainWindow::setMediaInspector(MediaInspectionFunction inspector) {
+    impl_->mediaInspector = std::move(inspector);
+}
 DownloadSpec MainWindow::defaultSpec(const QString& url) const {
     DownloadSpec spec;
     spec.url = url.toStdString();
@@ -699,6 +707,7 @@ void MainWindow::newDownload(QString url) {
         return;
     }
     AddDownloadDialog dialog(impl_->chinese, this, url);
+    dialog.setMediaInspector(impl_->mediaInspector);
     dialog.setQueues(impl_->knownQueues, impl_->selectedQueueId());
     if (dialog.exec() == QDialog::Accepted) {
         impl_->queueFilter->setCurrentIndex(impl_->queueFilter->findData(qs(dialog.queueId())));

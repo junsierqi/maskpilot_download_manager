@@ -21,7 +21,7 @@ HTTP 文件只有在服务器提供可验证的强资源标识及 Range 支持�
 
 代理账号密码默认仅存内存。可在代理页明确勾选“记住代理凭据”，由当前 Windows 用户的系统凭据库保存，不提供明文回退。任务库与导出清单不保存密码。未保存的凭据在重启或导入后须通过“更新请求”补充，缺少所需凭据时不会开始传输。右键“忘记代理凭据”会清除安全保存及当前会话的代理账号密码，并保留必须认证的标记。认证协商仍遵循代理服务器的协议。
 
-BT 支持 HTTP CONNECT 与 SOCKS5 代理；不同路由或凭据使用隔离会话。代理 BT 使用 TCP，关闭 DHT、本地发现、自动端口映射和 uTP，不支持 UDP Tracker 或 HTTPS 代理。代理主机本身可能需要本机 DNS；不承诺匿名性。主动 FTP 不能与代理组合。媒体代理认证的私密进程传递仍在后续媒体阶段实现，当前明确拒绝，不把密码放进辅助进程参数。
+BT 支持 HTTP CONNECT 与 SOCKS5 代理；不同路由或凭据使用隔离会话。代理 BT 使用 TCP，关闭 DHT、本地发现、自动端口映射和 uTP，不支持 UDP Tracker 或 HTTPS 代理。代理主机本身可能需要本机 DNS；不承诺匿名性。主动 FTP 不能与代理组合。媒体支持认证 HTTP／SOCKS5 代理，代理秘密和原始来源地址经私密标准输入传递，不放进解析组件启动参数。
 
 CLI 可使用 `--proxy-user-env <变量名>` 与 `--proxy-password-env <变量名>` 读取当前进程环境中的凭据。`--proxy-user`／`--proxy-password` 也可用，但参数可能被进程检查工具或 shell 历史记录看到。
 
@@ -78,7 +78,9 @@ maskpilot_cli C:/Downloads/example.torrent C:/Downloads/example C:/Downloads/sta
 
 ## 媒体
 
-工具菜单提供“媒体组件”，可下载校验过的解析／合并组件，也可在新建任务中选择已有可执行文件。组件可选，默认安装包不捆绑。公开 MP4、HLS、DASH 点播支持视频 MKV 或音频 M4A。媒体暂停后恢复、重试或更改带宽会重新下载，以避免拼接不同版本。媒体模式拒绝登录 Cookie／认证请求头；受保护内容、直播及 DRM 不支持。网站适配取决于组件和站点当前行为，详见 [支持矩阵](docs/product/support-matrix.md)。
+工具菜单提供“媒体组件”，可下载校验过的解析／合并组件，也可在新建任务中选择已有可执行文件。组件可选，默认安装包不捆绑。新建媒体任务可先探测该地址的实际视频／音频格式，再选择精确格式 ID 和兼容的输出容器；自动模式仍提供画质上限预设。支持 MKV／MP4／WebM 及音频 M4A／MP3／Opus／FLAC，具体取决于源格式和本地组件。来源或网络配置改变会使探测结果失效；开始下载前重新核实所选格式，失效时明确失败。
+
+探测在后台执行，可取消；只显示有界的格式信息。解析器使用原生网络下载，本程序自带的 `media_guard/` 启动器将 FFmpeg／ffprobe 限于任务专属目录内的普通媒体文件，阻止外部下载回退和伪装播放列表的网络读取。它不构成对任意不可信可执行文件的沙箱；组件路径须指向可信程序。媒体暂停后恢复、重试或更改带宽会重新下载。媒体模式拒绝登录 Cookie／认证请求头；受保护内容、直播及 DRM 不支持。网站适配取决于组件和站点当前行为，详见 [支持矩阵](docs/product/support-matrix.md)。
 
 ## 从源码构建
 
@@ -104,7 +106,7 @@ npm.cmd --prefix browser_extension test
 
 ## 工程与验证
 
-`apps/` 为三个入口，`src/domain/` 为模型，`src/application/` 为调度，`src/infrastructure/` 为网络／SQLite／媒体，`src/ui/` 为窗口、模型和对话框，`browser_extension/` 为浏览器扩展，`tests/` 为单元、故障与真实应用测试，`packaging/` 为安装流程。业务层不依赖 Qt UI 或具体网络实现。
+`apps/` 为桌面、命令行、本机桥接入口及本地媒体启动器，`src/domain/` 为模型，`src/application/` 为调度，`src/infrastructure/` 为网络／SQLite／媒体，`src/ui/` 为窗口、模型和对话框，`browser_extension/` 为浏览器扩展，`tests/` 为单元、故障与真实应用测试，`packaging/` 为安装流程。业务层不依赖 Qt UI 或具体网络实现。
 
 开发顺序、状态不变量和主要目录见 [工程蓝图](docs/DEVELOPMENT_BLUEPRINT.md)。具体测试命令见 [验证场景](docs/testing/scenarios.md)，发布证据与待验收项见 [验收记录](docs/releases/acceptance.md)。未完成的压力、干净系统或商店验证不代表已通过。
 

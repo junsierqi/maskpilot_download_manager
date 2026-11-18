@@ -1041,6 +1041,34 @@ std::future<TrafficUsage> DownloadService::queueTraffic(std::string queueId) {
         return p->traffic->usage(queueId, p->queueRegistry->now());
     });
 }
+std::future<DownloadSpec> DownloadService::resolveMediaInspection(MediaInspectionRequest request) {
+    return impl_->request([p = impl_.get(), request = std::move(request)]() mutable {
+        if (!p->healthy)
+            throw std::runtime_error("Task storage is unavailable.");
+        Task candidate;
+        if (!request.taskId.empty()) {
+            const auto found = p->tasks.find(request.taskId);
+            if (found == p->tasks.end() || found->second.ownerId != "standalone")
+                throw std::invalid_argument("Format inspection currently supports standalone tasks only.");
+            if (p->jobs.contains(request.taskId))
+                throw std::invalid_argument("Pause the task before inspecting media formats.");
+            candidate = found->second;
+            if (!sameProxyRoute(candidate.spec.proxy, request.specification.proxy) ||
+                !request.specification.proxyUsername.empty() || !request.specification.proxyPassword.empty())
+                candidate.proxyCredentialRef.clear();
+            request.queueId = candidate.queueId;
+        }
+        if (p->queueRegistry->get(request.queueId).dailyPayloadBudget > 0)
+            throw std::invalid_argument("Choose an unbudgeted queue before inspecting media formats.");
+        candidate.spec = std::move(request.specification);
+        candidate.spec.kind = TransferKind::Media;
+        candidate.spec.mediaSelection = {};
+        candidate.originAuthenticationRequired = requiresOriginAuthentication(candidate.spec);
+        if (const auto message = validateSpec(candidate.spec); !message.empty())
+            throw std::invalid_argument(message);
+        return p->contexts->resolve(candidate);
+    });
+}
 std::future<DownloadQueue> DownloadService::configureQueue(QueueConfiguration config) {
     return impl_->request([p = impl_.get(), config = std::move(config)]() mutable {
         auto candidate = p->queueRegistry->prepare(config);

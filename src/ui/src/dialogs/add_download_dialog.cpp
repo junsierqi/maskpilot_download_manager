@@ -1,4 +1,5 @@
 #include "download_name.h"
+#include "media_selection_widget.h"
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDateTimeEdit>
@@ -14,7 +15,9 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QScrollArea>
 #include <QSettings>
+#include <QSignalBlocker>
 #include <QSpinBox>
 #include <QStandardPaths>
 #include <QTabWidget>
@@ -44,7 +47,8 @@ struct AddDownloadDialog::Impl {
     QDateTimeEdit *startTime, *stopTime;
     QPlainTextEdit* headers;
     QCheckBox* media;
-    QComboBox *mode, *quality;
+    ui::MediaSelectionWidget* selection;
+    std::string mediaTaskId;
     QLineEdit *downloader, *muxer;
     QLineEdit *ftpUsername, *ftpPassword, *ftpCa;
     QCheckBox *ftpTls, *ftpActive;
@@ -371,20 +375,16 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
     const auto torrentIndex = tabs->addTab(torrentTab, "BT / Magnet");
     auto* mediaTab = new QWidget;
     auto* mediaForm = new QFormLayout(mediaTab);
+    mediaForm->setSizeConstraint(QLayout::SetMinimumSize);
     mediaForm->setSpacing(12);
     impl_->media =
         new QCheckBox(t("Download webpage video, audio, HLS or DASH", "下载网页视频、音频、HLS 或 DASH"));
     impl_->media->setObjectName("mediaDownload");
     mediaForm->addRow(impl_->media);
-    impl_->mode = new QComboBox;
-    impl_->mode->addItems({t("Video (MKV)", "视频（MKV）"), t("Audio only (M4A)", "仅音频（M4A）")});
-    mediaForm->addRow(t("Output", "输出类型"), impl_->mode);
-    impl_->quality = new QComboBox;
-    impl_->quality->addItem(t("Best available", "最佳画质"), "bestvideo+bestaudio/best");
-    for (int height : {2160, 1440, 1080, 720, 480})
-        impl_->quality->addItem(QString::number(height) + "p",
-                                QString("bestvideo[height<=%1]+bestaudio/best[height<=%1]").arg(height));
-    mediaForm->addRow(t("Quality", "画质上限"), impl_->quality);
+    impl_->selection = new ui::MediaSelectionWidget(
+        chinese, [this] { return MediaInspectionRequest{specification(), impl_->mediaTaskId, queueId()}; });
+    impl_->selection->setEnabled(false);
+    mediaForm->addRow(impl_->selection);
     auto tool = [&](QLineEdit*& field, const QString& label, const QString& key, const QString& program) {
         auto* row = new QWidget;
         auto* line = new QHBoxLayout(row);
@@ -403,14 +403,34 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
     tool(impl_->downloader, t("Media parser", "媒体解析组件"), "mediaDownloader", "yt-dlp");
     tool(impl_->muxer, t("Media processor", "媒体处理组件"), "mediaMuxer", "ffmpeg");
     auto* note = new QLabel(
-        t("Missing components? Open Tools → Media support. Media uses public URLs; resuming or changing "
-          "bandwidth restarts media safely. Direct files support authenticated resumable transfers.",
+        t("Missing components? Open Tools → Media support. Inspect public URLs for actual formats. "
+          "Proxy login is supported; source Cookie/Authorization requires a direct file task. "
+          "Resuming media safely restarts its output.",
           "缺少组件时，可从“工具 → "
-          "媒体支持”安装。媒体模式使用公开地址，继续任务或调整限速时会安全地重新下载；直接文件支持登录信息与"
-          "断点续传。"));
+          "媒体支持”安装。可探测公开地址的实际格式，支持代理登录；来源 Cookie／Authorization "
+          "请使用直接文件任务。"
+          "继续媒体任务时会安全地重新下载。"));
     note->setWordWrap(true);
     mediaForm->addRow(note);
-    tabs->addTab(mediaTab, t("Media", "媒体"));
+    auto* mediaScroll = new QScrollArea;
+    mediaScroll->setWidgetResizable(true);
+    mediaScroll->setFrameShape(QFrame::NoFrame);
+    mediaScroll->setWidget(mediaTab);
+    tabs->addTab(mediaScroll, t("Media", "媒体"));
+    tabs->setObjectName("downloadOptionsTabs");
+    for (auto* field :
+         {impl_->url, impl_->referrer, impl_->agent, impl_->cookie, impl_->authorization, impl_->proxy,
+          impl_->proxyUsername, impl_->proxyPassword, impl_->downloader, impl_->muxer})
+        connect(field, &QLineEdit::textChanged, impl_->selection, &ui::MediaSelectionWidget::invalidate);
+    connect(impl_->headers, &QPlainTextEdit::textChanged, impl_->selection,
+            &ui::MediaSelectionWidget::invalidate);
+    connect(impl_->originAuthenticationRequired, &QCheckBox::toggled, impl_->selection,
+            &ui::MediaSelectionWidget::invalidate);
+    connect(impl_->proxyAuthenticationRequired, &QCheckBox::toggled, impl_->selection,
+            &ui::MediaSelectionWidget::invalidate);
+    connect(impl_->queue, &QComboBox::currentIndexChanged, impl_->selection,
+            &ui::MediaSelectionWidget::invalidate);
+    connect(impl_->media, &QCheckBox::toggled, impl_->selection, &QWidget::setEnabled);
     auto updateProtocol = [this, tabs, ftpIndex, torrentIndex] {
         const bool ftp = isFtpUrl(impl_->url->text().trimmed().toStdString());
         const bool torrent = isTorrentUrl(impl_->url->text().trimmed().toStdString());
@@ -452,12 +472,14 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
         auto path = QFileInfo(impl_->destination->text());
         impl_->destination->setText(
             QDir(path.absolutePath())
-                .filePath(path.completeBaseName() + (impl_->mode->currentIndex() == 1 ? ".m4a" : ".mkv")));
+                .filePath(path.completeBaseName() + "." +
+                          QString::fromStdString(mediaContainerExtension(
+                              impl_->selection->selection().container, impl_->selection->audioOnly()))));
         if (impl_->category->currentText() == "General")
-            impl_->category->setCurrentText(impl_->mode->currentIndex() == 1 ? "Music" : "Video");
+            impl_->category->setCurrentText(impl_->selection->audioOnly() ? "Music" : "Video");
     };
     connect(impl_->media, &QCheckBox::toggled, this, [updateMedia](bool) { updateMedia(); });
-    connect(impl_->mode, &QComboBox::currentIndexChanged, this, [updateMedia](int) { updateMedia(); });
+    connect(impl_->selection, &ui::MediaSelectionWidget::changed, this, updateMedia);
     auto* buttons = new QDialogButtonBox;
     auto* add = buttons->addButton(t("Add download", "添加下载"), QDialogButtonBox::AcceptRole);
     add->setDefault(true);
@@ -515,8 +537,10 @@ DownloadSpec AddDownloadDialog::specification() const {
     s.originAuthenticationRequired = impl_->originAuthenticationRequired->isChecked();
     s.expectedSha256 = impl_->checksum->text().trimmed().toStdString();
     s.kind = impl_->media->isChecked() ? maskpilot::TransferKind::Media : maskpilot::TransferKind::Http;
-    s.audioOnly = impl_->mode->currentIndex() == 1;
-    s.mediaFormat = impl_->quality->currentData().toString().toStdString();
+    s.audioOnly = impl_->selection->audioOnly();
+    s.mediaFormat = impl_->selection->legacyFormat();
+    if (s.kind == TransferKind::Media)
+        s.mediaSelection = impl_->selection->selection();
     s.mediaDownloader = nativePath(impl_->downloader->text());
     s.mediaMuxer = nativePath(impl_->muxer->text());
     for (const auto& line : impl_->headers->toPlainText().split('\n', Qt::SkipEmptyParts)) {
@@ -557,9 +581,13 @@ DownloadSpec AddDownloadDialog::specification() const {
         }
     }
     s.originAuthenticationRequired = s.originAuthenticationRequired || hasOriginMaterial(s);
+    if (s.kind != TransferKind::Media)
+        s.mediaSelection = {};
     return s;
 }
 void AddDownloadDialog::setSpecification(const DownloadSpec& spec) {
+    const QSignalBlocker selectionBlock(impl_->selection);
+    impl_->selection->invalidate();
     impl_->url->setText(QString::fromStdString(spec.url));
     impl_->category->setCurrentText(QString::fromStdString(spec.category));
     impl_->connections->setValue(spec.connections);
@@ -598,10 +626,6 @@ void AddDownloadDialog::setSpecification(const DownloadSpec& spec) {
         headers << QString::fromStdString(name + ": " + value);
     impl_->headers->setPlainText(headers.join('\n'));
     impl_->media->setChecked(spec.kind == TransferKind::Media);
-    impl_->mode->setCurrentIndex(spec.audioOnly ? 1 : 0);
-    auto quality = impl_->quality->findData(QString::fromStdString(spec.mediaFormat));
-    if (quality >= 0)
-        impl_->quality->setCurrentIndex(quality);
     if (!spec.mediaDownloader.empty())
         impl_->downloader->setText(QString::fromStdWString(spec.mediaDownloader.wstring()));
     if (!spec.mediaMuxer.empty())
@@ -610,6 +634,7 @@ void AddDownloadDialog::setSpecification(const DownloadSpec& spec) {
     impl_->originAuthenticationRequired->setChecked(requiresOriginAuthentication(spec));
     impl_->originAuthenticationRequired->setEnabled(!isTorrentUrl(spec.url) && !hasOriginMaterial(spec));
     impl_->updateStorage();
+    impl_->selection->setSelection(spec.mediaSelection, spec.audioOnly, spec.mediaFormat);
 }
 bool AddDownloadDialog::rememberProxyCredentials() const { return impl_->rememberProxy->isChecked(); }
 void AddDownloadDialog::setStoredProxyCredentials(bool stored) {
@@ -620,6 +645,7 @@ void AddDownloadDialog::setStoredProxyCredentials(bool stored) {
 }
 void AddDownloadDialog::setQueues(const std::vector<DownloadQueue>& queues, std::string selected,
                                   bool editable) {
+    const QSignalBlocker block(impl_->queue);
     impl_->queue->clear();
     const auto t = [this](const char* en, const char* zh) {
         return QString::fromUtf8(impl_->chinese ? zh : en);
@@ -647,5 +673,9 @@ void AddDownloadDialog::setQueues(const std::vector<DownloadQueue>& queues, std:
 }
 std::string AddDownloadDialog::queueId() const {
     return impl_->queue->currentData().toString().toStdString();
+}
+void AddDownloadDialog::setMediaInspector(MediaInspectionFunction function, std::string taskId) {
+    impl_->mediaTaskId = std::move(taskId);
+    impl_->selection->setInspector(std::move(function));
 }
 } // namespace maskpilot

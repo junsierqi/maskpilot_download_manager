@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <filesystem>
+#include <maskpilot/domain/media.h>
 #include <maskpilot/domain/queue.h>
 #include <maskpilot/domain/torrent.h>
 #include <maskpilot/domain/version.h>
@@ -64,6 +65,7 @@ struct DownloadSpec {
     std::string mediaFormat = "bestvideo+bestaudio/best";
     std::filesystem::path mediaDownloader;
     std::filesystem::path mediaMuxer;
+    MediaSelection mediaSelection;
 };
 struct Task {
     std::string id;

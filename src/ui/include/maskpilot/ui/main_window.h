@@ -17,6 +17,7 @@ class MainWindow final : public QMainWindow {
                  std::function<void(QString, QString)> completion = {}, bool rememberProxy = false,
                  std::string queueId = defaultQueueId);
     void requestQuit();
+    void setMediaInspector(MediaInspectionFunction);
 
   protected:
     void closeEvent(QCloseEvent* event) override;

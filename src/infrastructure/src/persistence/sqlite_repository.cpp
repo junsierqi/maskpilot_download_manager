@@ -159,12 +159,12 @@ class Backend {
             int schemaVersion = 0;
             {
                 Statement version(db_, "PRAGMA user_version");
-                if (sqlite3_step(version.value) != SQLITE_ROW || sqlite3_column_int(version.value, 0) > 9 ||
+                if (sqlite3_step(version.value) != SQLITE_ROW || sqlite3_column_int(version.value, 0) > 10 ||
                     sqlite3_column_int(version.value, 0) < 0)
                     throw std::runtime_error("Database was created by a newer version.");
                 schemaVersion = sqlite3_column_int(version.value, 0);
             }
-            if (schemaVersion > 0 && schemaVersion < 9) {
+            if (schemaVersion > 0 && schemaVersion < 10) {
                 auto backupPath = path;
                 backupPath += L".before-v" + std::to_wstring(schemaVersion + 1) + L"-" +
                               std::filesystem::path(newTaskId()).wstring() + L".db";
@@ -276,6 +276,14 @@ CREATE TABLE queue_traffic_runs(id TEXT PRIMARY KEY,task_id TEXT NOT NULL,queue_
 CREATE INDEX traffic_runs_status ON queue_traffic_runs(status);
 PRAGMA user_version=9;
 COMMIT;)sql");
+            if (schemaVersion < 10)
+                execute(R"sql(BEGIN IMMEDIATE;
+ALTER TABLE tasks ADD COLUMN media_selection_mode INTEGER NOT NULL DEFAULT 0 CHECK(media_selection_mode BETWEEN 0 AND 4);
+ALTER TABLE tasks ADD COLUMN media_primary_format TEXT NOT NULL DEFAULT '';
+ALTER TABLE tasks ADD COLUMN media_audio_format TEXT NOT NULL DEFAULT '';
+ALTER TABLE tasks ADD COLUMN media_container INTEGER NOT NULL DEFAULT 0 CHECK(media_container BETWEEN 0 AND 7);
+PRAGMA user_version=10;
+COMMIT;)sql");
             Statement installation(
                 db_, "INSERT OR IGNORE INTO store_metadata(key,value) VALUES('installation_id',?)");
             installation.text(1, newTaskId());
@@ -380,6 +388,12 @@ COMMIT;)sql");
             t.requestName = text(44);
             t.queueId = text(45);
             t.runIntent = static_cast<RunIntent>(sqlite3_column_int(q.value, 46));
+            t.spec.mediaSelection.mode = static_cast<MediaSelectionMode>(sqlite3_column_int(q.value, 47));
+            t.spec.mediaSelection.primaryFormat = text(48);
+            t.spec.mediaSelection.audioFormat = text(49);
+            t.spec.mediaSelection.container = static_cast<MediaContainer>(sqlite3_column_int(q.value, 50));
+            if (!validateMediaSelection(t.spec.mediaSelection, t.spec.audioOnly).empty())
+                throw std::runtime_error("Saved media selection is invalid.");
             validateTaskContext(t);
             if (!queueExists(t.queueId))
                 throw std::runtime_error("Saved task refers to an unavailable download queue.");
@@ -396,6 +410,8 @@ COMMIT;)sql");
     void save(const Task& t) {
         std::lock_guard lock(mutex_);
         validateTaskContext(t);
+        if (!validateMediaSelection(t.spec.mediaSelection, t.spec.audioOnly).empty())
+            throw std::invalid_argument("Invalid persistent media selection.");
         if (!queueExists(t.queueId))
             throw std::invalid_argument("Task download queue is unavailable.");
         Statement q(db_, R"sql(INSERT INTO tasks(
@@ -403,8 +419,9 @@ id,url,destination,category,referrer,user_agent,proxy,expected_sha256,connection
 speed_limit,scheduled_at,stop_at,state,downloaded,total,created_at,updated_at,retries,resumable,error,
 media,audio_only,media_format,media_downloader,media_muxer,ftp_tls,ftp_active,ftp_ca,kind,bt_all,bt_selection,
 bt_seed,bt_upload_limit,bt_metadata,bt_published,bt_uploaded,proxy_auth_required,owner_id,request_id,
-context_revision,proxy_credential_ref,origin_auth_required,request_name,queue_id,run_intent)
-VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+context_revision,proxy_credential_ref,origin_auth_required,request_name,queue_id,run_intent,
+media_selection_mode,media_primary_format,media_audio_format,media_container)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(id) DO UPDATE SET
 url=excluded.url,destination=excluded.destination,category=excluded.category,referrer=excluded.referrer,
 user_agent=excluded.user_agent,proxy=excluded.proxy,expected_sha256=excluded.expected_sha256,
@@ -420,7 +437,8 @@ bt_metadata=excluded.bt_metadata,bt_published=excluded.bt_published,bt_uploaded=
 proxy_auth_required=excluded.proxy_auth_required,request_id=excluded.request_id,
 context_revision=excluded.context_revision,proxy_credential_ref=excluded.proxy_credential_ref,
 origin_auth_required=excluded.origin_auth_required,request_name=excluded.request_name,
-queue_id=excluded.queue_id,run_intent=excluded.run_intent
+queue_id=excluded.queue_id,run_intent=excluded.run_intent,media_selection_mode=excluded.media_selection_mode,
+media_primary_format=excluded.media_primary_format,media_audio_format=excluded.media_audio_format,media_container=excluded.media_container
 WHERE tasks.owner_id=excluded.owner_id)sql");
         q.text(1, t.id);
         q.text(2, t.spec.url);
@@ -476,6 +494,10 @@ WHERE tasks.owner_id=excluded.owner_id)sql");
         q.text(45, t.requestName);
         q.text(46, t.queueId);
         q.number(47, static_cast<int>(t.runIntent));
+        q.number(48, static_cast<int>(t.spec.mediaSelection.mode));
+        q.text(49, t.spec.mediaSelection.primaryFormat);
+        q.text(50, t.spec.mediaSelection.audioFormat);
+        q.number(51, static_cast<int>(t.spec.mediaSelection.container));
         if (sqlite3_step(q.value) != SQLITE_DONE || sqlite3_changes(db_) != 1)
             throw std::runtime_error("Cannot save task ownership or request identity.");
     }

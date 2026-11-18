@@ -64,6 +64,8 @@ QByteArray encodeTaskList(const std::vector<Task>& tasks) {
     qsizetype estimatedBytes = 0;
     for (const auto& task : tasks) {
         const auto& spec = task.spec;
+        if (!validateMediaSelection(spec.mediaSelection, spec.audioOnly).empty())
+            invalid();
         QJsonObject object{{"url", text(spec.url)},
                            {"destination", pathText(spec.destination)},
                            {"category", text(spec.category)},
@@ -82,6 +84,12 @@ QByteArray encodeTaskList(const std::vector<Task>& tasks) {
                            {"ftpTls", spec.ftpExplicitTls},
                            {"ftpActive", spec.ftpActiveMode},
                            {"ftpCa", pathText(spec.ftpCaBundle)}};
+        if (spec.kind == TransferKind::Media)
+            object.insert("mediaSelection",
+                          QJsonObject{{"mode", static_cast<int>(spec.mediaSelection.mode)},
+                                      {"primaryFormat", text(spec.mediaSelection.primaryFormat)},
+                                      {"audioFormat", text(spec.mediaSelection.audioFormat)},
+                                      {"container", static_cast<int>(spec.mediaSelection.container)}});
         if (spec.kind == TransferKind::BitTorrent) {
             QJsonArray selected;
             for (const auto index : spec.torrent.selectedFiles)
@@ -137,7 +145,7 @@ DecodedTaskList decodeTaskList(const QByteArray& bytes,
         const auto object = entry.toObject();
         keys(object, {"url", "destination", "category", "connections", "proxy", "proxyAuthenticationRequired",
                       "originAuthenticationRequired", "contextBound", "media", "audioOnly", "mediaFormat",
-                      "sha256", "ftpTls", "ftpActive", "ftpCa", "torrent"});
+                      "sha256", "ftpTls", "ftpActive", "ftpCa", "torrent", "mediaSelection"});
         const auto url = string(object, "url");
         if (url.isEmpty() || url.size() > 32768)
             invalid();
@@ -163,6 +171,24 @@ DecodedTaskList decodeTaskList(const QByteArray& bytes,
         spec.expectedSha256 = string(object, "sha256").toStdString();
         spec.kind = boolean(object, "media") ? TransferKind::Media : TransferKind::Http;
         spec.audioOnly = boolean(object, "audioOnly");
+        spec.mediaSelection = {};
+        if (object.contains("mediaSelection")) {
+            if (version != 2 || !object.value("mediaSelection").isObject() ||
+                spec.kind != TransferKind::Media)
+                invalid();
+            const auto selection = object.value("mediaSelection").toObject();
+            keys(selection, {"mode", "primaryFormat", "audioFormat", "container"});
+            if (!selection.contains("mode") || !selection.contains("container") ||
+                !selection.value("primaryFormat").isString() || !selection.value("audioFormat").isString())
+                invalid();
+            spec.mediaSelection.mode = static_cast<MediaSelectionMode>(integer(selection, "mode", 0, 0, 4));
+            spec.mediaSelection.container =
+                static_cast<MediaContainer>(integer(selection, "container", 0, 0, 7));
+            spec.mediaSelection.primaryFormat = string(selection, "primaryFormat").toStdString();
+            spec.mediaSelection.audioFormat = string(selection, "audioFormat").toStdString();
+            if (!validateMediaSelection(spec.mediaSelection, spec.audioOnly).empty())
+                invalid();
+        }
         spec.mediaFormat = string(object, "mediaFormat", text(spec.mediaFormat)).toStdString();
         spec.ftpExplicitTls = boolean(object, "ftpTls");
         spec.ftpActiveMode = boolean(object, "ftpActive");

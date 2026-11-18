@@ -68,6 +68,7 @@ inline QString systemExecutable(const wchar_t* name) {
 struct MainWindow::Impl {
     MainWindow* window;
     DownloadService& service;
+    MediaInspectionFunction mediaInspector;
     QSettings settings;
     bool chinese, quitting = false, wasBusy = false, refreshing = false;
     bool installingMedia = false;

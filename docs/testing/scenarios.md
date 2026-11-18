@@ -15,6 +15,7 @@
 | 大文件 | `python tests/support/http_fixture.py --exercise out/build/windows-msvc-release/maskpilot_cli.exe --large`，实际下载 4 GiB+257 字节并验证 SHA-256 |
 | 原生消息 | CTest `native_bridge_product_path`：来源／大小限制、持久化后 ACK、恢复、记录移除保留最终文件 |
 | 媒体 | `python tests/integration/native_host_test.py <host.exe> <desktop.exe> --media-parser <parser.exe> --media-muxer <ffmpeg.exe>`；实际 MP4、HLS、DASH、音频提取及登录头拒绝 |
+| 媒体实际格式与代理 | `python tests/integration/media_inventory_test.py --exercise <cli.exe> --parser <parser.exe> --muxer <ffmpeg.exe> --ui <build/tests/maskpilot_media_system_tests.exe>`；自有多清晰度 DASH、实际选流／容器输出、认证 HTTP／SOCKS5 及远端 DNS、错误认证不直连、私密参数和真实 Qt 操作。构建须包含 `media_guard/` |
 | 浏览器实装 | Node ≥22：`node tests/system/browser_test.mjs --browser <test-chromium.exe> --build-directory <build-or-package-dir>`；独立 profile，备份并恢复专属原生主机注册项 |
 | 独立部署 | `scripts/smoke.ps1 -PackageDirectory <dir>` 移除开发 PATH，运行桌面／CLI／原生消息；仍不等于一台全新虚拟机 |
 | 稳定性 | `python benchmarks/run.py --help` 查看固定预算；短运行不代替 8 小时门槛 |

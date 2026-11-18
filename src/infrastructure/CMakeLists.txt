@@ -9,6 +9,8 @@ add_library(maskpilot_infrastructure
     src/security/credential_vault.cpp
     src/bridge/download_bridge.cpp
     src/media/media_tools.cpp
+    src/media/media_process.cpp
+    src/media/media_inventory.cpp
     src/torrent/torrent_engine.cpp
     src/torrent/torrent_metadata.cpp)
 target_include_directories(maskpilot_infrastructure PUBLIC include)

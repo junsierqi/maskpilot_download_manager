@@ -59,6 +59,11 @@ TransferKind sourceKind(const DownloadSpec& spec) {
     return isFtpUrl(spec.url) ? TransferKind::Ftp : TransferKind::Http;
 }
 std::string validateSpec(const DownloadSpec& spec) {
+    if (auto error = validateMediaSelection(spec.mediaSelection, spec.audioOnly); !error.empty())
+        return error;
+    if (spec.kind != TransferKind::Media && (spec.mediaSelection.mode != MediaSelectionMode::Automatic ||
+                                             spec.mediaSelection.container != MediaContainer::Automatic))
+        return "Explicit media selection requires media mode.";
     const bool ftp = isFtpUrl(spec.url);
     const bool torrent = isTorrentUrl(spec.url);
     if (static_cast<int>(spec.kind) < 0 || static_cast<int>(spec.kind) > 3)

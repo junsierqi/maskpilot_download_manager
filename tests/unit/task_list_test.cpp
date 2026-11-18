@@ -154,3 +154,30 @@ TEST(TaskList, TorrentBinaryMetadataAndSelectedFilesSurvivePureCodec) {
     EXPECT_EQ(spec.torrent.uploadLimit, 12345);
     EXPECT_TRUE(spec.startPaused);
 }
+TEST(TaskList, TypedMediaSelectionRoundtripsAndRejectsInjectedSelectorsAndWrongTypes) {
+    maskpilot::Task task;
+    task.spec.url = "https://example.test/media";
+    task.spec.destination = "choice.mkv";
+    task.spec.kind = maskpilot::TransferKind::Media;
+    task.spec.mediaSelection = {maskpilot::MediaSelectionMode::VideoAudio, "v720", "a_en",
+                                maskpilot::MediaContainer::Mkv};
+    const auto bytes = maskpilot::ui::encodeTaskList({task});
+    const auto decoded = maskpilot::ui::decodeTaskList(bytes, defaults);
+    ASSERT_EQ(decoded.downloads.size(), 1);
+    EXPECT_EQ(decoded.downloads[0].mediaSelection.mode, task.spec.mediaSelection.mode);
+    EXPECT_EQ(decoded.downloads[0].mediaSelection.primaryFormat, "v720");
+    EXPECT_EQ(decoded.downloads[0].mediaSelection.audioFormat, "a_en");
+    auto object = QJsonDocument::fromJson(bytes).object().value("downloads").toArray()[0].toObject();
+    auto selection = object.value("mediaSelection").toObject();
+    selection["primaryFormat"] = "best/best";
+    object["mediaSelection"] = selection;
+    EXPECT_THROW(maskpilot::ui::decodeTaskList(document(object), defaults), std::exception);
+    selection["primaryFormat"] = "v720";
+    selection["mode"] = 2.5;
+    object["mediaSelection"] = selection;
+    EXPECT_THROW(maskpilot::ui::decodeTaskList(document(object), defaults), std::exception);
+    selection["mode"] = 2;
+    selection["sourceUrl"] = "https://private.test/";
+    object["mediaSelection"] = selection;
+    EXPECT_THROW(maskpilot::ui::decodeTaskList(document(object), defaults), std::exception);
+}

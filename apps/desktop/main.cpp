@@ -99,6 +99,13 @@ int main(int argc, char** argv) {
                                               settings.value("globalUploadLimit", 0).toLongLong() * 1024},
                 std::move(store.traffic)});
         maskpilot::MainWindow window(service);
+        window.setMediaInspector([&service, inspector = maskpilot::makeMediaInspector()](
+                                     maskpilot::MediaInspectionRequest request, std::stop_token stop) {
+            if (stop.stop_requested())
+                throw std::runtime_error("Media inspection cancelled.");
+            auto resolved = service.resolveMediaInspection(std::move(request)).get();
+            return inspector->inspect(resolved, stop);
+        });
         maskpilot::DownloadBridge bridge(
             service, [&window](const QString& url) { return window.defaultSpec(url); },
             [&window] { window.cancelCompletionCountdown(); }, &window);

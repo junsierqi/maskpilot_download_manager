@@ -446,10 +446,27 @@ TEST(Storage, MigratesPreviousSchemaWithoutChangingExistingProtocolsOrFiles) {
             "DROP TABLE queue_traffic_runs; DROP TABLE queue_traffic_usage; DROP TABLE traffic_clock;",
             nullptr, nullptr, nullptr),
         SQLITE_OK);
-    for (const auto* column :
-         {"kind", "bt_all", "bt_selection", "bt_seed", "bt_upload_limit", "bt_metadata", "bt_published",
-          "bt_uploaded", "proxy_auth_required", "owner_id", "request_id", "context_revision",
-          "proxy_credential_ref", "origin_auth_required", "request_name", "queue_id", "run_intent"}) {
+    for (const auto* column : {"kind",
+                               "bt_all",
+                               "bt_selection",
+                               "bt_seed",
+                               "bt_upload_limit",
+                               "bt_metadata",
+                               "bt_published",
+                               "bt_uploaded",
+                               "proxy_auth_required",
+                               "owner_id",
+                               "request_id",
+                               "context_revision",
+                               "proxy_credential_ref",
+                               "origin_auth_required",
+                               "request_name",
+                               "queue_id",
+                               "run_intent",
+                               "media_selection_mode",
+                               "media_primary_format",
+                               "media_audio_format",
+                               "media_container"}) {
         const auto sql = std::string("ALTER TABLE tasks DROP COLUMN ") + column;
         ASSERT_EQ(sqlite3_exec(connection, sql.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
     }
