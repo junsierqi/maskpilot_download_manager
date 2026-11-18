@@ -47,6 +47,8 @@ QString safeName(const QString& url) {
 } // namespace
 struct AddDownloadDialog::Impl {
     QLineEdit *url, *destination, *referrer, *agent, *cookie, *authorization, *proxy, *checksum;
+    QLineEdit *proxyUsername, *proxyPassword;
+    QCheckBox* proxyAuthenticationRequired;
     QComboBox* category;
     QSpinBox *connections, *speed, *priority;
     QCheckBox *paused, *schedule, *stop;
@@ -203,9 +205,6 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
     line(impl_->referrer, t("Referrer", "来源页面"));
     line(impl_->agent, t("User agent", "用户代理"));
     impl_->agent->setText(QString::fromLatin1(defaultUserAgent));
-    line(impl_->proxy, t("Proxy URL", "代理地址"));
-    impl_->proxy->setText(settings.value("proxy").toString());
-    impl_->proxy->setPlaceholderText("http://127.0.0.1:7890");
     line(impl_->cookie, "Cookie");
     impl_->cookie->setEchoMode(QLineEdit::Password);
     line(impl_->authorization, t("Authorization", "认证头"));
@@ -217,6 +216,46 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
     impl_->headers->setMaximumHeight(70);
     options->addRow(t("Extra headers", "附加请求头"), impl_->headers);
     tabs->addTab(advanced, t("Advanced", "高级"));
+    auto* proxyTab = new QWidget;
+    auto* proxyForm = new QFormLayout(proxyTab);
+    proxyForm->setSpacing(12);
+    impl_->proxy = new QLineEdit(settings.value("proxy").toString());
+    impl_->proxy->setObjectName("proxyEndpoint");
+    impl_->proxy->setPlaceholderText(
+        t("Empty: direct; http:// or socks5://host:port", "留空直连；http:// 或 socks5://主机:端口"));
+    proxyForm->addRow(t("Proxy URL", "代理地址"), impl_->proxy);
+    impl_->proxyUsername = new QLineEdit;
+    impl_->proxyUsername->setObjectName("proxyUsername");
+    impl_->proxyPassword = new QLineEdit;
+    impl_->proxyPassword->setObjectName("proxyPassword");
+    impl_->proxyPassword->setEchoMode(QLineEdit::Password);
+    proxyForm->addRow(t("Proxy username", "代理用户名"), impl_->proxyUsername);
+    proxyForm->addRow(t("Proxy password", "代理密码"), impl_->proxyPassword);
+    impl_->proxyAuthenticationRequired =
+        new QCheckBox(t("Require credentials before this task can start", "开始任务前必须提供代理凭据"));
+    impl_->proxyAuthenticationRequired->setObjectName("proxyAuthenticationRequired");
+    proxyForm->addRow(impl_->proxyAuthenticationRequired);
+    const auto updateCredentialRequirement = [this] {
+        const bool supplied =
+            !impl_->proxyUsername->text().isEmpty() || !impl_->proxyPassword->text().isEmpty();
+        if (supplied)
+            impl_->proxyAuthenticationRequired->setChecked(true);
+        impl_->proxyAuthenticationRequired->setEnabled(!supplied);
+    };
+    connect(impl_->proxyUsername, &QLineEdit::textChanged, this, updateCredentialRequirement);
+    connect(impl_->proxyPassword, &QLineEdit::textChanged, this, updateCredentialRequirement);
+    auto* proxyNotice = new QLabel(
+        t("Credentials stay in memory; enter them again after restarting. SOCKS5 resolves destinations "
+          "through the proxy. Proxied BT uses TCP; HTTPS proxies are supported for direct files only.",
+          "凭据仅保存在内存，重启后需重新输入。SOCKS5 由代理解析目标地址。BT 代理使用 TCP；"
+          "HTTPS 代理仅支持直接文件下载。"));
+    proxyNotice->setWordWrap(true);
+    proxyForm->addRow(proxyNotice);
+    connect(impl_->proxy, &QLineEdit::textEdited, this, [this] {
+        impl_->proxyUsername->clear();
+        impl_->proxyPassword->clear();
+    });
+    tabs->addTab(proxyTab, t("Proxy", "代理"));
     auto* ftpTab = new QWidget;
     auto* ftpForm = new QFormLayout(ftpTab);
     ftpForm->setSpacing(12);
@@ -398,7 +437,11 @@ DownloadSpec AddDownloadDialog::specification() const {
     s.stopAt = impl_->stop->isChecked() ? impl_->stopTime->dateTime().toSecsSinceEpoch() : 0;
     s.referrer = impl_->referrer->text().toStdString();
     s.userAgent = impl_->agent->text().toStdString();
-    s.proxy = impl_->proxy->text().toStdString();
+    s.proxy = impl_->proxy->text().trimmed().toStdString();
+    s.proxyUsername = impl_->proxyUsername->text().toStdString();
+    s.proxyPassword = impl_->proxyPassword->text().toStdString();
+    s.proxyAuthenticationRequired = impl_->proxyAuthenticationRequired->isChecked() ||
+                                    !s.proxyUsername.empty() || !s.proxyPassword.empty();
     s.cookie = impl_->cookie->text().toStdString();
     s.authorization = impl_->authorization->text().toStdString();
     s.expectedSha256 = impl_->checksum->text().trimmed().toStdString();
@@ -462,6 +505,10 @@ void AddDownloadDialog::setSpecification(const DownloadSpec& spec) {
     impl_->referrer->setText(QString::fromStdString(spec.referrer));
     impl_->agent->setText(QString::fromStdString(spec.userAgent));
     impl_->proxy->setText(QString::fromStdString(spec.proxy));
+    impl_->proxyUsername->setText(QString::fromStdString(spec.proxyUsername));
+    impl_->proxyPassword->setText(QString::fromStdString(spec.proxyPassword));
+    impl_->proxyAuthenticationRequired->setChecked(
+        spec.proxyAuthenticationRequired || !spec.proxyUsername.empty() || !spec.proxyPassword.empty());
     impl_->cookie->setText(QString::fromStdString(spec.cookie));
     impl_->authorization->setText(QString::fromStdString(spec.authorization));
     impl_->checksum->setText(QString::fromStdString(spec.expectedSha256));

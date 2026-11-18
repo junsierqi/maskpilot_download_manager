@@ -61,11 +61,11 @@ class Repository final : public ITaskRepository {
             int schemaVersion = 0;
             {
                 Statement version(db_, "PRAGMA user_version");
-                if (sqlite3_step(version.value) != SQLITE_ROW || sqlite3_column_int(version.value, 0) > 4)
+                if (sqlite3_step(version.value) != SQLITE_ROW || sqlite3_column_int(version.value, 0) > 5)
                     throw std::runtime_error("Database was created by a newer version.");
                 schemaVersion = sqlite3_column_int(version.value, 0);
             }
-            if (schemaVersion > 0 && schemaVersion < 4) {
+            if (schemaVersion > 0 && schemaVersion < 5) {
                 auto backupPath = path;
                 backupPath += L".before-v" + std::to_wstring(schemaVersion + 1) + L"-" +
                               std::filesystem::path(newTaskId()).wstring() + L".db";
@@ -116,6 +116,9 @@ class Repository final : public ITaskRepository {
                         "UPDATE tasks SET kind=CASE WHEN media<>0 THEN 2 "
                         "WHEN url LIKE 'ftp://%' OR url LIKE 'ftps://%' THEN 1 ELSE 0 END; "
                         "PRAGMA user_version=4; COMMIT;");
+            if (schemaVersion < 5)
+                execute("BEGIN IMMEDIATE; ALTER TABLE tasks ADD COLUMN proxy_auth_required INTEGER "
+                        "NOT NULL DEFAULT 0; PRAGMA user_version=5; COMMIT;");
         } catch (...) {
             sqlite3_close(db_);
             db_ = nullptr;
@@ -204,6 +207,7 @@ class Repository final : public ITaskRepository {
             }
             t.torrentPublished = sqlite3_column_int(q.value, 36) != 0;
             t.uploaded = sqlite3_column_int64(q.value, 37);
+            t.spec.proxyAuthenticationRequired = sqlite3_column_int(q.value, 38) != 0;
             if (t.id.size() != 32 || !std::all_of(t.id.begin(), t.id.end(), [](unsigned char c) {
                     return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
                 }))
@@ -217,7 +221,7 @@ class Repository final : public ITaskRepository {
     void save(const Task& t) override {
         Statement q(db_,
                     "INSERT OR REPLACE INTO tasks "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
         q.text(1, t.id);
         q.text(2, t.spec.url);
         q.text(3, utf8(t.spec.destination));
@@ -262,6 +266,8 @@ class Repository final : public ITaskRepository {
         q.blob(36, t.spec.torrent.metadata);
         q.number(37, t.torrentPublished);
         q.number(38, t.uploaded);
+        q.number(39, t.spec.proxyAuthenticationRequired || !t.spec.proxyUsername.empty() ||
+                         !t.spec.proxyPassword.empty());
         if (sqlite3_step(q.value) != SQLITE_DONE)
             throw std::runtime_error("Cannot save task database.");
     }

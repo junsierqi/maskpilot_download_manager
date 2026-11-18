@@ -57,7 +57,8 @@ void MainWindow::Impl::settingsDialog() {
     upload->setValue(settings.value("globalUploadLimit", 0).toInt());
     form->addRow(t("BT upload limit", "BT 全局上传限速"), upload);
     auto* proxy = new QLineEdit(settings.value("proxy").toString());
-    proxy->setPlaceholderText("http://127.0.0.1:7890");
+    proxy->setPlaceholderText(
+        t("Empty: direct; credentials are entered per task", "留空直连；凭据在任务的代理页输入"));
     form->addRow(t("Proxy URL", "代理地址"), proxy);
     auto* language = new QComboBox;
     language->addItem("简体中文", "zh");

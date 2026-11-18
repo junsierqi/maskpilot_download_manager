@@ -38,6 +38,9 @@ struct DownloadSpec {
     std::string cookie;
     std::string authorization;
     std::string proxy;
+    // Proxy secrets are process-local. The persisted marker prevents anonymous fallback after restart.
+    std::string proxyUsername, proxyPassword;
+    bool proxyAuthenticationRequired = false;
     std::string expectedSha256;
     // Credentials are process-local; only transport options are persisted.
     std::string ftpUsername, ftpPassword;

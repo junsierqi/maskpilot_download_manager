@@ -29,6 +29,9 @@ TEST(Storage, PersistsTaskButNeverAuthenticationSecrets) {
     t.spec.destination = temp.path / "中文.bin";
     t.spec.cookie = "private-cookie";
     t.spec.authorization = "secret-token";
+    t.spec.proxy = "http://proxy.example.test:8080";
+    t.spec.proxyUsername = "private-proxy-user";
+    t.spec.proxyPassword = "private-proxy-password";
     t.createdAt = maskpilot::unixTime();
     repo->save(t);
     auto loaded = repo->load();
@@ -36,6 +39,18 @@ TEST(Storage, PersistsTaskButNeverAuthenticationSecrets) {
     EXPECT_EQ(loaded[0].spec.destination, t.spec.destination);
     EXPECT_TRUE(loaded[0].spec.cookie.empty());
     EXPECT_TRUE(loaded[0].spec.authorization.empty());
+    EXPECT_TRUE(loaded[0].spec.proxyUsername.empty());
+    EXPECT_TRUE(loaded[0].spec.proxyPassword.empty());
+    EXPECT_TRUE(loaded[0].spec.proxyAuthenticationRequired);
+    EXPECT_EQ(loaded[0].spec.proxy, t.spec.proxy);
+    for (const auto& file : std::filesystem::directory_iterator(temp.path)) {
+        if (!file.is_regular_file())
+            continue;
+        std::ifstream input(file.path(), std::ios::binary);
+        const std::string bytes((std::istreambuf_iterator<char>(input)), {});
+        EXPECT_EQ(bytes.find(t.spec.proxyUsername), std::string::npos);
+        EXPECT_EQ(bytes.find(t.spec.proxyPassword), std::string::npos);
+    }
     repo->erase(t.id);
     EXPECT_TRUE(repo->load().empty());
 }
@@ -48,6 +63,67 @@ TEST(Checksums, UsesKnownSha256Vector) {
     }
     EXPECT_EQ(maskpilot::sha256File(path),
               "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+}
+TEST(Storage, MigratesVersionFourBeforeAddingProxyCredentialRequirement) {
+    TempDirectory temporary;
+    const auto database = temporary.path / "tasks.db";
+    const auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path();
+    sqlite3* raw = nullptr;
+    ASSERT_EQ(sqlite3_open(database.string().c_str(), &raw), SQLITE_OK);
+    std::unique_ptr<sqlite3, decltype(&sqlite3_close)> connection(raw, sqlite3_close);
+    for (const auto* name : {"0001_initial.sql", "0002_media.sql", "0003_ftp.sql", "0004_torrents.sql"}) {
+        std::ifstream source(root / "database" / "migrations" / name, std::ios::binary);
+        ASSERT_TRUE(source.good()) << name;
+        const std::string sql((std::istreambuf_iterator<char>(source)), {});
+        ASSERT_EQ(sqlite3_exec(raw, sql.c_str(), nullptr, nullptr, nullptr), SQLITE_OK) << name;
+    }
+    ASSERT_EQ(sqlite3_exec(raw,
+                           "INSERT INTO tasks(id,url,destination,category,referrer,user_agent,proxy,"
+                           "expected_sha256,connections,priority,max_retries,speed_limit,scheduled_at,"
+                           "stop_at,state,downloaded,total,created_at,updated_at,retries,resumable,error) "
+                           "VALUES('0123456789abcdef0123456789abcdef','https://example.test/file',"
+                           "'file.bin','General','','MaskPilot','http://proxy.test:8080','',4,0,3,0,0,0,"
+                           "5,321,4096,1,1,0,1,'');",
+                           nullptr, nullptr, nullptr),
+              SQLITE_OK);
+    connection.reset();
+    {
+        auto repository = maskpilot::makeSqliteRepository(database);
+        auto tasks = repository->load();
+        ASSERT_EQ(tasks.size(), 1);
+        EXPECT_EQ(tasks[0].downloaded, 321);
+        EXPECT_EQ(tasks[0].state, maskpilot::TaskState::Paused);
+        EXPECT_EQ(tasks[0].spec.proxy, "http://proxy.test:8080");
+        EXPECT_FALSE(tasks[0].spec.proxyAuthenticationRequired);
+        tasks[0].spec.proxyUsername = "migration-private-user";
+        tasks[0].spec.proxyPassword = "migration-private-password";
+        repository->save(tasks[0]);
+    }
+    {
+        auto repository = maskpilot::makeSqliteRepository(database);
+        const auto tasks = repository->load();
+        ASSERT_EQ(tasks.size(), 1);
+        EXPECT_TRUE(tasks[0].spec.proxyAuthenticationRequired);
+        EXPECT_TRUE(tasks[0].spec.proxyUsername.empty());
+        EXPECT_TRUE(tasks[0].spec.proxyPassword.empty());
+        EXPECT_TRUE(maskpilot::validateSpec(tasks[0].spec).empty());
+    }
+    int backups = 0;
+    for (const auto& file : std::filesystem::directory_iterator(temporary.path)) {
+        if (file.path().filename().string().find(".before-v5-") == std::string::npos)
+            continue;
+        ++backups;
+        sqlite3* backup = nullptr;
+        ASSERT_EQ(sqlite3_open_v2(file.path().string().c_str(), &backup, SQLITE_OPEN_READONLY, nullptr),
+                  SQLITE_OK);
+        std::unique_ptr<sqlite3, decltype(&sqlite3_close)> closed(backup, sqlite3_close);
+        sqlite3_stmt* statement = nullptr;
+        ASSERT_EQ(sqlite3_prepare_v2(backup, "PRAGMA user_version", -1, &statement, nullptr), SQLITE_OK);
+        std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> finalized(statement, sqlite3_finalize);
+        ASSERT_EQ(sqlite3_step(statement), SQLITE_ROW);
+        EXPECT_EQ(sqlite3_column_int(statement, 0), 4);
+    }
+    EXPECT_EQ(backups, 1);
 }
 TEST(Storage, PreservesEmbeddedNullsForValidation) {
     TempDirectory temp;
@@ -311,7 +387,7 @@ TEST(Storage, MigratesPreviousSchemaWithoutChangingExistingProtocolsOrFiles) {
     ASSERT_EQ(sqlite3_open(database.string().c_str(), &connection), SQLITE_OK);
     std::unique_ptr<sqlite3, decltype(&sqlite3_close)> close(connection, sqlite3_close);
     for (const auto* column : {"kind", "bt_all", "bt_selection", "bt_seed", "bt_upload_limit", "bt_metadata",
-                               "bt_published", "bt_uploaded"}) {
+                               "bt_published", "bt_uploaded", "proxy_auth_required"}) {
         const auto sql = std::string("ALTER TABLE tasks DROP COLUMN ") + column;
         ASSERT_EQ(sqlite3_exec(connection, sql.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
     }

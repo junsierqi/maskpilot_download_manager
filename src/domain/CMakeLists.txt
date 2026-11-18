@@ -1,4 +1,4 @@
-add_library(maskpilot_domain src/task.cpp src/torrent.cpp)
+add_library(maskpilot_domain src/task.cpp src/torrent.cpp src/proxy.cpp)
 configure_file(include/maskpilot/domain/version.h.in
     ${PROJECT_BINARY_DIR}/generated/maskpilot/domain/version.h @ONLY)
 target_include_directories(maskpilot_domain PUBLIC include ${PROJECT_BINARY_DIR}/generated)

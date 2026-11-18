@@ -380,6 +380,8 @@ std::future<std::string> DownloadService::add(DownloadSpec spec, std::string req
         try {
             if (!p->healthy)
                 throw std::runtime_error("Task storage unavailable.");
+            spec.proxyAuthenticationRequired = spec.proxyAuthenticationRequired ||
+                                               !spec.proxyUsername.empty() || !spec.proxyPassword.empty();
             if (auto message = validateSpec(spec); !message.empty())
                 throw std::invalid_argument(message);
             spec.kind = sourceKind(spec);
@@ -590,6 +592,8 @@ void DownloadService::updateRequest(const std::string& id, DownloadSpec spec) {
                 return;
         }
         spec.destination = it->second.spec.destination;
+        spec.proxyAuthenticationRequired =
+            spec.proxyAuthenticationRequired || !spec.proxyUsername.empty() || !spec.proxyPassword.empty();
         if (!validateSpec(spec).empty())
             return;
         spec.kind = sourceKind(spec);
@@ -651,6 +655,8 @@ std::future<std::vector<DownloadSpec>> DownloadService::prepareImport(std::vecto
             throw std::invalid_argument("Task list exceeds 10000 entries.");
         std::size_t metadataBytes = 0;
         for (auto& spec : specs) {
+            spec.proxyAuthenticationRequired = spec.proxyAuthenticationRequired ||
+                                               !spec.proxyUsername.empty() || !spec.proxyPassword.empty();
             if (const auto error = validateSpec(spec); !error.empty())
                 throw std::invalid_argument(error);
             spec.kind = sourceKind(spec);

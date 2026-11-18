@@ -1,4 +1,5 @@
 #include "../filesystem/transfer_files.h"
+#include "proxy_options.h"
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -159,8 +160,7 @@ void configure(Easy& easy, const DownloadSpec& spec, Headers& headers, TransferC
             return c.pause || c.cancel ? 1 : 0;
         });
     curl_easy_setopt(easy.handle, CURLOPT_XFERINFODATA, &control);
-    if (!spec.proxy.empty())
-        curl_easy_setopt(easy.handle, CURLOPT_PROXY, spec.proxy.c_str());
+    network::configureProxy(easy.handle, spec);
     if (!spec.referrer.empty())
         curl_easy_setopt(easy.handle, CURLOPT_REFERER, spec.referrer.c_str());
     if (!spec.cookie.empty())

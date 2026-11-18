@@ -59,6 +59,10 @@ void MainWindow::Impl::exportTasks() {
                           {"destination", pathString(task.spec.destination)},
                           {"category", qs(task.spec.category)},
                           {"connections", task.spec.connections},
+                          {"proxy", qs(task.spec.proxy)},
+                          {"proxyAuthenticationRequired", task.spec.proxyAuthenticationRequired ||
+                                                              !task.spec.proxyUsername.empty() ||
+                                                              !task.spec.proxyPassword.empty()},
                           {"media", (task.spec.kind == maskpilot::TransferKind::Media)},
                           {"audioOnly", task.spec.audioOnly},
                           {"mediaFormat", qs(task.spec.mediaFormat)},
@@ -126,7 +130,11 @@ void MainWindow::Impl::importTasks() {
         spec.destination = std::filesystem::path(value.value("destination").toString().toStdWString());
         spec.category = value.value("category").toString("General").toStdString();
         spec.connections = value.value("connections").toInt(4);
-        spec.proxy = settings.value("proxy").toString().toStdString();
+        spec.proxy = value.value("proxy").toString(settings.value("proxy").toString()).toStdString();
+        spec.proxyAuthenticationRequired = value.value("proxyAuthenticationRequired").toBool();
+        const bool invalidProxyFields = (value.contains("proxy") && !value.value("proxy").isString()) ||
+                                        (value.contains("proxyAuthenticationRequired") &&
+                                         !value.value("proxyAuthenticationRequired").isBool());
         spec.expectedSha256 = value.value("sha256").toString().toStdString();
         const bool invalidMediaFields =
             (value.contains("media") && !value.value("media").isBool()) ||
@@ -180,7 +188,8 @@ void MainWindow::Impl::importTasks() {
             }
         }
         spec.startPaused = true;
-        if (invalidMediaFields || invalidFtpFields || invalidTorrentFields || !validateSpec(spec).empty()) {
+        if (invalidMediaFields || invalidFtpFields || invalidTorrentFields || invalidProxyFields ||
+            !validateSpec(spec).empty()) {
             QMessageBox::warning(window, "MaskPilot",
                                  t("Task list validation failed. Nothing was imported.",
                                    "任务列表校验失败，未导入任何任务。"));

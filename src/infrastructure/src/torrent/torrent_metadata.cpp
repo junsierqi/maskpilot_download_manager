@@ -298,6 +298,10 @@ ParsedTorrent parse(const DownloadSpec& spec) {
                 if (std::find(result.params.trackers.begin(), result.params.trackers.end(), tracker) ==
                     result.params.trackers.end())
                     result.params.trackers.push_back(tracker);
+            for (const auto& seed : magnet.url_seeds)
+                if (std::find(result.params.url_seeds.begin(), result.params.url_seeds.end(), seed) ==
+                    result.params.url_seeds.end())
+                    result.params.url_seeds.push_back(seed);
         }
         if (!spec.torrent.allFiles)
             for (const auto index : spec.torrent.selectedFiles)
@@ -307,8 +311,9 @@ ParsedTorrent parse(const DownloadSpec& spec) {
     } else if (!isMagnet) {
         throw std::invalid_argument("A torrent file or magnet link is required.");
     }
-    if (result.params.peers.size() > 256 || result.params.trackers.size() > 256)
-        throw std::invalid_argument("Torrent contains too many initial peers or trackers.");
+    if (result.params.peers.size() > 256 || result.params.trackers.size() > 256 ||
+        result.params.url_seeds.size() > 256)
+        throw std::invalid_argument("Torrent contains too many initial peers, trackers or web seeds.");
     return result;
 }
 TorrentMetadata metadataFrom(const lt::add_torrent_params& params) {

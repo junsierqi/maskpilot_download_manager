@@ -1,3 +1,8 @@
+#include "../../src/infrastructure/src/torrent/torrent_internal.h"
+#include <QFile>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <algorithm>
@@ -147,6 +152,7 @@ class LocalTracker {
     boost::asio::io_context context_;
     Tcp::acceptor acceptor_{context_, {boost::asio::ip::make_address("127.0.0.1"), 0}};
     std::atomic_bool stopping_{false};
+    std::atomic_uint requests_{0};
     unsigned short port_ = acceptor_.local_endpoint().port();
     std::jthread worker_;
 
@@ -188,6 +194,7 @@ class LocalTracker {
                 }
                 if (stopping_)
                     break;
+                ++requests_;
                 socket.non_blocking(false, error);
                 const std::array<boost::asio::const_buffer, 2> buffers{boost::asio::buffer(header),
                                                                        boost::asio::buffer(body)};
@@ -205,6 +212,7 @@ class LocalTracker {
         acceptor_.close(error);
     }
     std::string url() const { return "http://127.0.0.1:" + std::to_string(port_) + "/announce"; }
+    unsigned requests() const { return requests_; }
 };
 
 class TorrentFixture {
@@ -418,7 +426,363 @@ std::vector<char> encode(const lt::entry& entry) {
     lt::bencode(std::back_inserter(bytes), entry);
     return bytes;
 }
+class RecordingProxyFixture {
+    TemporaryDirectory temporary_;
+    QProcess process_;
+    std::filesystem::path state_ = temporary_.path / "proxy-state.json";
+    std::string endpoint_;
+
+  public:
+    explicit RecordingProxyFixture(const char* kind, const std::string& username = {},
+                                   const std::string& password = {}) {
+#ifdef MASKPILOT_TEST_PROXY_FIXTURE
+        const auto script = QString::fromUtf8(MASKPILOT_TEST_PROXY_FIXTURE);
+#else
+        const auto script = QString::fromStdWString(
+            (std::filesystem::path(__FILE__).parent_path().parent_path() / "support" / "proxy_fixture.py")
+                .wstring());
+#endif
+#ifdef MASKPILOT_TEST_PYTHON
+        const auto python = QString::fromUtf8(MASKPILOT_TEST_PYTHON);
+#else
+        const auto python = qEnvironmentVariable("MASKPILOT_TEST_PYTHON", "python");
+#endif
+        QStringList arguments{script,    "--serve",
+                              "--kind",  kind,
+                              "--state", QString::fromStdWString(state_.wstring()),
+                              "--map",   "proxy-origin.invalid=127.0.0.1"};
+        if (!username.empty())
+            arguments << "--username" << QString::fromStdString(username) << "--password"
+                      << QString::fromStdString(password);
+#ifdef _WIN32
+        process_.setCreateProcessArgumentsModifier(
+            [](QProcess::CreateProcessArguments* arguments) { arguments->flags |= CREATE_NO_WINDOW; });
+#endif
+        process_.start(python, arguments);
+        if (!process_.waitForStarted(5000))
+            throw std::runtime_error("Cannot start the owned recording proxy fixture.");
+        QByteArray ready;
+        const auto deadline = std::chrono::steady_clock::now() + 5s;
+        while (!ready.contains('\n') && std::chrono::steady_clock::now() < deadline) {
+            process_.waitForReadyRead(100);
+            ready += process_.readAllStandardOutput();
+        }
+        const auto value = QJsonDocument::fromJson(ready.trimmed()).object();
+        const auto port = value.value("port").toInt();
+        if (value.value("host").toString() != "127.0.0.1" || port <= 0 || port > 65535)
+            throw std::runtime_error("Recording proxy fixture did not report a valid owned listener.");
+        endpoint_ = std::string(kind == std::string("http") ? "http://" : "socks5h://") +
+                    "127.0.0.1:" + std::to_string(port);
+    }
+    ~RecordingProxyFixture() {
+        process_.closeWriteChannel();
+        if (!process_.waitForFinished(5000)) {
+            process_.kill();
+            process_.waitForFinished(5000);
+        }
+    }
+    const std::string& endpoint() const { return endpoint_; }
+    QJsonObject snapshot() const {
+        QFile file(QString::fromStdWString(state_.wstring()));
+        if (!file.open(QIODevice::ReadOnly))
+            throw std::runtime_error("Cannot read recording proxy fixture counters.");
+        return QJsonDocument::fromJson(file.readAll()).object();
+    }
+};
+std::string trackerOnlyMagnet(const TorrentFixture& fixture, bool remoteDns = false) {
+    auto params =
+        lt::load_torrent_buffer(lt::span<char const>(fixture.metadata->data(), fixture.metadata->size()));
+    params.peers.clear();
+    params.dht_nodes.clear();
+    params.url_seeds.clear();
+    if (remoteDns) {
+        for (auto& tracker : params.trackers) {
+            const auto position = tracker.find("127.0.0.1");
+            if (position != std::string::npos)
+                tracker.replace(position, 9, "proxy-origin.invalid");
+        }
+    }
+    return lt::make_magnet_uri(params);
+}
 } // namespace
+
+TEST(TorrentProxy, AuthenticatedHttpAndSocksFetchMagnetMetadataAndPayloadWithRemoteDns) {
+    for (const auto* kind : {"http", "socks5"}) {
+        SCOPED_TRACE(kind);
+        TorrentFixture fixture;
+        RecordingProxyFixture proxy(kind, "fixture-user", "fixture-secret");
+        auto task = fixture.task(fixture.temporary.path / "proxied", true);
+        task.spec.url = trackerOnlyMagnet(fixture, true);
+        task.spec.proxy = proxy.endpoint();
+        task.spec.proxyUsername = "fixture-user";
+        task.spec.proxyPassword = "fixture-secret";
+        task.spec.proxyAuthenticationRequired = true;
+        maskpilot::TransferControl control;
+        const auto result = run(localFactory(), task, fixture.temporary.path / "work" / task.id, control);
+        expectComplete(result);
+        EXPECT_NE(result.metadata, nullptr);
+        fixture.expectPayload(task.spec.destination);
+        const auto state = proxy.snapshot();
+        EXPECT_GT(state.value("auth_accepted").toInt(), 0);
+        EXPECT_GT(state.value("forwarded_bytes").toDouble(), 500000);
+        bool tracker = false, peer = false;
+        for (const auto& entry : state.value("destinations").toArray()) {
+            const auto destination = entry.toObject();
+            tracker |= destination.value("host").toString() == "proxy-origin.invalid";
+            peer |= destination.value("port").toInt() == fixture.seed->listen_port();
+        }
+        EXPECT_TRUE(tracker) << "Tracker DNS must be performed by the proxy fixture.";
+        EXPECT_TRUE(peer) << "Payload peers must use the same proxy route.";
+    }
+}
+
+TEST(TorrentProxy, ConcurrentDirectAndDifferentProxyRoutesStayIsolated) {
+    TorrentFixture fixture;
+    RecordingProxyFixture http("http"), socks("socks5");
+    auto direct = fixture.task(fixture.temporary.path / "direct");
+    auto first = fixture.task(fixture.temporary.path / "http");
+    auto second = fixture.task(fixture.temporary.path / "socks");
+    first.spec.proxy = http.endpoint();
+    second.spec.proxy = socks.endpoint();
+    const auto factory = localFactory();
+    maskpilot::TransferControl directControl, firstControl, secondControl;
+    auto start = [&](const maskpilot::Task& task, maskpilot::TransferControl& control) {
+        return std::async(std::launch::async, [&, task] {
+            return run(factory, task, fixture.temporary.path / "work" / task.id, control);
+        });
+    };
+    auto directResult = start(direct, directControl);
+    auto firstResult = start(first, firstControl);
+    auto secondResult = start(second, secondControl);
+    expectComplete(directResult.get());
+    expectComplete(firstResult.get());
+    expectComplete(secondResult.get());
+    for (const auto& task : {direct, first, second})
+        fixture.expectPayload(task.spec.destination);
+    EXPECT_GT(http.snapshot().value("forwarded_bytes").toDouble(), 500000);
+    EXPECT_GT(socks.snapshot().value("forwarded_bytes").toDouble(), 500000);
+}
+
+TEST(TorrentProxy, DifferentCredentialsAtOneEndpointNeverShareAnActiveSession) {
+    TorrentFixture fixture;
+    RecordingProxyFixture proxy("socks5", "fixture-user", "fixture-secret");
+    auto good = fixture.task(fixture.temporary.path / "good");
+    good.spec.proxy = proxy.endpoint();
+    good.spec.proxyUsername = "fixture-user";
+    good.spec.proxyPassword = "fixture-secret";
+    auto bad = fixture.task(fixture.temporary.path / "bad");
+    bad.spec = good.spec;
+    bad.spec.destination = fixture.temporary.path / "bad";
+    bad.spec.proxyPassword = "wrong-secret";
+    const auto factory = localFactory();
+    maskpilot::TransferControl goodControl, badControl;
+    auto valid = std::async(std::launch::async, [&] {
+        return run(factory, good, fixture.temporary.path / "work" / good.id, goodControl);
+    });
+    const auto invalid = run(factory, bad, fixture.temporary.path / "work" / bad.id, badControl);
+    expectComplete(valid.get());
+    EXPECT_FALSE(invalid.timedOut) << invalid.diagnostics();
+    EXPECT_EQ(invalid.terminals, 1);
+    EXPECT_EQ(invalid.terminal.outcome, maskpilot::TransferOutcome::Attention);
+    EXPECT_EQ(invalid.terminal.error.find("wrong-secret"), std::string::npos);
+    EXPECT_EQ(invalid.terminal.error.find("fixture-secret"), std::string::npos);
+    EXPECT_FALSE(std::filesystem::exists(bad.spec.destination));
+    fixture.expectPayload(good.spec.destination);
+    const auto state = proxy.snapshot();
+    EXPECT_GT(state.value("auth_accepted").toInt(), 0);
+    EXPECT_GT(state.value("auth_rejected").toInt(), 0);
+}
+
+TEST(TorrentProxy, MissingSecretsAndUnsupportedHttpsFailBeforeContactingTheSource) {
+    TorrentFixture fixture;
+    for (const bool missing : {true, false}) {
+        auto task = fixture.task(fixture.temporary.path / (missing ? "missing-secret" : "https-proxy"), true);
+        task.spec.url = trackerOnlyMagnet(fixture);
+        task.spec.proxy = missing ? "http://127.0.0.1:1" : "https://127.0.0.1:1";
+        task.spec.proxyAuthenticationRequired = missing;
+        maskpilot::TransferControl control;
+        const auto start = std::chrono::steady_clock::now();
+        const auto result = run(localFactory(), task, fixture.temporary.path / "work" / task.id, control);
+        EXPECT_LT(std::chrono::steady_clock::now() - start, 2s);
+        EXPECT_FALSE(result.timedOut);
+        EXPECT_EQ(result.terminal.outcome, maskpilot::TransferOutcome::Attention);
+        EXPECT_EQ(fixture.tracker->requests(), 0u);
+        EXPECT_FALSE(std::filesystem::exists(task.spec.destination));
+    }
+}
+
+// Source-only parser regression: no session, resolver or fixture server is created.
+TEST(TorrentMetadataParser, CachedMetadataPreservesDeduplicatedBoundedMagnetWebSeeds) {
+    lt::entry metainfo;
+    metainfo["info"]["name"] = "parser-fixture.bin";
+    metainfo["info"]["length"] = 1;
+    metainfo["info"]["piece length"] = 16 * 1024;
+    metainfo["info"]["pieces"] = std::string(20, 'h');
+    metainfo["url-list"] = "http://seed.invalid/embedded/";
+    auto spec = specWithMetadata(encode(metainfo));
+    auto original = maskpilot::torrent_internal::parse(spec);
+    auto magnetParams = original.params;
+    magnetParams.url_seeds = {"http://seed.invalid/embedded/", "http://seed.invalid/magnet/",
+                              "http://seed.invalid/magnet/"};
+    spec.url = lt::make_magnet_uri(magnetParams);
+    auto merged = maskpilot::torrent_internal::parse(spec);
+    EXPECT_EQ(merged.params.url_seeds.size(), 2u);
+    EXPECT_EQ(std::count(merged.params.url_seeds.begin(), merged.params.url_seeds.end(),
+                         "http://seed.invalid/magnet/"),
+              1);
+    spec.torrent.metadata = maskpilot::torrent_internal::metadataFrom(merged.params);
+    const auto roundTrip = maskpilot::torrent_internal::parse(spec);
+    EXPECT_EQ(roundTrip.params.url_seeds, merged.params.url_seeds);
+    magnetParams.url_seeds.clear();
+    for (int n = 0; n < 256; ++n)
+        magnetParams.url_seeds.push_back("http://seed.invalid/source/" + std::to_string(n) + "/");
+    spec.url = lt::make_magnet_uri(magnetParams);
+    EXPECT_THROW(maskpilot::torrent_internal::parse(spec), std::invalid_argument);
+}
+
+TEST(TorrentProxy, PeerOnlyHttpMagnetReportsRejectedTunnelsWithoutBypassingTheProxy) {
+    TorrentFixture fixture;
+    boost::asio::io_context deadContext;
+    Tcp::acceptor deadPeer(deadContext);
+    deadPeer.open(Tcp::v4());
+    // Keep a real non-listening port owned for the entire test. Native peer_list
+    // silently ignores port 1, so that value cannot prove alternate-peer handling.
+    deadPeer.bind({boost::asio::ip::make_address("127.0.0.2"), 0});
+    const auto deadPort = deadPeer.local_endpoint().port();
+    ASSERT_GT(deadPort, 1024);
+    RecordingProxyFixture proxy("http", "fixture-user", "fixture-secret");
+    auto params =
+        lt::load_torrent_buffer(lt::span<char const>(fixture.metadata->data(), fixture.metadata->size()));
+    params.trackers.clear();
+    params.tracker_tiers.clear();
+    params.url_seeds.clear();
+    params.dht_nodes.clear();
+    params.peers = {{boost::asio::ip::make_address("127.0.0.2"), deadPort},
+                    {boost::asio::ip::make_address("127.0.0.1"), fixture.seed->listen_port()}};
+    const auto magnet = lt::make_magnet_uri(params);
+    ASSERT_EQ(magnet.find("tr="), std::string::npos);
+    ASSERT_EQ(magnet.find("ws="), std::string::npos);
+    ASSERT_NE(magnet.find("x.pe="), std::string::npos);
+    auto valid = fixture.task(fixture.temporary.path / "valid-peer-only", true);
+    valid.spec.url = magnet;
+    valid.spec.proxy = proxy.endpoint();
+    valid.spec.proxyUsername = "fixture-user";
+    valid.spec.proxyPassword = "fixture-secret";
+    valid.spec.proxyAuthenticationRequired = true;
+    const auto factory = localFactory();
+    maskpilot::TransferControl validControl;
+    const auto complete = run(factory, valid, fixture.temporary.path / "work" / valid.id, validControl);
+    expectComplete(complete);
+    ASSERT_NE(complete.metadata, nullptr);
+    fixture.expectPayload(valid.spec.destination);
+    const auto before = proxy.snapshot();
+    EXPECT_GT(before.value("auth_accepted").toInt(), 0);
+    EXPECT_GT(before.value("forwarded_bytes").toDouble(), 500000);
+    bool deadAttempted = false, healthyAttempted = false;
+    for (const auto& value : before.value("destinations").toArray()) {
+        const auto destination = value.toObject();
+        deadAttempted |= destination.value("host").toString() == "127.0.0.2" &&
+                         destination.value("port").toInt() == deadPort;
+        healthyAttempted |= destination.value("host").toString() == "127.0.0.1" &&
+                            destination.value("port").toInt() == fixture.seed->listen_port();
+    }
+    EXPECT_TRUE(deadAttempted);
+    EXPECT_TRUE(healthyAttempted);
+    for (const bool cachedMetadata : {false, true}) {
+        SCOPED_TRACE(cachedMetadata ? "cached metadata" : "metadata exchange");
+        const auto destination =
+            fixture.temporary.path / (cachedMetadata ? "invalid-cached" : "invalid-peer-only");
+        auto invalid = fixture.task(destination, true);
+        invalid.spec = valid.spec;
+        invalid.spec.destination = destination;
+        invalid.spec.proxyPassword = "wrong-secret";
+        // An explicitly ignored native hint must not hide rejection of every
+        // usable hint. The real dead alternate above still exercises CONNECT.
+        invalid.spec.url += "&x.pe=127.0.0.3:1";
+        if (cachedMetadata)
+            invalid.spec.torrent.metadata = complete.metadata;
+        const auto previous = proxy.snapshot();
+        maskpilot::TransferControl invalidControl;
+        const auto rejected =
+            run(factory, invalid, fixture.temporary.path / "work" / invalid.id, invalidControl);
+        EXPECT_FALSE(rejected.timedOut) << rejected.diagnostics();
+        EXPECT_EQ(rejected.terminals, 1);
+        EXPECT_EQ(rejected.terminal.outcome, maskpilot::TransferOutcome::Attention) << rejected.diagnostics();
+        EXPECT_EQ(rejected.terminal.error.find("wrong-secret"), std::string::npos);
+        EXPECT_EQ(rejected.terminal.error.find("fixture-secret"), std::string::npos);
+        EXPECT_EQ(rejected.metadata, nullptr);
+        EXPECT_FALSE(std::filesystem::exists(invalid.spec.destination));
+        const auto after = proxy.snapshot();
+        EXPECT_GT(after.value("auth_rejected").toInt(), previous.value("auth_rejected").toInt());
+        EXPECT_EQ(after.value("forwarded_bytes").toDouble(), before.value("forwarded_bytes").toDouble());
+    }
+}
+
+TEST(TorrentProxy, UnreachablePeerAndTrackerDoNotPoisonHealthyAlternates) {
+    for (const auto* kind : {"http", "socks5"}) {
+        SCOPED_TRACE(kind);
+        TorrentFixture fixture;
+        RecordingProxyFixture proxy(kind);
+        auto params =
+            lt::load_torrent_buffer(lt::span<char const>(fixture.metadata->data(), fixture.metadata->size()));
+        params.trackers.insert(params.trackers.begin(), "http://127.0.0.1:1/announce");
+        params.tracker_tiers.assign(params.trackers.size(), 1);
+        params.tracker_tiers.front() = 0;
+        params.peers = {{boost::asio::ip::make_address("127.0.0.1"), 1},
+                        {boost::asio::ip::make_address("127.0.0.1"), fixture.seed->listen_port()}};
+        auto task = fixture.task(fixture.temporary.path / "alternates", true);
+        task.spec.url = lt::make_magnet_uri(params);
+        task.spec.proxy = proxy.endpoint();
+        maskpilot::TransferControl control;
+        const auto result = run(localFactory(), task, fixture.temporary.path / "work" / task.id, control);
+        expectComplete(result);
+        fixture.expectPayload(task.spec.destination);
+        bool failedDestinationAttempted = false, healthyPeerAttempted = false;
+        for (const auto& entry : proxy.snapshot().value("destinations").toArray()) {
+            failedDestinationAttempted |= entry.toObject().value("port").toInt() == 1;
+            healthyPeerAttempted |= entry.toObject().value("port").toInt() == fixture.seed->listen_port();
+        }
+        EXPECT_TRUE(failedDestinationAttempted);
+        EXPECT_TRUE(healthyPeerAttempted);
+    }
+}
+
+TEST(TorrentProxy, OneUnavailableSourceDoesNotAbortAnotherJobUsingTheSameRoute) {
+    TorrentFixture fixture;
+    RecordingProxyFixture proxy("http");
+    auto badEntry = fixture.metadataEntry;
+    badEntry["info"]["name"] = "unavailable-bundle";
+    badEntry["announce"] = "http://127.0.0.1:1/announce";
+    badEntry.dict().erase("announce-list");
+    auto bad = fixture.task(fixture.temporary.path / "unavailable");
+    bad.spec.torrent.metadata = std::make_shared<const std::vector<char>>(encode(badEntry));
+    bad.spec.proxy = proxy.endpoint();
+    auto good = fixture.task(fixture.temporary.path / "healthy");
+    good.spec.proxy = proxy.endpoint();
+    const auto factory = localFactory();
+    maskpilot::TransferControl badControl, goodControl;
+    std::atomic_bool waiting = false;
+    auto blocked = std::async(std::launch::async, [&] {
+        return run(factory, bad, fixture.temporary.path / "work" / bad.id, badControl,
+                   [&](const auto& event) {
+                       if (event.phase == maskpilot::TaskState::Downloading)
+                           waiting = true;
+                   });
+    });
+    const auto deadline = std::chrono::steady_clock::now() + 5s;
+    while (!waiting && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(10ms);
+    EXPECT_TRUE(waiting);
+    const auto result = run(factory, good, fixture.temporary.path / "work" / good.id, goodControl);
+    badControl.cancel = true;
+    const auto unavailable = blocked.get();
+    expectComplete(result);
+    fixture.expectPayload(good.spec.destination);
+    EXPECT_FALSE(unavailable.timedOut);
+    EXPECT_EQ(unavailable.terminal.outcome, maskpilot::TransferOutcome::Cancelled);
+    EXPECT_TRUE(unavailable.terminal.error.empty());
+    EXPECT_FALSE(std::filesystem::exists(bad.spec.destination));
+}
 
 TEST(TorrentEngine, LocalTorrentTransfersVerifiedFilesWithoutPublicDiscovery) {
     TorrentFixture fixture(lt::create_torrent::v1_only, "下载目录");

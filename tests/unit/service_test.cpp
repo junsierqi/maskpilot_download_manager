@@ -9,8 +9,10 @@
 #include <QJsonDocument>
 #include <QLineEdit>
 #include <QMessageBox>
+#include <QPixmap>
 #include <QPushButton>
 #include <QSettings>
+#include <QTabWidget>
 #include <QTableView>
 #include <QTemporaryDir>
 #include <QTimer>
@@ -310,7 +312,8 @@ TEST(TaskControl, ResumePreservesFutureStopDeadline) {
     service.cancel(id);
 }
 TEST(DesktopFlow, AddDialogCreatesPausedTaskThroughActualWidgets) {
-    qputenv("QT_QPA_PLATFORM", "offscreen");
+    qputenv("QT_QPA_PLATFORM",
+            qEnvironmentVariableIsSet("MASKPILOT_TEST_NATIVE_UI") ? "windows" : "offscreen");
     int argc = 1;
     char program[] = "MaskPilotUiTest";
     char* argv[] = {program, nullptr};
@@ -336,6 +339,28 @@ TEST(DesktopFlow, AddDialogCreatesPausedTaskThroughActualWidgets) {
         ASSERT_NE(destination, nullptr);
         ASSERT_NE(paused, nullptr);
         ASSERT_NE(confirm, nullptr);
+        auto* proxy = modal->findChild<QLineEdit*>("proxyEndpoint");
+        auto* proxyUser = modal->findChild<QLineEdit*>("proxyUsername");
+        auto* proxyPassword = modal->findChild<QLineEdit*>("proxyPassword");
+        ASSERT_NE(proxy, nullptr);
+        ASSERT_NE(proxyUser, nullptr);
+        ASSERT_NE(proxyPassword, nullptr);
+        auto* tabs = modal->findChild<QTabWidget*>();
+        ASSERT_NE(tabs, nullptr);
+        tabs->setCurrentWidget(proxy->parentWidget());
+        EXPECT_TRUE(proxy->isVisible());
+        EXPECT_EQ(proxyPassword->echoMode(), QLineEdit::Password);
+        proxy->setText("socks5://127.0.0.1:1080");
+        proxyUser->setText("widget-proxy-user");
+        proxyPassword->setText("widget-proxy-password");
+        auto* required = modal->findChild<QCheckBox*>("proxyAuthenticationRequired");
+        ASSERT_NE(required, nullptr);
+        EXPECT_TRUE(required->isChecked());
+        if (const auto screenshot = qEnvironmentVariable("MASKPILOT_TEST_PROXY_SCREENSHOT");
+            !screenshot.isEmpty()) {
+            QApplication::processEvents();
+            EXPECT_TRUE(modal->grab().save(screenshot));
+        }
         destination->setText(temporary.filePath("widget-flow.bin"));
         paused->setChecked(true);
         exercised = true;
@@ -351,6 +376,10 @@ TEST(DesktopFlow, AddDialogCreatesPausedTaskThroughActualWidgets) {
     ASSERT_EQ(tasks.size(), 1);
     EXPECT_EQ(tasks[0].state, maskpilot::TaskState::Paused);
     EXPECT_EQ(tasks[0].spec.destination.filename(), std::filesystem::path("widget-flow.bin"));
+    EXPECT_EQ(tasks[0].spec.proxy, "socks5://127.0.0.1:1080");
+    EXPECT_EQ(tasks[0].spec.proxyUsername, "widget-proxy-user");
+    EXPECT_EQ(tasks[0].spec.proxyPassword, "widget-proxy-password");
+    EXPECT_TRUE(tasks[0].spec.proxyAuthenticationRequired);
 }
 TEST(DesktopFlow, ExportImportPreservesMediaModeWithoutExportingLoginHeaders) {
     qputenv("QT_QPA_PLATFORM", "offscreen");
@@ -378,6 +407,9 @@ TEST(DesktopFlow, ExportImportPreservesMediaModeWithoutExportingLoginHeaders) {
     file.destination = root / "direct.bin";
     file.cookie = "fixture-private-session";
     file.authorization = "Bearer fixture-private-header";
+    file.proxy = "http://proxy.example.test:8080";
+    file.proxyUsername = "fixture-private-proxy-user";
+    file.proxyPassword = "fixture-private-proxy-password";
     file.startPaused = true;
     service.add(file).get();
     auto media = file;
@@ -456,9 +488,13 @@ TEST(DesktopFlow, ExportImportPreservesMediaModeWithoutExportingLoginHeaders) {
     json.close();
     EXPECT_FALSE(bytes.contains("fixture-private-session"));
     EXPECT_FALSE(bytes.contains("fixture-private-header"));
+    EXPECT_FALSE(bytes.contains("fixture-private-proxy-user"));
+    EXPECT_FALSE(bytes.contains("fixture-private-proxy-password"));
     const auto saved = QJsonDocument::fromJson(bytes).object().value("downloads").toArray();
     ASSERT_EQ(saved.size(), 2);
     bool foundMedia = false;
+    for (const auto& entry : saved)
+        EXPECT_TRUE(entry.toObject().value("proxyAuthenticationRequired").toBool());
     for (const auto& entry : saved)
         if (entry.toObject().value("url").toString().contains("playlist")) {
             foundMedia = true;
@@ -481,6 +517,10 @@ TEST(DesktopFlow, ExportImportPreservesMediaModeWithoutExportingLoginHeaders) {
         EXPECT_EQ(task.state, maskpilot::TaskState::Paused);
         EXPECT_TRUE(task.spec.cookie.empty());
         EXPECT_TRUE(task.spec.authorization.empty());
+        EXPECT_EQ(task.spec.proxy, file.proxy);
+        EXPECT_TRUE(task.spec.proxyAuthenticationRequired);
+        EXPECT_TRUE(task.spec.proxyUsername.empty());
+        EXPECT_TRUE(task.spec.proxyPassword.empty());
         if (task.spec.url == media.url) {
             EXPECT_TRUE(task.spec.kind == maskpilot::TransferKind::Media);
             EXPECT_TRUE(task.spec.audioOnly);

@@ -42,6 +42,36 @@ TEST(MediaArguments, AudioAndVideoHaveExplicitContainers) {
     EXPECT_TRUE(args.contains("--remux-video"));
     EXPECT_TRUE(args.contains("mkv"));
 }
+TEST(MediaProxy, RequiresPrivateCredentialsBeforeLaunchingAnyHelper) {
+    QTemporaryDir temporary;
+    ASSERT_TRUE(temporary.isValid());
+    maskpilot::Task task;
+    task.id = maskpilot::newTaskId();
+    task.spec.kind = maskpilot::TransferKind::Media;
+    task.spec.url = "https://example.test/video";
+    task.spec.destination = std::filesystem::path(temporary.filePath("video.mkv").toStdWString());
+    task.spec.proxy = "http://127.0.0.1:1080";
+    task.spec.proxyUsername = "media-private-user";
+    task.spec.proxyPassword = "media-private-password";
+    const auto args = maskpilot::mediaArguments(task, std::filesystem::temp_directory_path(), 0);
+    EXPECT_FALSE(args.join(' ').contains("media-private-user"));
+    EXPECT_FALSE(args.join(' ').contains("media-private-password"));
+    maskpilot::TransferControl control;
+    int terminals = 0;
+    maskpilot::makeMediaTransfer()->run(
+        task, std::filesystem::path(temporary.path().toStdWString()) / "work", control,
+        [&](const auto& event) {
+            if (event.outcome == maskpilot::TransferOutcome::Progress)
+                return;
+            ++terminals;
+            EXPECT_EQ(event.outcome, maskpilot::TransferOutcome::Attention);
+            EXPECT_NE(event.error.find("private credential"), std::string::npos);
+            EXPECT_EQ(event.error.find(task.spec.proxyPassword), std::string::npos);
+        });
+    EXPECT_EQ(terminals, 1);
+    EXPECT_FALSE(std::filesystem::exists(task.spec.destination));
+    EXPECT_TRUE(QDir(temporary.path()).entryList(QDir::NoDotAndDotDot | QDir::AllEntries).isEmpty());
+}
 TEST(Migration, PreservesVersionOneTasksAndCreatesBackup) {
     auto folder = std::filesystem::temp_directory_path() / ("maskpilot-migration-" + maskpilot::newTaskId());
     std::filesystem::create_directories(folder);

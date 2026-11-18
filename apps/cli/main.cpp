@@ -1,10 +1,13 @@
 #include <algorithm>
+#include <cctype>
 #include <charconv>
 #include <chrono>
+#include <cstdlib>
 #include <iostream>
 #include <maskpilot/application/download_service.h>
 #include <maskpilot/infrastructure/adapters.h>
 #include <maskpilot/infrastructure/torrent_engine.h>
+#include <memory>
 #include <thread>
 #ifdef _WIN32
 #include <windows.h>
@@ -18,10 +21,28 @@ std::int64_t integerValue(const std::string& text) {
         throw std::invalid_argument("Expected an integer option value.");
     return value;
 }
+std::string credentialFromEnvironment(const std::string& name) {
+#ifdef _WIN32
+    char* raw = nullptr;
+    std::size_t size = 0;
+    const auto result = _dupenv_s(&raw, &size, name.c_str());
+    const std::unique_ptr<char, decltype(&std::free)> secret(raw, std::free);
+    if (result != 0 || !raw)
+        throw std::invalid_argument("Proxy credential environment variable is unavailable.");
+    return raw;
+#else
+    const auto* secret = std::getenv(name.c_str());
+    if (!secret)
+        throw std::invalid_argument("Proxy credential environment variable is unavailable.");
+    return secret;
+#endif
+}
 void readOptions(maskpilot::DownloadSpec& spec, int argc, char** argv, int start) {
     for (int n = start; n < argc; ++n) {
         const std::string option = argv[n];
-        if (option == "--ftp-explicit-tls")
+        if (option == "--proxy-auth-required")
+            spec.proxyAuthenticationRequired = true;
+        else if (option == "--ftp-explicit-tls")
             spec.ftpExplicitTls = true;
         else if (option == "--ftp-active")
             spec.ftpActiveMode = true;
@@ -48,7 +69,18 @@ void readOptions(maskpilot::DownloadSpec& spec, int argc, char** argv, int start
                 spec.expectedSha256 = value;
             else if (option == "--proxy")
                 spec.proxy = value;
-            else if (option == "--ftp-user")
+            else if (option == "--proxy-user")
+                spec.proxyUsername = value;
+            else if (option == "--proxy-password")
+                spec.proxyPassword = value;
+            else if (option == "--proxy-user-env" || option == "--proxy-password-env") {
+                if (value.empty() || value.size() > 128 ||
+                    !std::all_of(value.begin(), value.end(),
+                                 [](unsigned char c) { return std::isalnum(c) || c == '_'; }))
+                    throw std::invalid_argument("Invalid proxy credential environment variable name.");
+                (option == "--proxy-user-env" ? spec.proxyUsername : spec.proxyPassword) =
+                    credentialFromEnvironment(value);
+            } else if (option == "--ftp-user")
                 spec.ftpUsername = value;
             else if (option == "--ftp-password")
                 spec.ftpPassword = value;
@@ -93,6 +125,8 @@ int runClient(int argc, char** argv) {
                "[connections] [sha256]\n       maskpilot_cli --resume TASK_ID DATA_DIRECTORY [options]\n"
                "Options: --connections N --sha256 HEX --proxy URL --ftp-user USER --ftp-password PASS\n"
                "         --ftp-explicit-tls --ftp-active --ftp-ca PEM_FILE\n";
+        std::cout << "Proxy: --proxy-user-env NAME --proxy-password-env NAME --proxy-auth-required\n"
+                     "       --proxy-user USER --proxy-password PASS (visible in process arguments)\n";
         std::cout << "Torrent: local.torrent or magnet:? URI, destination is a new directory.\n"
                      "         --choose-files --select-files 0,2 --all-files --seed --no-seed --upload-limit "
                      "BYTES\n"

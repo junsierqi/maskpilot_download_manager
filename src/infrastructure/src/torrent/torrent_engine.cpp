@@ -2,20 +2,25 @@
 #include "torrent_internal.h"
 #include <algorithm>
 #include <boost/asio/error.hpp>
+#include <boost/asio/io_context.hpp>
+#include <boost/asio/ip/tcp.hpp>
 #include <chrono>
 #include <condition_variable>
 #include <fstream>
 #include <libtorrent/alert_types.hpp>
+#include <libtorrent/peer_info.hpp>
 #include <libtorrent/read_resume_data.hpp>
 #include <libtorrent/session.hpp>
 #include <libtorrent/session_params.hpp>
 #include <libtorrent/settings_pack.hpp>
+#include <libtorrent/socks5_stream.hpp>
 #include <libtorrent/torrent_flags.hpp>
 #include <libtorrent/torrent_handle.hpp>
 #include <libtorrent/torrent_info.hpp>
 #include <libtorrent/write_resume_data.hpp>
 #include <limits>
 #include <map>
+#include <maskpilot/domain/proxy.h>
 #include <mutex>
 #include <optional>
 #include <random>
@@ -23,6 +28,7 @@
 #include <stdexcept>
 #include <string_view>
 #include <thread>
+#include <tuple>
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -36,6 +42,40 @@ using Clock = std::chrono::steady_clock;
 using namespace std::chrono_literals;
 constexpr std::size_t maxResumeBytes = 32 * 1024 * 1024;
 bool stopped(const TransferControl& control) { return control.pause || control.cancel; }
+struct ProxyCheckStopped {};
+void checkProxyEndpoint(const DownloadSpec& spec, const TransferControl& control) {
+    if (stopped(control))
+        throw ProxyCheckStopped{};
+    const auto proxy = parseProxyEndpoint(spec.proxy);
+    if (proxy.type == ProxyType::Direct)
+        return;
+    // Only literal IP reachability is preflighted. Hostname proxies use the native
+    // resolver, whose OS lookup latency is outside this five-second connect bound.
+    // Destination DNS remains proxy-side; no direct origin connection is made.
+    boost::system::error_code addressError;
+    const auto address = boost::asio::ip::make_address(proxy.host, addressError);
+    if (addressError)
+        return;
+    boost::asio::io_context context;
+    boost::asio::ip::tcp::socket socket(context);
+    bool complete = false;
+    boost::system::error_code result;
+    socket.async_connect({address, static_cast<unsigned short>(proxy.port)}, [&](const auto& error) {
+        result = error;
+        complete = true;
+    });
+    const auto deadline = Clock::now() + 5s;
+    while (!complete && !stopped(control) && Clock::now() < deadline)
+        context.run_for(10ms);
+    boost::system::error_code ignored;
+    socket.close(ignored);
+    context.stop();
+    if (stopped(control))
+        throw ProxyCheckStopped{};
+    if (!complete || result)
+        throw std::runtime_error(
+            "Cannot reach the configured proxy endpoint. Check its address and availability.");
+}
 bool validId(const std::string& id) {
     return id.size() == 32 && std::all_of(id.begin(), id.end(), [](unsigned char c) {
                return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
@@ -234,7 +274,9 @@ struct Job {
     lt::torrent_handle handle;
     std::mutex mutex;
     std::condition_variable changed;
-    bool paused = false, removed = false, failed = false;
+    bool paused = false, removed = false, failed = false, proxyAuthenticationFailed = false;
+    bool finiteHintSource = false, peerEverConnected = false, hintedTunnelsRejected = false;
+    std::set<lt::tcp::endpoint> remainingHints;
     std::uint64_t resumeSerial = 0;
     std::shared_ptr<const std::vector<char>> resume;
     bool resumeFailed = false;
@@ -244,6 +286,8 @@ class Runtime {
     std::mutex jobsMutex_, shutdownMutex_;
     std::map<lt::torrent_handle, std::shared_ptr<Job>> jobs_;
     std::atomic_bool alive_{true};
+    const bool proxied_;
+    const bool httpProxy_;
     const bool automaticListenPorts_;
     const std::string originalListenInterfaces_;
     std::atomic_uint listenRetries_{0};
@@ -294,7 +338,7 @@ class Runtime {
         return result;
     }
 
-    static lt::settings_pack settings(const TorrentRuntimeOptions& options) {
+    static lt::settings_pack settings(const TorrentRuntimeOptions& options, const DownloadSpec& route) {
         lt::settings_pack settings;
         settings.set_str(lt::settings_pack::listen_interfaces, options.listenInterfaces);
         settings.set_str(lt::settings_pack::user_agent, defaultUserAgent);
@@ -309,6 +353,30 @@ class Runtime {
                 lt::alert_category::peer | lt::alert_category::connect | lt::alert_category::tracker)));
         settings.set_int(lt::settings_pack::alert_queue_size, 10000);
         settings.set_int(lt::settings_pack::max_metadata_size, static_cast<int>(maxTorrentMetadataBytes));
+        const auto proxy = parseProxyEndpoint(route.proxy);
+        if (proxy.type != ProxyType::Direct) {
+            // A proxy listener is a native logical UDP route, never an incoming TCP listener.
+            // Port zero is allocated by UDP itself; no TCP/UDP ephemeral-range mismatch.
+            settings.set_str(lt::settings_pack::listen_interfaces, "0.0.0.0:0");
+            settings.set_str(lt::settings_pack::proxy_hostname, proxy.host);
+            settings.set_int(lt::settings_pack::proxy_port, proxy.port);
+            const bool authenticated = !route.proxyUsername.empty();
+            settings.set_int(lt::settings_pack::proxy_type,
+                             proxy.type == ProxyType::Socks5
+                                 ? (authenticated ? lt::settings_pack::socks5_pw : lt::settings_pack::socks5)
+                                 : (authenticated ? lt::settings_pack::http_pw : lt::settings_pack::http));
+            settings.set_str(lt::settings_pack::proxy_username, route.proxyUsername);
+            settings.set_str(lt::settings_pack::proxy_password, route.proxyPassword);
+            settings.set_bool(lt::settings_pack::proxy_hostnames, true);
+            settings.set_bool(lt::settings_pack::proxy_peer_connections, true);
+            settings.set_bool(lt::settings_pack::proxy_tracker_connections, true);
+            settings.set_bool(lt::settings_pack::proxy_send_host_in_connect, true);
+            for (const auto option :
+                 {lt::settings_pack::enable_dht, lt::settings_pack::enable_lsd,
+                  lt::settings_pack::enable_upnp, lt::settings_pack::enable_natpmp,
+                  lt::settings_pack::enable_incoming_utp, lt::settings_pack::enable_outgoing_utp})
+                settings.set_bool(option, false);
+        }
         return settings;
     }
     void dispatch(std::stop_token stop) try {
@@ -328,10 +396,12 @@ class Runtime {
                     ++peerDisconnects_;
                     peerError_ = disconnected->error.value();
                 }
-                if (const auto* failed = lt::alert_cast<lt::peer_error_alert>(alert))
+                if (const auto* failed = lt::alert_cast<lt::peer_error_alert>(alert)) {
                     peerError_ = failed->error.value();
-                if (const auto* failed = lt::alert_cast<lt::tracker_error_alert>(alert))
+                }
+                if (const auto* failed = lt::alert_cast<lt::tracker_error_alert>(alert)) {
                     trackerError_ = failed->error.value();
+                }
                 if (lt::alert_cast<lt::tracker_reply_alert>(alert))
                     ++trackerReplies_;
                 if (const auto* failed = lt::alert_cast<lt::listen_failed_alert>(alert);
@@ -363,6 +433,41 @@ class Runtime {
                 if (!job)
                     continue;
                 std::lock_guard lock(job->mutex);
+                const auto* peerFailure = lt::alert_cast<lt::peer_error_alert>(alert);
+                const auto* disconnect = lt::alert_cast<lt::peer_disconnected_alert>(alert);
+                const auto connectionError = peerFailure  ? peerFailure->error
+                                             : disconnect ? disconnect->error
+                                                          : lt::error_code{};
+                const auto* connected = lt::alert_cast<lt::peer_connect_alert>(alert);
+                if (connected && connected->direction == lt::peer_connect_alert::direction_t::in) {
+                    job->peerEverConnected = true;
+                    job->finiteHintSource = false;
+                    job->hintedTunnelsRejected = false;
+                    job->remainingHints.clear();
+                }
+                const bool connectFailure = (peerFailure && peerFailure->op == lt::operation_t::connect) ||
+                                            (disconnect && disconnect->op == lt::operation_t::connect);
+                if (job->finiteHintSource && !job->peerEverConnected && connectFailure &&
+                    connectionError == boost::asio::error::operation_not_supported) {
+                    // Native HTTP CONNECT maps every non-200 response to this code,
+                    // including both authentication and destination-policy failures.
+                    const auto* peer = dynamic_cast<const lt::peer_alert*>(alert);
+                    if (peer)
+                        if (const auto* endpoint = std::get_if<0>(&peer->ep))
+                            job->remainingHints.erase(*endpoint);
+                    job->hintedTunnelsRejected = job->remainingHints.empty();
+                }
+                if (proxied_ && (connectionError == lt::socks_error::authentication_error ||
+                                 connectionError == lt::socks_error::unsupported_authentication_method ||
+                                 connectionError == lt::socks_error::username_required))
+                    job->proxyAuthenticationFailed = true;
+                if (const auto* trackerFailure = lt::alert_cast<lt::tracker_error_alert>(alert);
+                    proxied_ && trackerFailure &&
+                    (trackerFailure->error.value() == 407 ||
+                     trackerFailure->error == lt::socks_error::authentication_error ||
+                     trackerFailure->error == lt::socks_error::unsupported_authentication_method ||
+                     trackerFailure->error == lt::socks_error::username_required))
+                    job->proxyAuthenticationFailed = true;
                 if (lt::alert_cast<lt::torrent_paused_alert>(alert))
                     job->paused = true;
                 else if (lt::alert_cast<lt::torrent_removed_alert>(alert))
@@ -406,13 +511,40 @@ class Runtime {
     }
 
   public:
-    explicit Runtime(const TorrentRuntimeOptions& options)
-        : session_(lt::session_params(settings(options))),
-          automaticListenPorts_(automaticListenPorts(options.listenInterfaces)),
+    Runtime(const TorrentRuntimeOptions& options, const DownloadSpec& route)
+        : session_(lt::session_params(settings(options, route))), proxied_(!route.proxy.empty()),
+          httpProxy_(parseProxyEndpoint(route.proxy).type == ProxyType::Http),
+          automaticListenPorts_(route.proxy.empty() && automaticListenPorts(options.listenInterfaces)),
           originalListenInterfaces_(options.listenInterfaces),
           dispatcher_([this](std::stop_token stop) { dispatch(stop); }) {}
     ~Runtime() { abortAll(); }
     bool alive() const { return alive_; }
+    bool proxyAuthenticationFailed(const std::shared_ptr<Job>& job) const {
+        std::lock_guard lock(job->mutex);
+        return job->proxyAuthenticationFailed;
+    }
+    bool hintedTunnelsRejected(const std::shared_ptr<Job>& job) const {
+        {
+            std::lock_guard lock(job->mutex);
+            if (!job->finiteHintSource)
+                return false;
+        }
+        // Outgoing peer_connect_alert is posted when async_connect is scheduled,
+        // not when its tunnel succeeds. Query actual completed peer handshakes.
+        std::vector<lt::peer_info> peers;
+        job->handle.get_peer_info(peers);
+        const bool established = std::any_of(peers.begin(), peers.end(), [](const auto& peer) {
+            return !(peer.flags & (lt::peer_info::connecting | lt::peer_info::handshake));
+        });
+        std::lock_guard lock(job->mutex);
+        if (established) {
+            job->peerEverConnected = true;
+            job->finiteHintSource = false;
+            job->hintedTunnelsRejected = false;
+            job->remainingHints.clear();
+        }
+        return !job->peerEverConnected && job->hintedTunnelsRejected;
+    }
     std::string networkDiagnostics() const {
         // Shared-session counters contain no endpoints, URLs, passkeys or server text.
         return " [BT net listening=" + std::to_string(session_.is_listening()) +
@@ -420,7 +552,7 @@ class Runtime {
                " bind=" + std::to_string(bindError_.load()) +
                " bindFailures=" + std::to_string(bindFailures_.load()) +
                " retries=" + std::to_string(listenRetries_.load()) +
-               " connected=" + std::to_string(peerConnects_.load()) +
+               " connectEvents=" + std::to_string(peerConnects_.load()) +
                " disconnected=" + std::to_string(peerDisconnects_.load()) +
                " peerError=" + std::to_string(peerError_.load()) +
                " trackerError=" + std::to_string(trackerError_.load()) +
@@ -444,8 +576,10 @@ class Runtime {
         }
         jobs_.clear();
     }
-    std::shared_ptr<Job> add(lt::add_torrent_params params, const TransferControl& control) {
-        // Tracker endpoints and outgoing uTP require a genuine listening socket.
+    std::shared_ptr<Job> add(lt::add_torrent_params params, const TransferControl& control,
+                             bool allowFiniteHintSource = true) {
+        // Tracker endpoints require a native route socket, including the logical
+        // UDP socket of proxy sessions (which never accepts direct TCP peers).
         // Do not let initial peer attempts acquire reconnect backoff during startup.
         const auto deadline = Clock::now() + 5s;
         for (;;) {
@@ -463,15 +597,29 @@ class Runtime {
         if (stopped(control))
             return {};
         auto job = std::make_shared<Job>();
+        // Under ABI 100 all metainfo tracker/web-seed sources live in these
+        // add parameters, including sources loaded from an authoritative ti.
+        job->finiteHintSource = allowFiniteHintSource && httpProxy_ && params.trackers.empty() &&
+                                params.url_seeds.empty() && !params.peers.empty() &&
+                                params.peers.size() <= 256 &&
+                                !(params.flags & lt::torrent_flags::upload_mode);
+        if (job->finiteHintSource) {
+            // Match native peer_list::add_peer's unconditional ignored entries;
+            // these never become candidates and never emit connect-rejection alerts.
+            for (const auto& peer : params.peers)
+                if (peer.address() != lt::address{} && peer.port() > 1)
+                    job->remainingHints.insert(peer);
+            job->finiteHintSource = !job->remainingHints.empty();
+        }
         lt::error_code error;
+        // add_torrent posts alerts but does not await our dispatcher. Keep its
+        // fast failures queued behind registration instead of dropping them.
+        std::lock_guard lock(jobsMutex_);
         job->handle = session_.add_torrent(std::move(params), error);
         if (error || !job->handle.is_valid())
             throw std::runtime_error(
                 "Cannot add torrent. It may already be active or its metadata is invalid.");
-        {
-            std::lock_guard lock(jobsMutex_);
-            jobs_.emplace(job->handle, job);
-        }
+        jobs_.emplace(job->handle, job);
         return job;
     }
     std::shared_ptr<const std::vector<char>> snapshot(const std::shared_ptr<Job>& job) {
@@ -546,12 +694,21 @@ class Runtime {
 struct LazyRuntime {
     TorrentRuntimeOptions options;
     std::mutex mutex;
-    std::shared_ptr<Runtime> runtime;
+    // Private process-local keys are never serialized/logged. Idle sessions expire;
+    // their credential-bearing keys are pruned on the next acquisition or destruction.
+    using RouteKey = std::tuple<ProxyType, std::string, int, std::string, std::string>;
+    std::map<RouteKey, std::weak_ptr<Runtime>> runtimes;
     explicit LazyRuntime(TorrentRuntimeOptions configured) : options(std::move(configured)) {}
-    std::shared_ptr<Runtime> get() {
+    std::shared_ptr<Runtime> get(const DownloadSpec& route) {
         std::lock_guard lock(mutex);
-        if (!runtime || !runtime->alive())
-            runtime = std::make_shared<Runtime>(options);
+        std::erase_if(runtimes, [](const auto& entry) { return entry.second.expired(); });
+        const auto proxy = parseProxyEndpoint(route.proxy);
+        RouteKey key{proxy.type, proxy.host, proxy.port, route.proxyUsername, route.proxyPassword};
+        auto runtime = runtimes[key].lock();
+        if (!runtime || !runtime->alive()) {
+            runtime = std::make_shared<Runtime>(options, route);
+            runtimes[std::move(key)] = runtime;
+        }
         return runtime;
     }
 };
@@ -622,11 +779,13 @@ class TorrentTransfer final : public ITransferTransport {
         TransferOutcome outcome = TransferOutcome::Attention;
         std::string error;
         try {
-            if (!task.spec.proxy.empty())
-                throw std::invalid_argument("BitTorrent proxy routing is not implemented. Clear this task's "
-                                            "proxy to use a direct connection.");
             if (const auto invalid = validateSpec(task.spec); !invalid.empty())
                 throw std::invalid_argument(invalid);
+            if (const auto invalid = validateProxy(task.spec, true); !invalid.empty())
+                throw std::invalid_argument(invalid);
+            if (parseProxyEndpoint(task.spec.proxy).type == ProxyType::Https)
+                throw std::invalid_argument(
+                    "BitTorrent does not support TLS-to-proxy connections. Use an HTTP or SOCKS5 proxy.");
             auto parsed = ti::parse(task.spec);
             storage = storageFor(task, work, parsed.description.infoHash, true);
             event.torrentPublished = storage->published;
@@ -670,7 +829,8 @@ class TorrentTransfer final : public ITransferTransport {
             } else if (parsed.description.files && !hasSelection(parsed.description, task.spec.torrent)) {
                 outcome = TransferOutcome::SelectionRequired;
             } else {
-                runtime = owner_->get();
+                checkProxyEndpoint(task.spec, control);
+                runtime = owner_->get(task.spec);
                 job = runtime->add(parameters(parsed, task, *storage, storage->published, control), control);
                 bool haveMetadata = static_cast<bool>(parsed.description.files);
                 bool prioritiesReady = haveMetadata;
@@ -685,6 +845,11 @@ class TorrentTransfer final : public ITransferTransport {
                     if (!runtime->alive())
                         throw std::runtime_error(
                             "Torrent engine stopped before storage ownership was released.");
+                    if (runtime->proxyAuthenticationFailed(job))
+                        throw std::runtime_error("Proxy authentication failed. Check the proxy credentials.");
+                    if (runtime->hintedTunnelsRejected(job))
+                        throw std::runtime_error("Proxy tunnels to all supplied peers were rejected. Check "
+                                                 "proxy credentials and peer availability.");
                     const auto status = job->handle.status();
                     if (status.errc)
                         throw std::runtime_error("Torrent transfer or file verification failed. Check "
@@ -737,7 +902,7 @@ class TorrentTransfer final : public ITransferTransport {
                             break;
                         }
                         job = runtime->add(parameters(parsed, task, *storage, storage->published, control),
-                                           control);
+                                           control, false);
                         prioritiesReady = true;
                         lastDownloadLimit = lastUploadLimit = -1;
                         lastSave = Clock::now();
@@ -807,7 +972,7 @@ class TorrentTransfer final : public ITransferTransport {
                         }
                         auto seed = parameters(parsed, task, *storage, true, control);
                         seed.total_uploaded = event.uploaded;
-                        job = runtime->add(std::move(seed), control);
+                        job = runtime->add(std::move(seed), control, false);
                         lastDownloadLimit = lastUploadLimit = -1;
                         lastSave = Clock::now();
                         continue;
@@ -819,6 +984,8 @@ class TorrentTransfer final : public ITransferTransport {
                     std::this_thread::sleep_for(100ms);
                 }
             }
+        } catch (const ProxyCheckStopped&) {
+            outcome = control.cancel ? TransferOutcome::Cancelled : TransferOutcome::Paused;
         } catch (const std::exception& exception) {
             outcome = stopped(control)
                           ? (control.cancel ? TransferOutcome::Cancelled : TransferOutcome::Paused)

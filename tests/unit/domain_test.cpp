@@ -1,6 +1,78 @@
 #include <gtest/gtest.h>
 #include <limits>
+#include <maskpilot/domain/proxy.h>
 #include <maskpilot/domain/task.h>
+
+TEST(Proxy, KeepsProxyHeadersSeparateFromOriginRequestHeaders) {
+    maskpilot::DownloadSpec spec;
+    spec.url = "https://example.test/file";
+    spec.destination = "file.bin";
+    for (const auto* name : {"Proxy-Authorization", "proxy-authorization", "pRoXy-CoNnEcTiOn"}) {
+        spec.headers = {{name, "fixture-value"}};
+        EXPECT_EQ(maskpilot::validateSpec(spec), "This header is controlled by the download engine.");
+    }
+    spec.headers = {{"Authorization", "Bearer origin-fixture"}, {"Cookie", "session=origin-fixture"}};
+    EXPECT_TRUE(maskpilot::validateSpec(spec).empty());
+}
+
+TEST(Proxy, ParsesOnlyCredentialFreeSupportedEndpoints) {
+    EXPECT_EQ(maskpilot::parseProxyEndpoint("").type, maskpilot::ProxyType::Direct);
+    for (const auto& value : {"http://localhost", "HTTPS://Proxy.Example:443", "socks5://127.0.0.1",
+                              "socks5h://[::1]:1080", "http://[2001:db8::1]", "http://[::ffff:127.0.0.1]"})
+        EXPECT_NO_THROW(maskpilot::parseProxyEndpoint(value)) << value;
+    EXPECT_EQ(maskpilot::parseProxyEndpoint("http://localhost").port, 80);
+    EXPECT_EQ(maskpilot::parseProxyEndpoint("https://localhost").port, 443);
+    EXPECT_EQ(maskpilot::parseProxyEndpoint("socks5://localhost").port, 1080);
+    for (const auto& value : {"localhost:80",
+                              "socks4://localhost:80",
+                              "http://user:secret@host:80",
+                              "http://host/path",
+                              "http://host?query",
+                              "http://host#fragment",
+                              "http://host:",
+                              "http://host:0",
+                              "http://host:65536",
+                              "http://host:-1",
+                              "http://host:+80",
+                              "http://host:80:81",
+                              "http://[:::1]:80",
+                              "http://[1:2:3:4:5:6:7]:80",
+                              "http://[]:80",
+                              "http://::1",
+                              "http://256.1.1.1",
+                              "http://bad_host",
+                              "http://-host",
+                              "http://host\n"})
+        EXPECT_THROW(maskpilot::parseProxyEndpoint(value), std::invalid_argument) << value;
+}
+TEST(Proxy, RequiresProcessLocalCredentialsAndRejectsUnsafeCombinations) {
+    maskpilot::DownloadSpec spec;
+    spec.url = "https://example.test/file";
+    spec.destination = "file.bin";
+    spec.proxy = "socks5h://localhost:1080";
+    spec.proxyAuthenticationRequired = true;
+    EXPECT_TRUE(maskpilot::validateProxy(spec).empty());
+    EXPECT_TRUE(maskpilot::validateSpec(spec).empty());
+    EXPECT_FALSE(maskpilot::validateProxy(spec, true).empty());
+    spec.proxyUsername = "fixture-user";
+    spec.proxyPassword = "fixture-password";
+    EXPECT_TRUE(maskpilot::validateProxy(spec).empty());
+    spec.proxyPassword.assign(256, 'p');
+    EXPECT_FALSE(maskpilot::validateProxy(spec).empty());
+    spec.proxyPassword = std::string("secret\0suffix", 13);
+    EXPECT_FALSE(maskpilot::validateProxy(spec).empty());
+    spec.proxyPassword = "fixture-password";
+    spec.url = "ftp://localhost/file";
+    spec.ftpActiveMode = true;
+    EXPECT_FALSE(maskpilot::validateProxy(spec).empty());
+    spec.ftpActiveMode = false;
+    spec.proxy.clear();
+    EXPECT_FALSE(maskpilot::validateProxy(spec).empty());
+    spec.proxyUsername.clear();
+    spec.proxyPassword.clear();
+    spec.proxyAuthenticationRequired = false;
+    EXPECT_TRUE(maskpilot::validateProxy(spec).empty());
+}
 
 TEST(Segments, PartitionsLargeFilesWithoutGapsOrOverflow) {
     for (auto length : {0LL, 1LL, 7LL, 4294967301LL, std::numeric_limits<long long>::max()}) {

@@ -4,6 +4,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QProcess>
+#include <QProcessEnvironment>
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QStandardPaths>
@@ -170,6 +171,13 @@ class MediaTransfer final : public ITransferTransport {
             event.speed = 0;
             callback(event);
         };
+        if (task.spec.proxyAuthenticationRequired || !task.spec.proxyUsername.empty() ||
+            !task.spec.proxyPassword.empty()) {
+            finish(TransferOutcome::Attention,
+                   "Authenticated media proxy requires a private credential handoff. "
+                   "Use a direct file task until that capability is available.");
+            return;
+        }
         auto stopped = [&]() {
             if (control.cancel) {
                 finish(TransferOutcome::Cancelled);
@@ -206,6 +214,13 @@ class MediaTransfer final : public ITransferTransport {
             event.downloaded = 0;
             event.total = -1;
             QProcess process;
+            auto environment = QProcessEnvironment::systemEnvironment();
+            for (const auto& name : environment.keys())
+                if (const auto lower = name.toLower(); lower == "http_proxy" || lower == "https_proxy" ||
+                                                       lower == "ftp_proxy" || lower == "all_proxy" ||
+                                                       lower == "no_proxy")
+                    environment.remove(name);
+            process.setProcessEnvironment(environment);
             ProcessTree tree;
             process.setProgram(pathString(task.spec.mediaDownloader));
             process.setArguments(mediaArguments(task, media, limit));
@@ -396,8 +411,8 @@ QStringList mediaArguments(const Task& task, const std::filesystem::path& work, 
              << "mkv" << "--remux-video" << "mkv";
     if (speedLimit > 0)
         args << "--limit-rate" << QString::number(speedLimit);
-    if (!task.spec.proxy.empty())
-        args << "--proxy" << QString::fromStdString(task.spec.proxy);
+    // An explicit empty proxy prevents the helper from inheriting ambient proxy configuration.
+    args << "--proxy" << QString::fromStdString(task.spec.proxy);
     if (!task.spec.referrer.empty()) {
         auto referrer = QUrl(QString::fromStdString(task.spec.referrer));
         if ((referrer.scheme() == "http" || referrer.scheme() == "https") && !referrer.host().isEmpty()) {

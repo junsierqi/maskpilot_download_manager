@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <chrono>
 #include <iomanip>
+#include <maskpilot/domain/proxy.h>
 #include <maskpilot/domain/task.h>
 #include <random>
 #include <sstream>
@@ -147,15 +148,8 @@ std::string validateSpec(const DownloadSpec& spec) {
         return "Connections must be between 1 and 8.";
     if (spec.speedLimit < 0 || spec.maxRetries < 0 || spec.maxRetries > 10)
         return "Invalid limits.";
-    if (!spec.proxy.empty()) {
-        auto scheme = spec.proxy.find("://");
-        if (scheme == std::string::npos)
-            return "Proxy must be an HTTP, HTTPS or SOCKS URL.";
-        auto host = spec.proxy.substr(scheme + 3);
-        host = host.substr(0, host.find_first_of("/?#"));
-        if (host.empty() || host.find('@') != std::string::npos)
-            return "Proxy credentials cannot be stored in the proxy URL.";
-    }
+    if (const auto error = validateProxy(spec); !error.empty())
+        return error;
     if (!spec.expectedSha256.empty() && (spec.expectedSha256.size() != 64 ||
                                          !std::all_of(spec.expectedSha256.begin(), spec.expectedSha256.end(),
                                                       [](unsigned char c) { return std::isxdigit(c); })))
@@ -175,7 +169,8 @@ std::string validateSpec(const DownloadSpec& spec) {
         std::transform(lower.begin(), lower.end(), lower.begin(),
                        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         if (lower == "range" || lower == "if-range" || lower == "host" || lower == "accept-encoding" ||
-            lower == "content-length" || lower == "transfer-encoding")
+            lower == "content-length" || lower == "transfer-encoding" || lower == "proxy-authorization" ||
+            lower == "proxy-connection")
             return "This header is controlled by the download engine.";
     }
     return {};

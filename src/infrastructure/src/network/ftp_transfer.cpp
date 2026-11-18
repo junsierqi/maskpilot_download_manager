@@ -1,4 +1,5 @@
 #include "../filesystem/transfer_files.h"
+#include "proxy_options.h"
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -92,8 +93,7 @@ void configure(CURL* easy, const DownloadSpec& spec, TransferControl& control) {
         option(easy, CURLOPT_USERNAME, spec.ftpUsername.c_str());
     if (!spec.ftpPassword.empty())
         option(easy, CURLOPT_PASSWORD, spec.ftpPassword.c_str());
-    if (!spec.proxy.empty())
-        option(easy, CURLOPT_PROXY, spec.proxy.c_str());
+    network::configureProxy(easy, spec);
     if (!spec.ftpCaBundle.empty()) {
         const auto ca = pathText(spec.ftpCaBundle);
         option(easy, CURLOPT_CAINFO, ca.c_str()); // libcurl copies this string.
