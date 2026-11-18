@@ -307,13 +307,17 @@ int main(int argc, char** argv) {
                     audio->setCurrentIndex(1);
                     auto* container = control<QComboBox>(dialog, "mediaContainer");
                     container->setCurrentIndex(container->findData(static_cast<int>(MediaContainer::Mkv)));
+                    // Selection changes post layout requests. Inspect the rendered geometry on the
+                    // next timer turn, independently of whether an optional screenshot is requested.
+                    stage = 2;
+                } else if (stage == 2) {
                     const auto capture = qEnvironmentVariable("MASKPILOT_TEST_MEDIA_SCREENSHOT");
                     auto* status = control<QLabel>(dialog, "mediaInspectionStatus");
                     require(status->height() >= status->heightForWidth(status->width()),
                             "Actual media inspection status is clipped");
                     if (!capture.isEmpty())
                         require(dialog->grab().save(capture), "Cannot capture real media selection");
-                    stage = 2;
+                    stage = 3;
                     control<QPushButton>(dialog, "confirmDownload")->click();
                 }
             } catch (const std::exception& error) {
@@ -353,7 +357,7 @@ int main(int argc, char** argv) {
         modalDeadline.stop();
         if (!failure.empty())
             throw std::runtime_error(failure);
-        require(stage == 2 && complete, "Actual Qt format selection/download timed out");
+        require(stage == 3 && complete, "Actual Qt format selection/download timed out");
         auto probe = QFileInfo(muxer).dir().filePath("ffprobe.exe");
 #ifndef _WIN32
         probe = QFileInfo(muxer).dir().filePath("ffprobe");

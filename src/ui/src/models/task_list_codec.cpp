@@ -56,6 +56,16 @@ int integer(const QJsonObject& object, const char* key, int fallback, int minimu
         invalid();
     return static_cast<int>(number);
 }
+std::int64_t storedBytes(const QJsonObject& object) {
+    if (!object.contains("maxStoredBytes"))
+        return 0;
+    const auto value = object.value("maxStoredBytes");
+    const auto number = value.toDouble(-1);
+    if (!value.isDouble() || !std::isfinite(number) || number != std::floor(number) || number < 0 ||
+        number > 9007199254740991.0)
+        invalid();
+    return static_cast<std::int64_t>(number);
+}
 } // namespace
 QByteArray encodeTaskList(const std::vector<Task>& tasks) {
     if (tasks.size() > 10000)
@@ -65,6 +75,11 @@ QByteArray encodeTaskList(const std::vector<Task>& tasks) {
     for (const auto& task : tasks) {
         const auto& spec = task.spec;
         if (!validateMediaSelection(spec.mediaSelection, spec.audioOnly).empty())
+            invalid();
+        if (spec.maxStoredBytes < 0 || spec.maxStoredBytes > 9007199254740991LL ||
+            ((spec.maxStoredBytes || spec.sameOriginRedirectOnly) &&
+             (sourceKind(spec) != TransferKind::Http ||
+              !(spec.url.starts_with("http://") || spec.url.starts_with("https://")))))
             invalid();
         QJsonObject object{{"url", text(spec.url)},
                            {"destination", pathText(spec.destination)},
@@ -84,6 +99,10 @@ QByteArray encodeTaskList(const std::vector<Task>& tasks) {
                            {"ftpTls", spec.ftpExplicitTls},
                            {"ftpActive", spec.ftpActiveMode},
                            {"ftpCa", pathText(spec.ftpCaBundle)}};
+        if (spec.maxStoredBytes)
+            object.insert("maxStoredBytes", static_cast<double>(spec.maxStoredBytes));
+        if (spec.sameOriginRedirectOnly)
+            object.insert("sameOriginRedirectOnly", true);
         if (spec.kind == TransferKind::Media)
             object.insert("mediaSelection",
                           QJsonObject{{"mode", static_cast<int>(spec.mediaSelection.mode)},
@@ -145,12 +164,17 @@ DecodedTaskList decodeTaskList(const QByteArray& bytes,
         const auto object = entry.toObject();
         keys(object, {"url", "destination", "category", "connections", "proxy", "proxyAuthenticationRequired",
                       "originAuthenticationRequired", "contextBound", "media", "audioOnly", "mediaFormat",
-                      "sha256", "ftpTls", "ftpActive", "ftpCa", "torrent", "mediaSelection"});
+                      "sha256", "ftpTls", "ftpActive", "ftpCa", "torrent", "mediaSelection", "maxStoredBytes",
+                      "sameOriginRedirectOnly"});
+        if (version != 2 && (object.contains("maxStoredBytes") || object.contains("sameOriginRedirectOnly")))
+            invalid();
         const auto url = string(object, "url");
         if (url.isEmpty() || url.size() > 32768)
             invalid();
         auto spec = defaults(url);
         spec.url = url.toStdString();
+        spec.maxStoredBytes = storedBytes(object);
+        spec.sameOriginRedirectOnly = boolean(object, "sameOriginRedirectOnly");
         spec.cookie.clear();
         spec.authorization.clear();
         spec.headers.clear();

@@ -186,8 +186,16 @@ std::string urlPart(const std::string& value, CURLUPart part) {
     return result;
 }
 std::string origin(const std::string& value) {
-    return urlPart(value, CURLUPART_SCHEME) + "://" + urlPart(value, CURLUPART_HOST) + ":" +
-           urlPart(value, CURLUPART_PORT);
+    auto scheme = urlPart(value, CURLUPART_SCHEME), host = urlPart(value, CURLUPART_HOST);
+    const auto lower = [](unsigned char c) {
+        return static_cast<char>(c >= 'A' && c <= 'Z' ? c + ('a' - 'A') : c);
+    };
+    std::transform(scheme.begin(), scheme.end(), scheme.begin(), lower);
+    std::transform(host.begin(), host.end(), host.begin(), lower);
+    const auto port = number(urlPart(value, CURLUPART_PORT));
+    if ((scheme != "http" && scheme != "https") || host.empty() || port < 1 || port > 65535)
+        throw std::runtime_error("Invalid HTTP origin.");
+    return scheme + "://" + host + ":" + std::to_string(port);
 }
 std::string resolveUrl(const std::string& base, const std::string& location) {
     auto* url = curl_url();
@@ -280,6 +288,8 @@ Probe probe(const DownloadSpec& initial, TransferControl& control, bool exactOri
             candidate.url = next;
             if (!validateSpec(candidate).empty())
                 throw std::runtime_error("Server returned an invalid redirect.");
+            if (initial.sameOriginRedirectOnly && origin(initial.url) != origin(next))
+                throw std::runtime_error("Redirect to a different origin was blocked by this task's policy.");
             if (spec.url.starts_with("https://") && next.starts_with("http://"))
                 throw std::runtime_error("Insecure HTTPS downgrade redirect was blocked.");
             if (origin(spec.url) != origin(next)) {
@@ -316,7 +326,8 @@ struct Sink {
     Headers headers;
     FILE* file = nullptr;
     std::filesystem::path part, offsetPath;
-    std::int64_t begin = 0, end = -1, written = 0, total = -1, partOffset = 0;
+    std::int64_t begin = 0, end = -1, written = 0, total = -1, partOffset = 0, maxStoredBytes = 0;
+    bool storedLimitExceeded = false;
     bool ranged = false, validated = false, finished = false;
     std::string expectedEtag, error;
     Clock::time_point checkpointAt = Clock::now();
@@ -388,6 +399,15 @@ struct Sink {
                 sink.error = "Response exceeded the requested file bounds.";
                 return 0;
             }
+            if (sink.maxStoredBytes > 0 &&
+                (sink.partOffset > sink.maxStoredBytes ||
+                 sink.written > sink.maxStoredBytes - sink.partOffset ||
+                 static_cast<std::uint64_t>(length) >
+                     static_cast<std::uint64_t>(sink.maxStoredBytes - sink.partOffset - sink.written))) {
+                sink.storedLimitExceeded = true;
+                sink.error = "Response exceeds this task's stored-byte limit.";
+                return 0;
+            }
             auto saved = fwrite(data, 1, length, sink.file);
             sink.written += static_cast<std::int64_t>(saved);
             if (saved != length) {
@@ -454,6 +474,18 @@ class CurlTransfer final : public ITransferTransport {
                                                               : TransferOutcome::Failed,
                  "Server rejected download (HTTP " + std::to_string(remote.status) + ").",
                  retryStatus(remote.status) || retryCode(remote.code));
+            return;
+        }
+        auto observation = remote.effectiveSpec;
+        observation.url = remote.effectiveUrl;
+        if (remote.effectiveUrl.empty() || remote.effectiveUrl.size() > 32768 ||
+            !validateSpec(observation).empty()) {
+            emit(TransferOutcome::Attention, "Server response URL is invalid.");
+            return;
+        }
+        event.responseUrl = remote.effectiveUrl;
+        if (task.spec.maxStoredBytes > 0 && remote.total > task.spec.maxStoredBytes) {
+            emit(TransferOutcome::Attention, "Resource exceeds this task's stored-byte limit.");
             return;
         }
         bool resumable = remote.ranges && strongEtag(remote.etag) && remote.total >= 0;
@@ -616,6 +648,7 @@ class CurlTransfer final : public ITransferTransport {
                 sink->begin = extent.begin + sink->partOffset;
                 sink->end = extent.end;
                 sink->total = remote.total;
+                sink->maxStoredBytes = task.spec.maxStoredBytes;
                 sink->ranged = resumable;
                 sink->expectedEtag = remote.etag;
                 sink->file = openFile(sink->part, L"ab");
@@ -706,7 +739,8 @@ class CurlTransfer final : public ITransferTransport {
                         const bool valid = sink->validate();
                         if (!sink->error.empty()) {
                             failure = sink->error;
-                            integrityFailure = (sink->ranged &&
+                            integrityFailure = sink->storedLimitExceeded ||
+                                               (sink->ranged &&
                                                 (sink->headers.status == 200 || sink->headers.status == 206 ||
                                                  sink->headers.status == 416)) ||
                                                sink->headers.status == 401 || sink->headers.status == 403;
@@ -805,6 +839,10 @@ class CurlTransfer final : public ITransferTransport {
             emit(integrityFailure ? TransferOutcome::Attention : TransferOutcome::Failed, failure, retryable);
             return;
         }
+        if (task.spec.maxStoredBytes > 0 && event.downloaded > task.spec.maxStoredBytes) {
+            emit(TransferOutcome::Attention, "Downloaded resource exceeds this task's stored-byte limit.");
+            return;
+        }
         if (remote.total >= 0 && event.downloaded != remote.total) {
             emit(TransferOutcome::Failed, "Downloaded byte count does not match the resource.");
             return;
@@ -849,7 +887,11 @@ class CurlTransfer final : public ITransferTransport {
             syncFile(output);
             fclose(output);
             output = nullptr;
-            if (std::filesystem::file_size(stage) != static_cast<std::uint64_t>(event.total))
+            const auto finalSize = std::filesystem::file_size(stage);
+            if (task.spec.maxStoredBytes > 0 &&
+                finalSize > static_cast<std::uint64_t>(task.spec.maxStoredBytes))
+                throw std::runtime_error("Assembled resource exceeds this task's stored-byte limit.");
+            if (finalSize != static_cast<std::uint64_t>(event.total))
                 throw std::runtime_error("Assembled file length is invalid.");
             if (!task.spec.expectedSha256.empty()) {
                 auto expected = task.spec.expectedSha256;

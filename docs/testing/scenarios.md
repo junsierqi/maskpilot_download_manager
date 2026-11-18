@@ -1,5 +1,7 @@
 # 验证场景
 
+原生资源约束使用 `python tests/integration/transfer_constraints_test.py --exercise <cli.exe>`：本地实际服务器覆盖已知／分块／未知长度、8 路范围、崩溃恢复及降低上限、发布同名保护、相对重定向最终地址，以及外来源 TCP 零连接；记录代理下默认端口、主机大小写和 IPv6 的来源等价。探测请求仍可能接收正文并计入流量。CTest `TransferConstraints|RequestConstraints|ResponseMetadata|TransferConstraintStorage` 覆盖隐藏 Qt 字段、严格清单、SQL 10→11 迁移及响应元数据生命周期；协调器桩属 fixture-only，不能替代真实传输。
+
 浏览器开发代码另运行 `node tests/system/browser_test.mjs --build-directory <build> --browser <chromium.exe>` 与 `python tests/system/firefox_test.py --build-directory <build> --extension browser_extension/dist-firefox --browser <firefox.exe> --evidence-directory out/qa/firefox`。二者使用真实扩展、隔离配置和本机桌面，覆盖持久暂停确认、输出哈希、接管与回退、容器及页面面板。实际可信点击与网页 DOM 篡改／程序化点击分开验证；Firefox 实际隐私及分区 Cookie 拒绝保留浏览器文件。临时加载不证明签名发行。
 
 注册所有权测试 `tests/system/browser_registration_test.ps1` 覆盖原值类型、重复注册、外部修改和写日志失败；CTest 将其标记为串行。三个固定 HKCU 默认值在 `finally` 恢复。不要与其他真实浏览器夹具并行运行，防止各自恢复记录交错。纯状态／Cookie 模块负例使用 `npm --prefix browser_extension test`，不替代真实浏览器验收。

@@ -64,6 +64,14 @@ maskpilot_cli C:/Downloads/example.torrent C:/Downloads/example C:/Downloads/sta
 ```
 
 命令行是限时验证客户端；需要持续下载或做种时使用桌面程序。
+
+原生 HTTP 任务可设置正文文件上限及同来源重定向策略，例如：
+
+```powershell
+maskpilot_cli https://example.test/docs C:/Downloads/page.html C:/Downloads/state --max-stored-bytes 1048576 --same-origin-redirects
+```
+
+`--max-stored-bytes 0` 保持默认不限大小；正数在已知总长和实际写入时检查。`--same-origin-redirects` 只允许原始协议、主机和有效端口相同的重定向；实际响应地址作为任务观察结果保存。它们仅适用于原生 HTTP，不是线路流量或磁盘配额。已有分片不会因降低上限被删除，但超限文件不能发布。站点项目的预览、离线导出及更新仍需后续完整流程。
 在命令前加 `--bt-no-discovery` 可关闭 DHT、局域网发现和自动端口映射；显式 Tracker 与 Peer 仍启用，这不是禁止联网的开关。
 
 ## 浏览器

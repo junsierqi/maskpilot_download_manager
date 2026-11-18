@@ -57,6 +57,26 @@ void validateTaskContext(const Task& task) {
         !isQueueId(task.queueId) || (task.runIntent != RunIntent::Run && task.runIntent != RunIntent::Paused))
         throw std::invalid_argument("Invalid persistent task ownership metadata.");
 }
+void validateTransferConstraints(const Task& task) {
+    const auto& spec = task.spec;
+    if (spec.maxStoredBytes < 0 || spec.maxStoredBytes > 9007199254740991LL ||
+        ((spec.maxStoredBytes || spec.sameOriginRedirectOnly) &&
+         (sourceKind(spec) != TransferKind::Http ||
+          !(spec.url.starts_with("http://") || spec.url.starts_with("https://")))))
+        throw std::invalid_argument("Invalid persistent HTTP transfer constraints.");
+    if (task.responseUrl.empty())
+        return;
+    if (sourceKind(spec) != TransferKind::Http || task.responseUrl.size() > 32768 ||
+        !(task.responseUrl.starts_with("http://") || task.responseUrl.starts_with("https://")) ||
+        std::any_of(task.responseUrl.begin(), task.responseUrl.end(),
+                    [](unsigned char c) { return c <= 32 || c == 127; }))
+        throw std::invalid_argument("Invalid persistent HTTP response URL.");
+    DownloadSpec observed;
+    observed.url = task.responseUrl;
+    observed.destination = "observed.bin";
+    if (!validateSpec(observed).empty())
+        throw std::invalid_argument("Invalid persistent HTTP response URL.");
+}
 void validateRecord(const CredentialRecord& record) {
     if (!isOpaqueId(record.reference) || (record.ownerId != "standalone" && !isOpaqueId(record.ownerId)) ||
         (!record.ownershipNonce.empty() && !isOpaqueId(record.ownershipNonce)) ||
@@ -159,12 +179,12 @@ class Backend {
             int schemaVersion = 0;
             {
                 Statement version(db_, "PRAGMA user_version");
-                if (sqlite3_step(version.value) != SQLITE_ROW || sqlite3_column_int(version.value, 0) > 10 ||
+                if (sqlite3_step(version.value) != SQLITE_ROW || sqlite3_column_int(version.value, 0) > 11 ||
                     sqlite3_column_int(version.value, 0) < 0)
                     throw std::runtime_error("Database was created by a newer version.");
                 schemaVersion = sqlite3_column_int(version.value, 0);
             }
-            if (schemaVersion > 0 && schemaVersion < 10) {
+            if (schemaVersion > 0 && schemaVersion < 11) {
                 auto backupPath = path;
                 backupPath += L".before-v" + std::to_wstring(schemaVersion + 1) + L"-" +
                               std::filesystem::path(newTaskId()).wstring() + L".db";
@@ -284,6 +304,13 @@ ALTER TABLE tasks ADD COLUMN media_audio_format TEXT NOT NULL DEFAULT '';
 ALTER TABLE tasks ADD COLUMN media_container INTEGER NOT NULL DEFAULT 0 CHECK(media_container BETWEEN 0 AND 7);
 PRAGMA user_version=10;
 COMMIT;)sql");
+            if (schemaVersion < 11)
+                execute(R"sql(BEGIN IMMEDIATE;
+ALTER TABLE tasks ADD COLUMN max_stored_bytes INTEGER NOT NULL DEFAULT 0 CHECK(max_stored_bytes BETWEEN 0 AND 9007199254740991);
+ALTER TABLE tasks ADD COLUMN same_origin_redirect_only INTEGER NOT NULL DEFAULT 0 CHECK(same_origin_redirect_only IN (0,1));
+ALTER TABLE tasks ADD COLUMN response_url TEXT NOT NULL DEFAULT '';
+PRAGMA user_version=11;
+COMMIT;)sql");
             Statement installation(
                 db_, "INSERT OR IGNORE INTO store_metadata(key,value) VALUES('installation_id',?)");
             installation.text(1, newTaskId());
@@ -392,6 +419,14 @@ COMMIT;)sql");
             t.spec.mediaSelection.primaryFormat = text(48);
             t.spec.mediaSelection.audioFormat = text(49);
             t.spec.mediaSelection.container = static_cast<MediaContainer>(sqlite3_column_int(q.value, 50));
+            if (sqlite3_column_type(q.value, 51) != SQLITE_INTEGER ||
+                sqlite3_column_type(q.value, 52) != SQLITE_INTEGER || sqlite3_column_int64(q.value, 52) < 0 ||
+                sqlite3_column_int64(q.value, 52) > 1 || sqlite3_column_type(q.value, 53) != SQLITE_TEXT)
+                throw std::runtime_error("Saved HTTP transfer constraints have invalid types.");
+            t.spec.maxStoredBytes = sqlite3_column_int64(q.value, 51);
+            t.spec.sameOriginRedirectOnly = sqlite3_column_int(q.value, 52) != 0;
+            t.responseUrl = text(53);
+            validateTransferConstraints(t);
             if (!validateMediaSelection(t.spec.mediaSelection, t.spec.audioOnly).empty())
                 throw std::runtime_error("Saved media selection is invalid.");
             validateTaskContext(t);
@@ -410,6 +445,7 @@ COMMIT;)sql");
     void save(const Task& t) {
         std::lock_guard lock(mutex_);
         validateTaskContext(t);
+        validateTransferConstraints(t);
         if (!validateMediaSelection(t.spec.mediaSelection, t.spec.audioOnly).empty())
             throw std::invalid_argument("Invalid persistent media selection.");
         if (!queueExists(t.queueId))
@@ -420,8 +456,8 @@ speed_limit,scheduled_at,stop_at,state,downloaded,total,created_at,updated_at,re
 media,audio_only,media_format,media_downloader,media_muxer,ftp_tls,ftp_active,ftp_ca,kind,bt_all,bt_selection,
 bt_seed,bt_upload_limit,bt_metadata,bt_published,bt_uploaded,proxy_auth_required,owner_id,request_id,
 context_revision,proxy_credential_ref,origin_auth_required,request_name,queue_id,run_intent,
-media_selection_mode,media_primary_format,media_audio_format,media_container)
-VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+media_selection_mode,media_primary_format,media_audio_format,media_container,max_stored_bytes,same_origin_redirect_only,response_url)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(id) DO UPDATE SET
 url=excluded.url,destination=excluded.destination,category=excluded.category,referrer=excluded.referrer,
 user_agent=excluded.user_agent,proxy=excluded.proxy,expected_sha256=excluded.expected_sha256,
@@ -438,7 +474,8 @@ proxy_auth_required=excluded.proxy_auth_required,request_id=excluded.request_id,
 context_revision=excluded.context_revision,proxy_credential_ref=excluded.proxy_credential_ref,
 origin_auth_required=excluded.origin_auth_required,request_name=excluded.request_name,
 queue_id=excluded.queue_id,run_intent=excluded.run_intent,media_selection_mode=excluded.media_selection_mode,
-media_primary_format=excluded.media_primary_format,media_audio_format=excluded.media_audio_format,media_container=excluded.media_container
+media_primary_format=excluded.media_primary_format,media_audio_format=excluded.media_audio_format,media_container=excluded.media_container,
+max_stored_bytes=excluded.max_stored_bytes,same_origin_redirect_only=excluded.same_origin_redirect_only,response_url=excluded.response_url
 WHERE tasks.owner_id=excluded.owner_id)sql");
         q.text(1, t.id);
         q.text(2, t.spec.url);
@@ -498,6 +535,9 @@ WHERE tasks.owner_id=excluded.owner_id)sql");
         q.text(49, t.spec.mediaSelection.primaryFormat);
         q.text(50, t.spec.mediaSelection.audioFormat);
         q.number(51, static_cast<int>(t.spec.mediaSelection.container));
+        q.number(52, t.spec.maxStoredBytes);
+        q.number(53, t.spec.sameOriginRedirectOnly);
+        q.text(54, t.responseUrl);
         if (sqlite3_step(q.value) != SQLITE_DONE || sqlite3_changes(db_) != 1)
             throw std::runtime_error("Cannot save task ownership or request identity.");
     }

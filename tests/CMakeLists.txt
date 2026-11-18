@@ -4,6 +4,7 @@ target_sources(maskpilot_tests PRIVATE unit/queue_test.cpp integration/queue_sto
 target_sources(maskpilot_tests PRIVATE unit/queue_schedule_test.cpp)
 target_sources(maskpilot_tests PRIVATE unit/traffic_budget_test.cpp integration/traffic_store_test.cpp)
 target_sources(maskpilot_tests PRIVATE unit/media_selection_test.cpp unit/media_ui_test.cpp integration/media_store_test.cpp)
+target_sources(maskpilot_tests PRIVATE unit/transfer_constraints_test.cpp unit/transfer_constraints_ui_test.cpp integration/transfer_constraints_store_test.cpp)
 add_executable(maskpilot_media_system_tests integration/media_ui_system_test.cpp)
 add_dependencies(maskpilot_media_system_tests maskpilot_media_ffmpeg maskpilot_media_ffprobe)
 target_link_libraries(maskpilot_media_system_tests PRIVATE maskpilot_ui maskpilot_infrastructure Qt6::Network)
@@ -18,6 +19,8 @@ add_test(NAME adaptive_http_product_path COMMAND ${Python3_EXECUTABLE} ${CMAKE_C
 set_tests_properties(adaptive_http_product_path PROPERTIES TIMEOUT 150)
 add_test(NAME native_payload_budget_product_path COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/integration/native_budget_test.py --exercise $<TARGET_FILE:maskpilot_cli>)
 set_tests_properties(native_payload_budget_product_path PROPERTIES TIMEOUT 150)
+add_test(NAME bounded_http_product_path COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/integration/transfer_constraints_test.py --exercise $<TARGET_FILE:maskpilot_cli>)
+set_tests_properties(bounded_http_product_path PROPERTIES TIMEOUT 180)
 if(WIN32)
   find_program(MASKPILOT_TEST_POWERSHELL powershell REQUIRED)
   add_test(NAME browser_registration_ownership COMMAND ${MASKPILOT_TEST_POWERSHELL}

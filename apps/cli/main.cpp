@@ -62,6 +62,8 @@ bool readOptions(maskpilot::DownloadSpec& spec, int argc, char** argv, int start
             spec.originAuthenticationRequired = false;
         else if (option == "--proxy-auth-required")
             spec.proxyAuthenticationRequired = true;
+        else if (option == "--same-origin-redirects")
+            spec.sameOriginRedirectOnly = true;
         else if (option == "--ftp-explicit-tls")
             spec.ftpExplicitTls = true;
         else if (option == "--ftp-active")
@@ -123,6 +125,10 @@ bool readOptions(maskpilot::DownloadSpec& spec, int argc, char** argv, int start
                     spec.mediaSelection.container = Container::Flac;
                 else
                     throw std::invalid_argument("Unknown media output container.");
+            } else if (option == "--max-stored-bytes") {
+                spec.maxStoredBytes = integerValue(value);
+                if (spec.maxStoredBytes < 0 || spec.maxStoredBytes > 9007199254740991LL)
+                    throw std::invalid_argument("Stored body bound must be between 0 and 9007199254740991.");
             } else if (option == "--connections") {
                 const auto count = integerValue(value);
                 if (count < 1 || count > 8)
@@ -221,6 +227,7 @@ int runClient(int argc, char** argv) {
                      "Global --bt-no-discovery disables DHT, local discovery and automatic port mapping; "
                      "explicit trackers and peers remain enabled.\n"
                      "This verification client pauses unfinished transfers after 180 seconds.\n";
+        std::cout << "HTTP: --max-stored-bytes N (0 unlimited) --same-origin-redirects\n";
         std::cout << "Media: --media --inspect-media --media-parser EXE --media-muxer EXE\n"
                      "       --media-mode auto|muxed|video-audio|audio|video --media-format-id ID\n"
                      "       --media-audio-id ID --media-container auto|mkv|mp4|webm|m4a|mp3|opus|flac\n";

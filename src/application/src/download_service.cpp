@@ -16,6 +16,24 @@
 
 namespace maskpilot {
 namespace {
+bool sameCallerConstraints(const DownloadSpec& a, const DownloadSpec& b) {
+    const auto lowerHex = [](unsigned char ch) { return ch >= 'A' && ch <= 'F' ? ch + ('a' - 'A') : ch; };
+    const bool sameHash =
+        a.expectedSha256.size() == b.expectedSha256.size() &&
+        std::equal(
+            a.expectedSha256.begin(), a.expectedSha256.end(), b.expectedSha256.begin(),
+            [&](unsigned char first, unsigned char second) { return lowerHex(first) == lowerHex(second); });
+    if (!sameHash || a.maxStoredBytes != b.maxStoredBytes ||
+        a.sameOriginRedirectOnly != b.sameOriginRedirectOnly ||
+        a.proxyAuthenticationRequired != b.proxyAuthenticationRequired)
+        return false;
+    return a.kind != TransferKind::Media ||
+           (a.audioOnly == b.audioOnly && a.mediaFormat == b.mediaFormat &&
+            a.mediaSelection.mode == b.mediaSelection.mode &&
+            a.mediaSelection.primaryFormat == b.mediaSelection.primaryFormat &&
+            a.mediaSelection.audioFormat == b.mediaSelection.audioFormat &&
+            a.mediaSelection.container == b.mediaSelection.container);
+}
 bool sameProxyRoute(const std::string& first, const std::string& second) {
     const auto a = parseProxyEndpoint(first), b = parseProxyEndpoint(second);
     return a.type == b.type && a.host == b.host && a.port == b.port;
@@ -68,6 +86,7 @@ struct DownloadService::Impl {
         std::jthread thread;
         std::int64_t mediaRate = -1;
         bool policyPause = false;
+        std::string responseError;
     };
     std::unique_ptr<ITaskRepository> repository;
     TransportFactory factory;
@@ -145,7 +164,8 @@ struct DownloadService::Impl {
                     existing.contextRevision != task.contextRevision || existing.spec.proxy != spec.proxy ||
                     existing.proxyCredentialRef != task.proxyCredentialRef ||
                     (!existing.requestName.empty() && existing.requestName != task.requestName) ||
-                    existing.originAuthenticationRequired != task.originAuthenticationRequired)
+                    existing.originAuthenticationRequired != task.originAuthenticationRequired ||
+                    !sameCallerConstraints(existing.spec, spec))
                     throw std::invalid_argument("Request ID belongs to another download request.");
                 return id;
             }
@@ -256,6 +276,7 @@ struct DownloadService::Impl {
             validateSelection(spec, old.torrent);
         auto candidate = old;
         candidate.spec = std::move(spec);
+        candidate.responseUrl.clear();
         candidate.originAuthenticationRequired = (preserveRequired && old.originAuthenticationRequired) ||
                                                  requiresOriginAuthentication(candidate.spec);
         candidate.spec.originAuthenticationRequired = candidate.originAuthenticationRequired;
@@ -443,9 +464,30 @@ struct DownloadService::Impl {
     }
     void processEvent(const std::string& id, std::uint64_t generation, TransferEvent event) {
         auto it = tasks.find(id);
-        if (it == tasks.end() || it->second.generation != generation)
+        if (it == tasks.end() || it->second.generation != generation || !jobs.contains(id))
             return;
         auto& task = it->second;
+        auto& job = *jobs.at(id);
+        if (!event.responseUrl.empty()) {
+            DownloadSpec observed;
+            observed.url = event.responseUrl;
+            observed.destination = task.spec.destination;
+            if (task.spec.kind != TransferKind::Http || sourceKind(observed) != TransferKind::Http ||
+                !validateSpec(observed).empty() ||
+                std::any_of(event.responseUrl.begin(), event.responseUrl.end(),
+                            [](unsigned char ch) { return ch <= 0x20 || ch == 0x7f; })) {
+                job.responseError = "Invalid HTTP response metadata.";
+                job.control->cancel = true;
+            } else if (job.responseError.empty())
+                task.responseUrl = event.responseUrl;
+        }
+        if (!job.responseError.empty()) {
+            task.responseUrl.clear();
+            if (event.outcome != TransferOutcome::Progress) {
+                event.outcome = TransferOutcome::Attention;
+                event.error = job.responseError;
+            }
+        }
         task.downloaded = event.downloaded;
         task.total = event.total;
         task.bytesPerSecond = event.speed;
@@ -623,6 +665,10 @@ struct DownloadService::Impl {
             auto* task = next->second;
             lastQueue = next->first;
             attempted.insert(task->id);
+            if (!task->responseUrl.empty()) {
+                task->responseUrl.clear();
+                save(*task);
+            }
             if (auto message = validateSpec(task->spec); !message.empty()) {
                 task->state = TaskState::NeedsAttention;
                 task->error = "Invalid saved task: " + message;
@@ -1176,6 +1222,7 @@ void DownloadService::updateUrl(const std::string& id, std::string url) {
         if (it->second.spec.url != spec.url)
             it->second.originGrantId.clear();
         it->second.spec = std::move(spec);
+        it->second.responseUrl.clear();
         it->second.runIntent = RunIntent::Paused;
         it->second.state = TaskState::Paused;
         p->save(it->second);
@@ -1200,6 +1247,7 @@ void DownloadService::restart(const std::string& id) {
         task.total = -1;
         task.retries = 0;
         task.error.clear();
+        task.responseUrl.clear();
         if (task.spec.stopAt <= p->queueRegistry->now())
             task.spec.stopAt = 0;
         task.runIntent = RunIntent::Run;

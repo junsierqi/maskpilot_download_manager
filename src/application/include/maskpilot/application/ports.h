@@ -28,6 +28,7 @@ struct TransferEvent {
     std::int64_t uploaded = 0, uploadSpeed = 0;
     int peers = 0, seeds = 0;
     bool torrentPublished = false;
+    std::string responseUrl;
 };
 class INativePayloadBudget {
   public:

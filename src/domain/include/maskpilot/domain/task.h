@@ -66,6 +66,9 @@ struct DownloadSpec {
     std::filesystem::path mediaDownloader;
     std::filesystem::path mediaMuxer;
     MediaSelection mediaSelection;
+    // Native HTTP stored-file body bound; zero preserves the unrestricted default.
+    std::int64_t maxStoredBytes = 0;
+    bool sameOriginRedirectOnly = false;
 };
 struct Task {
     std::string id;
@@ -97,6 +100,8 @@ struct Task {
     std::int64_t uploaded = 0, uploadSpeed = 0;
     int peers = 0, seeds = 0;
     bool torrentPublished = false;
+    // Observed by the current native HTTP run, never accepted as request authority.
+    std::string responseUrl;
 };
 struct Segment {
     std::int64_t begin = 0, end = 0;

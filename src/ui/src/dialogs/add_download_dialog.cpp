@@ -49,6 +49,8 @@ struct AddDownloadDialog::Impl {
     QCheckBox* media;
     ui::MediaSelectionWidget* selection;
     std::string mediaTaskId;
+    std::int64_t maxStoredBytes = 0;
+    bool sameOriginRedirectOnly = false;
     QLineEdit *downloader, *muxer;
     QLineEdit *ftpUsername, *ftpPassword, *ftpCa;
     QCheckBox *ftpTls, *ftpActive;
@@ -516,6 +518,8 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
 AddDownloadDialog::~AddDownloadDialog() = default;
 DownloadSpec AddDownloadDialog::specification() const {
     DownloadSpec s;
+    s.maxStoredBytes = impl_->maxStoredBytes;
+    s.sameOriginRedirectOnly = impl_->sameOriginRedirectOnly;
     s.url = impl_->url->text().trimmed().toStdString();
     s.destination = nativePath(impl_->destination->text().trimmed());
     s.category = impl_->category->currentText().trimmed().toStdString();
@@ -586,6 +590,8 @@ DownloadSpec AddDownloadDialog::specification() const {
     return s;
 }
 void AddDownloadDialog::setSpecification(const DownloadSpec& spec) {
+    impl_->maxStoredBytes = spec.maxStoredBytes;
+    impl_->sameOriginRedirectOnly = spec.sameOriginRedirectOnly;
     const QSignalBlocker selectionBlock(impl_->selection);
     impl_->selection->invalidate();
     impl_->url->setText(QString::fromStdString(spec.url));

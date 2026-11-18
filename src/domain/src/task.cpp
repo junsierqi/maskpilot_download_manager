@@ -59,6 +59,12 @@ TransferKind sourceKind(const DownloadSpec& spec) {
     return isFtpUrl(spec.url) ? TransferKind::Ftp : TransferKind::Http;
 }
 std::string validateSpec(const DownloadSpec& spec) {
+    if (spec.maxStoredBytes < 0 || spec.maxStoredBytes > 9007199254740991LL)
+        return "Stored file size limit is outside the supported range.";
+    if ((spec.maxStoredBytes != 0 || spec.sameOriginRedirectOnly) &&
+        (sourceKind(spec) != TransferKind::Http ||
+         !(spec.url.starts_with("http://") || spec.url.starts_with("https://"))))
+        return "Stored size and redirect constraints require an HTTP source.";
     if (auto error = validateMediaSelection(spec.mediaSelection, spec.audioOnly); !error.empty())
         return error;
     if (spec.kind != TransferKind::Media && (spec.mediaSelection.mode != MediaSelectionMode::Automatic ||

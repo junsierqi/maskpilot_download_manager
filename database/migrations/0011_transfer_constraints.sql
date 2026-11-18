@@ -1,0 +1,6 @@
+BEGIN IMMEDIATE;
+ALTER TABLE tasks ADD COLUMN max_stored_bytes INTEGER NOT NULL DEFAULT 0 CHECK(max_stored_bytes BETWEEN 0 AND 9007199254740991);
+ALTER TABLE tasks ADD COLUMN same_origin_redirect_only INTEGER NOT NULL DEFAULT 0 CHECK(same_origin_redirect_only IN (0,1));
+ALTER TABLE tasks ADD COLUMN response_url TEXT NOT NULL DEFAULT '';
+PRAGMA user_version=11;
+COMMIT;
