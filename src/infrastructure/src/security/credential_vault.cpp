@@ -31,6 +31,8 @@ QString text(const std::string& value) {
 std::string route(const ProxyCredentialBinding& binding) {
     if (binding.ownerId != "standalone" && !opaqueId(binding.ownerId))
         invalid();
+    if (!binding.ownershipNonce.empty() && !opaqueId(binding.ownershipNonce))
+        invalid();
     ProxyEndpoint endpoint;
     try {
         endpoint = parseProxyEndpoint(binding.proxyEndpoint);
@@ -65,6 +67,31 @@ struct NativeCredentialDeleter {
     }
 };
 using NativeCredential = std::unique_ptr<CREDENTIALW, NativeCredentialDeleter>;
+class NativeWriteLock {
+    HANDLE handle_ = nullptr;
+
+  public:
+    explicit NativeWriteLock(const std::wstring& name) {
+        handle_ = CreateMutexW(nullptr, FALSE, name.c_str());
+        if (!handle_)
+            nativeFailure(GetLastError());
+        const auto result = WaitForSingleObject(handle_, 5000);
+        if (result != WAIT_OBJECT_0 && result != WAIT_ABANDONED) {
+            CloseHandle(handle_);
+            handle_ = nullptr;
+            throw CredentialVaultError(CredentialVaultFailure::Storage,
+                                       "Credential vault write lock is unavailable");
+        }
+    }
+    ~NativeWriteLock() {
+        if (handle_) {
+            ReleaseMutex(handle_);
+            CloseHandle(handle_);
+        }
+    }
+    NativeWriteLock(const NativeWriteLock&) = delete;
+    NativeWriteLock& operator=(const NativeWriteLock&) = delete;
+};
 
 class NativeVault final : public ICredentialVault {
   public:
@@ -72,7 +99,14 @@ class NativeVault final : public ICredentialVault {
 
     std::string remember(const ProxyCredentialBinding& binding,
                          const ProxyCredentials& credentials) override {
+        const auto reference = QUuid::createUuid().toString(QUuid::Id128).toStdString();
+        store(reference, binding, credentials);
+        return reference;
+    }
+    void store(const std::string& reference, const ProxyCredentialBinding& binding,
+               const ProxyCredentials& credentials) override {
         const auto canonical = route(binding);
+        auto targetName = target(reference);
         DownloadSpec spec;
         spec.proxy = binding.proxyEndpoint;
         spec.proxyUsername = credentials.username;
@@ -80,16 +114,27 @@ class NativeVault final : public ICredentialVault {
         spec.proxyAuthenticationRequired = true;
         if (!validateProxy(spec, true).empty())
             invalid();
+        const NativeWriteLock writeLock(
+            text("Local\\MaskPilot.DownloadManager.Write/" + installation_ + "/" + reference).toStdWString());
+        PCREDENTIALW existing = nullptr;
+        if (CredReadW(targetName.c_str(), CRED_TYPE_GENERIC, 0, &existing)) {
+            const NativeCredential owned(existing);
+            throw CredentialVaultError(CredentialVaultFailure::AlreadyExists,
+                                       "Credential reference already exists");
+        }
+        if (const auto error = GetLastError(); error != ERROR_NOT_FOUND)
+            nativeFailure(error);
         QJsonObject object{{"version", 1},
                            {"owner", text(binding.ownerId)},
                            {"route", text(canonical)},
+                           {"nonce", text(binding.ownershipNonce)},
                            {"username", text(credentials.username)},
                            {"password", text(credentials.password)}};
         auto blob = QJsonDocument(object).toJson(QJsonDocument::Compact);
-        if (blob.size() > CRED_MAX_CREDENTIAL_BLOB_SIZE)
+        if (blob.size() > CRED_MAX_CREDENTIAL_BLOB_SIZE) {
+            SecureZeroMemory(blob.data(), static_cast<SIZE_T>(blob.size()));
             invalid();
-        const auto reference = QUuid::createUuid().toString(QUuid::Id128).toStdString();
-        auto targetName = target(reference);
+        }
         CREDENTIALW native{};
         native.Type = CRED_TYPE_GENERIC;
         native.TargetName = targetName.data();
@@ -101,7 +146,6 @@ class NativeVault final : public ICredentialVault {
         SecureZeroMemory(blob.data(), static_cast<SIZE_T>(blob.size()));
         if (!written)
             nativeFailure(error);
-        return reference;
     }
     std::optional<ProxyCredentials> recall(const ProxyCredentialBinding& binding,
                                            const std::string& reference) override {
@@ -144,6 +188,10 @@ class NativeVault final : public ICredentialVault {
         if (!document.isObject() || object["version"].toInt() != 1 || !object["owner"].isString() ||
             !object["route"].isString() || !object["username"].isString() || !object["password"].isString())
             throw CredentialVaultError(CredentialVaultFailure::Corrupt, "Invalid credential vault entry");
+        if (object.contains("nonce") &&
+            (!object["nonce"].isString() ||
+             (!object["nonce"].toString().isEmpty() && !opaqueId(object["nonce"].toString().toStdString()))))
+            throw CredentialVaultError(CredentialVaultFailure::Corrupt, "Invalid credential vault entry");
         return object;
     }
     NativeCredential read(const ProxyCredentialBinding& binding, const std::string& reference) const {
@@ -159,7 +207,8 @@ class NativeVault final : public ICredentialVault {
         NativeCredential owned(result);
         const auto object = decode(*owned);
         if (object["owner"].toString() != text(binding.ownerId) ||
-            object["route"].toString() != text(canonical))
+            object["route"].toString() != text(canonical) ||
+            object["nonce"].toString() != text(binding.ownershipNonce))
             throw CredentialVaultError(CredentialVaultFailure::Binding,
                                        "Credential vault binding does not match");
         DownloadSpec spec;
@@ -177,6 +226,9 @@ class NativeVault final : public ICredentialVault {
   public:
     explicit NativeVault(const std::string&) {}
     std::string remember(const ProxyCredentialBinding&, const ProxyCredentials&) override { unavailable(); }
+    void store(const std::string&, const ProxyCredentialBinding&, const ProxyCredentials&) override {
+        unavailable();
+    }
     std::optional<ProxyCredentials> recall(const ProxyCredentialBinding&, const std::string&) override {
         unavailable();
     }

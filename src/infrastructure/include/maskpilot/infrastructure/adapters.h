@@ -1,7 +1,13 @@
 #pragma once
+#include <maskpilot/application/download_context.h>
 #include <maskpilot/application/ports.h>
 
 namespace maskpilot {
+struct SqliteStore {
+    std::unique_ptr<ITaskRepository> tasks;
+    std::unique_ptr<IContextRepository> contexts;
+};
+SqliteStore makeSqliteStore(const std::filesystem::path& path);
 std::unique_ptr<ITaskRepository> makeSqliteRepository(const std::filesystem::path& path);
 std::unique_ptr<ITransferTransport> makeCurlTransfer();
 std::unique_ptr<ITransferTransport> makeFtpTransfer();

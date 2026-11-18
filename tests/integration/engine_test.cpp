@@ -386,8 +386,15 @@ TEST(Storage, MigratesPreviousSchemaWithoutChangingExistingProtocolsOrFiles) {
     sqlite3* connection = nullptr;
     ASSERT_EQ(sqlite3_open(database.string().c_str(), &connection), SQLITE_OK);
     std::unique_ptr<sqlite3, decltype(&sqlite3_close)> close(connection, sqlite3_close);
-    for (const auto* column : {"kind", "bt_all", "bt_selection", "bt_seed", "bt_upload_limit", "bt_metadata",
-                               "bt_published", "bt_uploaded", "proxy_auth_required"}) {
+    ASSERT_EQ(sqlite3_exec(connection,
+                           "DROP INDEX tasks_owner_request; DROP TABLE download_contexts; "
+                           "DROP TABLE credential_records; DROP TABLE store_metadata;",
+                           nullptr, nullptr, nullptr),
+              SQLITE_OK);
+    for (const auto* column :
+         {"kind", "bt_all", "bt_selection", "bt_seed", "bt_upload_limit", "bt_metadata", "bt_published",
+          "bt_uploaded", "proxy_auth_required", "owner_id", "request_id", "context_revision",
+          "proxy_credential_ref", "origin_auth_required", "request_name"}) {
         const auto sql = std::string("ALTER TABLE tasks DROP COLUMN ") + column;
         ASSERT_EQ(sqlite3_exec(connection, sql.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
     }
@@ -413,6 +420,236 @@ TEST(Storage, MigratesPreviousSchemaWithoutChangingExistingProtocolsOrFiles) {
                                        std::string::npos;
                             }));
 }
+TEST(Storage, MigratesVersionFiveToContextsWithoutMovingTaskFiles) {
+    TempDirectory temporary;
+    const auto path = temporary.path / "tasks.db";
+    const auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path();
+    sqlite3* raw = nullptr;
+    ASSERT_EQ(sqlite3_open(path.string().c_str(), &raw), SQLITE_OK);
+    std::unique_ptr<sqlite3, decltype(&sqlite3_close)> connection(raw, sqlite3_close);
+    for (const auto* name :
+         {"0001_initial.sql", "0002_media.sql", "0003_ftp.sql", "0004_torrents.sql", "0005_proxy.sql"}) {
+        std::ifstream source(root / "database" / "migrations" / name, std::ios::binary);
+        ASSERT_TRUE(source.good()) << name;
+        const std::string sql((std::istreambuf_iterator<char>(source)), {});
+        ASSERT_EQ(sqlite3_exec(raw, sql.c_str(), nullptr, nullptr, nullptr), SQLITE_OK) << name;
+    }
+    ASSERT_EQ(sqlite3_exec(raw,
+                           "INSERT INTO tasks(id,url,destination,category,referrer,user_agent,proxy,"
+                           "expected_sha256,connections,priority,max_retries,speed_limit,scheduled_at,"
+                           "stop_at,state,downloaded,total,created_at,updated_at,retries,resumable,error,"
+                           "proxy_auth_required) "
+                           "VALUES('0123456789abcdef0123456789abcdef','https://example.test/file',"
+                           "'unchanged.bin','General','','MaskPilot','http://proxy.test:8080','',4,0,3,0,0,0,"
+                           "5,765,4096,1,1,0,1,'',1);",
+                           nullptr, nullptr, nullptr),
+              SQLITE_OK);
+    connection.reset();
+    const auto part = temporary.path / "parts" / "0123456789abcdef0123456789abcdef" / "part-0";
+    std::filesystem::create_directories(part.parent_path());
+    {
+        std::ofstream output(part, std::ios::binary);
+        output << "durable existing bytes";
+    }
+    std::string installation;
+    {
+        auto store = maskpilot::makeSqliteStore(path);
+        installation = store.contexts->installationId();
+        EXPECT_TRUE(maskpilot::isOpaqueId(installation));
+        EXPECT_TRUE(store.contexts->loadContexts().empty());
+        EXPECT_TRUE(store.contexts->loadCredentialRecords().empty());
+        const auto tasks = store.tasks->load();
+        ASSERT_EQ(tasks.size(), 1);
+        EXPECT_EQ(tasks[0].ownerId, "standalone");
+        EXPECT_EQ(tasks[0].requestId, tasks[0].id);
+        EXPECT_TRUE(tasks[0].requestName.empty());
+        EXPECT_EQ(tasks[0].contextRevision, 0);
+        EXPECT_TRUE(tasks[0].proxyCredentialRef.empty());
+        EXPECT_FALSE(tasks[0].originAuthenticationRequired);
+        EXPECT_TRUE(tasks[0].originGrantId.empty());
+        EXPECT_EQ(tasks[0].downloaded, 765);
+        EXPECT_EQ(tasks[0].spec.destination, "unchanged.bin");
+        EXPECT_TRUE(tasks[0].spec.proxyAuthenticationRequired);
+        store.tasks->save(tasks[0]);
+    }
+    {
+        auto store = maskpilot::makeSqliteStore(path);
+        EXPECT_EQ(store.contexts->installationId(), installation);
+    }
+    std::ifstream input(part, std::ios::binary);
+    EXPECT_EQ(std::string((std::istreambuf_iterator<char>(input)), {}), "durable existing bytes");
+    int backups = 0;
+    for (const auto& file : std::filesystem::directory_iterator(temporary.path)) {
+        if (file.path().filename().string().find(".before-v6-") == std::string::npos)
+            continue;
+        ++backups;
+        sqlite3* backup = nullptr;
+        ASSERT_EQ(sqlite3_open_v2(file.path().string().c_str(), &backup, SQLITE_OPEN_READONLY, nullptr),
+                  SQLITE_OK);
+        std::unique_ptr<sqlite3, decltype(&sqlite3_close)> closed(backup, sqlite3_close);
+        sqlite3_stmt* statement = nullptr;
+        ASSERT_EQ(sqlite3_prepare_v2(backup, "PRAGMA user_version", -1, &statement, nullptr), SQLITE_OK);
+        std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> finalized(statement, sqlite3_finalize);
+        ASSERT_EQ(sqlite3_step(statement), SQLITE_ROW);
+        EXPECT_EQ(sqlite3_column_int(statement, 0), 5);
+    }
+    EXPECT_EQ(backups, 1);
+}
+
+TEST(Storage, ContextTaskMetadataIsDurableAndOwnerAndScopedRequestCannotBeReassigned) {
+    TempDirectory temporary;
+    const auto path = temporary.path / "tasks.db";
+    auto store = maskpilot::makeSqliteStore(path);
+    maskpilot::Task task;
+    task.id = maskpilot::newTaskId();
+    task.ownerId = maskpilot::newTaskId();
+    task.requestId = maskpilot::newTaskId();
+    task.requestName = "requested.bin";
+    task.contextRevision = 7;
+    task.proxyCredentialRef = maskpilot::newTaskId();
+    task.originAuthenticationRequired = true;
+    task.originGrantId = "memory-only-origin-grant-private";
+    task.spec.url = "https://example.test/file";
+    task.spec.destination = temporary.path / "requested (1).bin";
+    task.spec.cookie = "memory-only-context-cookie-private";
+    task.spec.proxyPassword = "memory-only-context-proxy-private";
+    store.tasks->save(task);
+    auto reassigned = task;
+    reassigned.ownerId = maskpilot::newTaskId();
+    reassigned.spec.url = "https://different.test/file";
+    EXPECT_THROW(store.tasks->save(reassigned), std::exception);
+    auto duplicate = task;
+    duplicate.id = maskpilot::newTaskId();
+    EXPECT_THROW(store.tasks->save(duplicate), std::exception);
+    duplicate.ownerId = reassigned.ownerId;
+    EXPECT_NO_THROW(store.tasks->save(duplicate));
+    // Empty request IDs intentionally do not become a shared uniqueness key.
+    auto withoutRequest = task;
+    withoutRequest.requestId.clear();
+    withoutRequest.id = maskpilot::newTaskId();
+    store.tasks->save(withoutRequest);
+    withoutRequest.id = maskpilot::newTaskId();
+    store.tasks->save(withoutRequest);
+    store.tasks.reset();
+    store.contexts.reset();
+    auto reopened = maskpilot::makeSqliteStore(path);
+    const auto tasks = reopened.tasks->load();
+    ASSERT_EQ(tasks.size(), 4);
+    const auto found =
+        std::find_if(tasks.begin(), tasks.end(), [&](const auto& value) { return value.id == task.id; });
+    ASSERT_NE(found, tasks.end());
+    EXPECT_EQ(found->ownerId, task.ownerId);
+    EXPECT_EQ(found->requestId, task.requestId);
+    EXPECT_EQ(found->requestName, task.requestName);
+    EXPECT_EQ(found->contextRevision, 7);
+    EXPECT_EQ(found->proxyCredentialRef, task.proxyCredentialRef);
+    EXPECT_TRUE(found->originAuthenticationRequired);
+    EXPECT_EQ(found->spec.destination, task.spec.destination);
+    EXPECT_EQ(found->spec.url, task.spec.url);
+    EXPECT_TRUE(found->originGrantId.empty());
+    EXPECT_TRUE(found->spec.cookie.empty());
+    EXPECT_TRUE(found->spec.proxyPassword.empty());
+    for (const auto& file : std::filesystem::directory_iterator(temporary.path)) {
+        if (!file.is_regular_file())
+            continue;
+        std::ifstream input(file.path(), std::ios::binary);
+        const std::string bytes((std::istreambuf_iterator<char>(input)), {});
+        for (const auto& secret : {task.originGrantId, task.spec.cookie, task.spec.proxyPassword})
+            EXPECT_EQ(bytes.find(secret), std::string::npos);
+    }
+}
+
+TEST(Storage, SharedContextFacadePersistsRevisionsAndCredentialOwnershipJournalBeforePolicy) {
+    TempDirectory temporary;
+    const auto path = temporary.path / "tasks.db";
+    auto store = maskpilot::makeSqliteStore(path);
+    const auto installation = store.contexts->installationId();
+    maskpilot::DownloadContext context;
+    context.id = maskpilot::newTaskId();
+    context.externalKey = "trusted-browser/profile-a";
+    context.label = "Context A";
+    context.downloadRoot = temporary.path / "context-a";
+    context.proxyEndpoint = "socks5://127.0.0.1:1080";
+    context.proxyAuthenticationRequired = true;
+    context.proxyCredentialRef = maskpilot::newTaskId();
+    const maskpilot::CredentialRecord record{context.proxyCredentialRef, context.id, context.proxyEndpoint,
+                                             maskpilot::newTaskId()};
+    store.contexts->saveCredentialRecord(record);
+    {
+        // A separate connection must observe the journal before any native write or context reference.
+        auto observer = maskpilot::makeSqliteStore(path);
+        EXPECT_TRUE(observer.contexts->loadContexts().empty());
+        const auto journal = observer.contexts->loadCredentialRecords();
+        ASSERT_EQ(journal.size(), 1);
+        EXPECT_EQ(journal[0].ownerId, context.id);
+        EXPECT_EQ(journal[0].reference, record.reference);
+        EXPECT_EQ(journal[0].ownershipNonce, record.ownershipNonce);
+        EXPECT_EQ(observer.contexts->installationId(), installation);
+    }
+    store.contexts->saveCredentialRecord(record);
+    auto foreignRecord = record;
+    foreignRecord.ownerId = maskpilot::newTaskId();
+    EXPECT_THROW(store.contexts->saveCredentialRecord(foreignRecord), std::exception);
+    foreignRecord = record;
+    foreignRecord.proxyEndpoint = "http://127.0.0.1:8080";
+    EXPECT_THROW(store.contexts->saveCredentialRecord(foreignRecord), std::exception);
+    foreignRecord = record;
+    foreignRecord.ownershipNonce = maskpilot::newTaskId();
+    EXPECT_THROW(store.contexts->saveCredentialRecord(foreignRecord), std::exception);
+    foreignRecord.reference = maskpilot::newTaskId();
+    foreignRecord.ownershipNonce = "invalid nonce";
+    EXPECT_THROW(store.contexts->saveCredentialRecord(foreignRecord), std::exception);
+    const maskpilot::CredentialRecord legacyRecord{maskpilot::newTaskId(), context.id, context.proxyEndpoint};
+    store.contexts->saveCredentialRecord(legacyRecord);
+    const auto journalWithLegacy = store.contexts->loadCredentialRecords();
+    const auto legacy =
+        std::find_if(journalWithLegacy.begin(), journalWithLegacy.end(),
+                     [&](const auto& item) { return item.reference == legacyRecord.reference; });
+    ASSERT_NE(legacy, journalWithLegacy.end());
+    EXPECT_TRUE(legacy->ownershipNonce.empty());
+    store.contexts->eraseCredentialRecord(legacyRecord.reference);
+    store.contexts->saveContext(context);
+    EXPECT_NO_THROW(store.contexts->saveContext(context));
+    auto duplicate = context;
+    duplicate.id = maskpilot::newTaskId();
+    EXPECT_THROW(store.contexts->saveContext(duplicate), std::exception);
+    auto invalidRevision = context;
+    invalidRevision.label = "Unversioned edit";
+    EXPECT_THROW(store.contexts->saveContext(invalidRevision), std::exception);
+    invalidRevision.revision = 3;
+    EXPECT_THROW(store.contexts->saveContext(invalidRevision), std::exception);
+    ++context.revision;
+    context.enabled = false;
+    store.contexts->saveContext(context);
+    invalidRevision = context;
+    invalidRevision.revision = 1;
+    EXPECT_THROW(store.contexts->saveContext(invalidRevision), std::exception);
+    // Either facade owns the shared connection; destroying task facade must not close context storage.
+    store.tasks.reset();
+    EXPECT_EQ(store.contexts->installationId(), installation);
+    store.contexts.reset();
+    auto reopened = maskpilot::makeSqliteStore(path);
+    const auto contexts = reopened.contexts->loadContexts();
+    ASSERT_EQ(contexts.size(), 1);
+    EXPECT_EQ(contexts[0].id, context.id);
+    EXPECT_EQ(contexts[0].revision, 2);
+    EXPECT_FALSE(contexts[0].enabled);
+    EXPECT_EQ(contexts[0].proxyCredentialRef, record.reference);
+    EXPECT_EQ(reopened.contexts->loadCredentialRecords().size(), 1);
+    EXPECT_EQ(reopened.contexts->loadCredentialRecords()[0].ownershipNonce, record.ownershipNonce);
+    reopened.contexts->eraseCredentialRecord(record.reference);
+    EXPECT_TRUE(reopened.contexts->loadCredentialRecords().empty());
+    EXPECT_NO_THROW(reopened.contexts->eraseCredentialRecord(record.reference));
+    EXPECT_THROW(reopened.contexts->eraseCredentialRecord("../../foreign-target"), std::exception);
+    reopened.contexts.reset();
+    maskpilot::Task standalone;
+    standalone.id = maskpilot::newTaskId();
+    standalone.spec.url = "https://example.test/legacy-facade";
+    standalone.spec.destination = temporary.path / "legacy.bin";
+    reopened.tasks->save(standalone);
+    EXPECT_EQ(reopened.tasks->load().size(), 1);
+}
+
 TEST(Service, PersistsTorrentPublicationBeforeSeedingStops) {
     struct PublishingTransport final : maskpilot::ITransferTransport {
         void run(const maskpilot::Task&, const std::filesystem::path&, maskpilot::TransferControl& control,

@@ -1,5 +1,6 @@
 #pragma once
 #include <future>
+#include <maskpilot/application/download_context.h>
 #include <maskpilot/application/ports.h>
 #include <optional>
 
@@ -7,12 +8,26 @@ namespace maskpilot {
 class DownloadService {
   public:
     DownloadService(std::unique_ptr<ITaskRepository> repository, TransportFactory factory,
-                    std::filesystem::path workDirectory);
+                    std::filesystem::path workDirectory, ContextDependencies contexts = {});
     ~DownloadService();
     DownloadService(const DownloadService&) = delete;
     DownloadService& operator=(const DownloadService&) = delete;
     // Resolves only after the task is durably persisted. Safe for browser handoff acknowledgement.
-    std::future<std::string> add(DownloadSpec spec, std::string requestId = {});
+    std::future<std::string> add(DownloadSpec spec, std::string requestId = {}, bool rememberProxy = false);
+    // Trusted in-process administration. The IPC adapter must authenticate its own admin authority.
+    std::future<DownloadContext> configureContext(ContextConfiguration, ProxyCredentials = {},
+                                                  bool rememberProxy = false);
+    std::future<std::vector<DownloadContext>> contexts();
+    std::future<std::string> issueClient(const std::string& ownerId);
+    std::future<std::string> issueOriginGrant(const std::string& ownerId, std::string url, std::string cookie,
+                                              std::string authorization, std::int64_t expiresAt);
+    std::future<void> revokeContext(const std::string& ownerId);
+    std::future<void> rebindTask(const std::string& taskId, std::string grantId = {});
+    // Only these narrow operations are exposed to browser context clients.
+    std::future<std::string> addScoped(std::string token, ScopedDownloadDraft, std::string requestId);
+    std::future<ScopedTaskPage> listScoped(std::string token, std::size_t limit = 1000,
+                                           std::string afterId = {});
+    std::future<void> controlScoped(std::string token, ScopedTaskCommand, std::string taskId);
     void pause(const std::string& id);
     void resume(const std::string& id);
     void cancel(const std::string& id);

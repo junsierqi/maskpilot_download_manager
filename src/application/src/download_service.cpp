@@ -1,3 +1,4 @@
+#include "context_registry.h"
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
@@ -6,6 +7,7 @@
 #include <maskpilot/application/download_service.h>
 #include <mutex>
 #include <thread>
+#include <type_traits>
 
 namespace maskpilot {
 namespace {
@@ -38,16 +40,205 @@ struct DownloadService::Impl {
     std::filesystem::path workDirectory;
     std::map<std::string, Task> tasks;
     std::map<std::string, std::unique_ptr<Job>> jobs;
+    std::unique_ptr<ContextRegistry> contexts;
+    std::map<std::string, std::vector<std::shared_ptr<std::promise<void>>>> pendingRevocations;
     mutable std::mutex mutex;
     std::condition_variable cv;
     std::deque<std::function<void()>> commands;
     std::vector<Task> published;
     std::string error;
+    std::string contextWarning;
     std::jthread coordinator;
     std::atomic_bool stopping{false};
     bool healthy = true;
     int concurrentTasks = 3, mediaSlots = 3;
     std::int64_t globalLimit = 0, globalUploadLimit = 0;
+
+    template <class Function> auto request(Function function) -> std::future<std::invoke_result_t<Function>> {
+        using Result = std::invoke_result_t<Function>;
+        auto promise = std::make_shared<std::promise<Result>>();
+        auto future = promise->get_future();
+        post([promise, function = std::move(function)]() mutable {
+            try {
+                if constexpr (std::is_void_v<Result>) {
+                    function();
+                    promise->set_value();
+                } else {
+                    promise->set_value(function());
+                }
+            } catch (...) {
+                promise->set_exception(std::current_exception());
+            }
+        });
+        return future;
+    }
+    std::vector<Task> allTasks() const {
+        std::vector<Task> result;
+        result.reserve(tasks.size());
+        for (const auto& [id, task] : tasks)
+            result.push_back(task);
+        return result;
+    }
+    std::string addPrepared(Task task, std::string requestId, bool legacy, bool rememberProxy) {
+        if (!healthy)
+            throw std::runtime_error("Task storage unavailable.");
+        auto& spec = task.spec;
+        spec.proxyAuthenticationRequired =
+            spec.proxyAuthenticationRequired || !spec.proxyUsername.empty() || !spec.proxyPassword.empty();
+        if (const auto message = validateSpec(spec); !message.empty())
+            throw std::invalid_argument(message);
+        spec.kind = sourceKind(spec);
+        if (!requestId.empty() && !isOpaqueId(requestId))
+            throw std::invalid_argument("Invalid request ID.");
+        if (task.ownerId != "standalone" && !contexts->enabled(task.ownerId))
+            throw std::invalid_argument("Download context is unavailable.");
+        const auto name = spec.destination.filename().u8string();
+        task.requestName.assign(name.begin(), name.end());
+        if (!requestId.empty()) {
+            for (const auto& [id, existing] : tasks) {
+                const bool keyMatches = existing.requestId == requestId ||
+                                        (legacy && existing.requestId.empty() && id == requestId);
+                if (existing.ownerId != task.ownerId || !keyMatches)
+                    continue;
+                if (existing.spec.url != spec.url || existing.spec.kind != spec.kind ||
+                    existing.contextRevision != task.contextRevision || existing.spec.proxy != spec.proxy ||
+                    existing.proxyCredentialRef != task.proxyCredentialRef ||
+                    (!existing.requestName.empty() && existing.requestName != task.requestName) ||
+                    existing.originAuthenticationRequired != task.originAuthenticationRequired)
+                    throw std::invalid_argument("Request ID belongs to another download request.");
+                return id;
+            }
+            if (legacy && tasks.contains(requestId))
+                throw std::invalid_argument("Request ID is unavailable.");
+        }
+        loadTorrentSource(spec, factory);
+        if (spec.kind == TransferKind::BitTorrent) {
+            task.torrent = factory()->describe(spec);
+            validateSelection(spec, task.torrent);
+        }
+        spec.destination = std::filesystem::absolute(spec.destination).lexically_normal();
+        const auto original = spec.destination;
+        const auto reserved = [&](const auto& path) {
+            return std::filesystem::exists(path) ||
+                   std::any_of(tasks.begin(), tasks.end(), [&](const auto& pair) {
+                       return !isTerminal(pair.second.state) && pair.second.spec.destination == path;
+                   });
+        };
+        for (int n = 1; reserved(spec.destination); ++n) {
+            if (n > 10000)
+                throw std::runtime_error("Too many conflicting file names.");
+            spec.destination =
+                original.parent_path() / (original.stem().wstring() + L" (" + std::to_wstring(n) + L")" +
+                                          original.extension().wstring());
+        }
+        task.id = legacy && !requestId.empty() ? requestId : newTaskId();
+        task.requestId = std::move(requestId);
+        task.createdAt = unixTime();
+        task.updatedAt = task.createdAt;
+        task.state = spec.startPaused
+                         ? TaskState::Paused
+                         : (spec.scheduledAt > unixTime() ? TaskState::Scheduled : TaskState::Queued);
+        if (spec.kind == TransferKind::BitTorrent && task.torrent.files && !spec.torrent.allFiles &&
+            spec.torrent.selectedFiles.empty())
+            task.state = TaskState::AwaitingSelection;
+        if (rememberProxy)
+            contexts->rememberTask(task);
+        try {
+            save(task);
+        } catch (...) {
+            if (rememberProxy && !task.proxyCredentialRef.empty()) {
+                try {
+                    contexts->discardUncommitted(task);
+                } catch (...) {
+                    // Durable ownership journal remains available for exact cleanup on reopen.
+                }
+            }
+            throw;
+        }
+        const auto id = task.id;
+        tasks.emplace(id, std::move(task));
+        publish();
+        return id;
+    }
+    bool control(const std::string& id, ScopedTaskCommand command) {
+        auto it = tasks.find(id);
+        if (it == tasks.end())
+            return false;
+        auto& task = it->second;
+        switch (command) {
+        case ScopedTaskCommand::Pause:
+            if (jobs.contains(id)) {
+                jobs[id]->control->pause = true;
+                task.state = TaskState::Pausing;
+            } else if (!isTerminal(task.state)) {
+                task.state = TaskState::Paused;
+                save(task);
+            }
+            return true;
+        case ScopedTaskCommand::Resume:
+            if (jobs.contains(id) || isTerminal(task.state))
+                return false;
+            if (!contexts->enabled(task.ownerId))
+                return false;
+            task.error.clear();
+            task.retries = 0;
+            if (task.spec.stopAt <= unixTime())
+                task.spec.stopAt = 0;
+            task.state = TaskState::Queued;
+            save(task);
+            return true;
+        case ScopedTaskCommand::Cancel:
+            if (isTerminal(task.state))
+                return true;
+            if (jobs.contains(id)) {
+                jobs[id]->control->cancel = true;
+                task.state = TaskState::Cancelling;
+            } else {
+                task.state = TaskState::Cancelled;
+                save(task);
+                clearOwnedParts(task);
+            }
+            return true;
+        case ScopedTaskCommand::Remove:
+            if (jobs.contains(id))
+                return false;
+            repository->erase(id);
+            clearOwnedParts(task);
+            tasks.erase(it);
+            return true;
+        }
+        return false;
+    }
+    void completeRevocations() {
+        for (auto it = pendingRevocations.begin(); it != pendingRevocations.end();) {
+            const auto owner = it->first;
+            const bool running = std::any_of(jobs.begin(), jobs.end(), [&](const auto& entry) {
+                return tasks.at(entry.first).ownerId == owner;
+            });
+            if (running) {
+                ++it;
+                continue;
+            }
+            try {
+                contexts->finishRevoke(owner);
+                for (auto& [id, task] : tasks) {
+                    if (task.ownerId == owner) {
+                        task.originGrantId.clear();
+                        task.spec.cookie.clear();
+                        task.spec.authorization.clear();
+                        task.spec.proxyUsername.clear();
+                        task.spec.proxyPassword.clear();
+                    }
+                }
+                for (auto& promise : it->second)
+                    promise->set_value();
+            } catch (...) {
+                for (auto& promise : it->second)
+                    promise->set_exception(std::current_exception());
+            }
+            it = pendingRevocations.erase(it);
+        }
+    }
 
     void post(std::function<void()> command) {
         {
@@ -106,6 +297,7 @@ struct DownloadService::Impl {
         });
         std::lock_guard lock(mutex);
         published = std::move(copy);
+        contextWarning = contexts->warning();
     }
     void processEvent(const std::string& id, std::uint64_t generation, TransferEvent event) {
         auto it = tasks.find(id);
@@ -208,6 +400,16 @@ struct DownloadService::Impl {
             }
             if (jobs.size() >= static_cast<size_t>(concurrentTasks))
                 break;
+            DownloadSpec resolved;
+            try {
+                resolved = contexts->resolve(*task);
+            } catch (const std::exception&) {
+                task->state = TaskState::NeedsAttention;
+                task->error =
+                    "Download context or required credentials are unavailable. Rebind the paused task.";
+                save(*task);
+                continue;
+            }
             if (task->spec.stopAt > 0 && now >= task->spec.stopAt) {
                 task->state = TaskState::Paused;
                 save(*task);
@@ -229,7 +431,8 @@ struct DownloadService::Impl {
             task->error.clear();
             ++task->generation;
             save(*task);
-            const auto copy = *task;
+            auto copy = *task;
+            copy.spec = std::move(resolved);
             auto path = workDirectory / task->id;
             auto transport = factory();
             job->thread =
@@ -310,6 +513,7 @@ struct DownloadService::Impl {
                 }
                 tasks.emplace(task.id, std::move(task));
             }
+            contexts->initialize(allTasks());
             publish();
             ready.set_value();
         } catch (...) {
@@ -344,6 +548,7 @@ struct DownloadService::Impl {
                 std::lock_guard lock(mutex);
                 error = "Unable to persist task state. Check available disk space.";
             }
+            completeRevocations();
             publish();
             if (shouldStop && jobs.empty())
                 break;
@@ -352,11 +557,12 @@ struct DownloadService::Impl {
 };
 
 DownloadService::DownloadService(std::unique_ptr<ITaskRepository> repository, TransportFactory factory,
-                                 std::filesystem::path workDirectory)
+                                 std::filesystem::path workDirectory, ContextDependencies contexts)
     : impl_(std::make_unique<Impl>()) {
     impl_->repository = std::move(repository);
     impl_->factory = std::move(factory);
     impl_->workDirectory = std::move(workDirectory);
+    impl_->contexts = std::make_unique<ContextRegistry>(std::move(contexts));
     std::promise<void> ready;
     auto result = ready.get_future();
     impl_->coordinator =
@@ -372,128 +578,135 @@ DownloadService::~DownloadService() {
     if (impl_->coordinator.joinable())
         impl_->coordinator.join();
 }
-std::future<std::string> DownloadService::add(DownloadSpec spec, std::string requestId) {
-    auto promise = std::make_shared<std::promise<std::string>>();
-    auto result = promise->get_future();
-    impl_->post([p = impl_.get(), spec = std::move(spec), requestId = std::move(requestId),
-                 promise]() mutable {
-        try {
-            if (!p->healthy)
-                throw std::runtime_error("Task storage unavailable.");
-            spec.proxyAuthenticationRequired = spec.proxyAuthenticationRequired ||
-                                               !spec.proxyUsername.empty() || !spec.proxyPassword.empty();
-            if (auto message = validateSpec(spec); !message.empty())
-                throw std::invalid_argument(message);
-            spec.kind = sourceKind(spec);
-            if (!requestId.empty() && (requestId.size() != 32 ||
-                                       !std::all_of(requestId.begin(), requestId.end(), [](unsigned char c) {
-                                           return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
-                                       })))
-                throw std::invalid_argument("Invalid request ID.");
-            if (!requestId.empty() && p->tasks.contains(requestId)) {
-                if (p->tasks.at(requestId).spec.url != spec.url ||
-                    p->tasks.at(requestId).spec.kind != spec.kind)
-                    throw std::invalid_argument("Request ID belongs to another resource.");
-                promise->set_value(requestId);
-                return;
-            }
-            loadTorrentSource(spec, p->factory);
-            TransferDescription description;
-            if (spec.kind == TransferKind::BitTorrent) {
-                description = p->factory()->describe(spec);
-                validateSelection(spec, description);
-            }
-            spec.destination = std::filesystem::absolute(spec.destination).lexically_normal();
-            const auto original = spec.destination;
-            auto reserved = [&](const auto& path) {
-                return std::filesystem::exists(path) ||
-                       std::any_of(p->tasks.begin(), p->tasks.end(), [&](const auto& pair) {
-                           return !isTerminal(pair.second.state) && pair.second.spec.destination == path;
-                       });
-            };
-            for (int n = 1; reserved(spec.destination); ++n) {
-                if (n > 10000)
-                    throw std::runtime_error("Too many conflicting file names.");
-                spec.destination =
-                    original.parent_path() / (original.stem().wstring() + L" (" + std::to_wstring(n) + L")" +
-                                              original.extension().wstring());
-            }
+std::future<std::string> DownloadService::add(DownloadSpec spec, std::string requestId, bool rememberProxy) {
+    return impl_->request(
+        [p = impl_.get(), spec = std::move(spec), requestId = std::move(requestId), rememberProxy]() mutable {
             Task task;
-            task.id = requestId.empty() ? newTaskId() : requestId;
             task.spec = std::move(spec);
-            task.torrent = std::move(description);
-            task.createdAt = unixTime();
-            task.updatedAt = task.createdAt;
-            task.state = task.spec.startPaused ? TaskState::Paused
-                                               : (task.spec.scheduledAt > unixTime() ? TaskState::Scheduled
-                                                                                     : TaskState::Queued);
-            if (task.spec.kind == TransferKind::BitTorrent && task.torrent.files &&
-                !task.spec.torrent.allFiles && task.spec.torrent.selectedFiles.empty())
-                task.state = TaskState::AwaitingSelection;
-            p->save(task);
-            const auto id = task.id;
-            p->tasks.emplace(id, std::move(task));
-            p->publish();
-            promise->set_value(id);
+            return p->addPrepared(std::move(task), std::move(requestId), true, rememberProxy);
+        });
+}
+void DownloadService::pause(const std::string& id) {
+    impl_->post([p = impl_.get(), id] { p->control(id, ScopedTaskCommand::Pause); });
+}
+void DownloadService::resume(const std::string& id) {
+    impl_->post([p = impl_.get(), id] { p->control(id, ScopedTaskCommand::Resume); });
+}
+void DownloadService::cancel(const std::string& id) {
+    impl_->post([p = impl_.get(), id] { p->control(id, ScopedTaskCommand::Cancel); });
+}
+void DownloadService::remove(const std::string& id) {
+    impl_->post([p = impl_.get(), id] { p->control(id, ScopedTaskCommand::Remove); });
+}
+std::future<DownloadContext> DownloadService::configureContext(ContextConfiguration configuration,
+                                                               ProxyCredentials credentials,
+                                                               bool rememberProxy) {
+    return impl_->request([p = impl_.get(), configuration = std::move(configuration),
+                           credentials = std::move(credentials), rememberProxy]() mutable {
+        if (!p->healthy || p->pendingRevocations.contains(configuration.id))
+            throw std::runtime_error("Context configuration is currently unavailable.");
+        return p->contexts->configure(std::move(configuration), std::move(credentials), rememberProxy);
+    });
+}
+std::future<std::vector<DownloadContext>> DownloadService::contexts() {
+    return impl_->request([p = impl_.get()] { return p->contexts->list(); });
+}
+std::future<std::string> DownloadService::issueClient(const std::string& ownerId) {
+    return impl_->request([p = impl_.get(), ownerId] { return p->contexts->issueClient(ownerId); });
+}
+std::future<std::string> DownloadService::issueOriginGrant(const std::string& ownerId, std::string url,
+                                                           std::string cookie, std::string authorization,
+                                                           std::int64_t expiresAt) {
+    return impl_->request([p = impl_.get(), ownerId, url = std::move(url), cookie = std::move(cookie),
+                           authorization = std::move(authorization), expiresAt]() mutable {
+        return p->contexts->issueGrant(ownerId, std::move(url), std::move(cookie), std::move(authorization),
+                                       expiresAt);
+    });
+}
+std::future<void> DownloadService::revokeContext(const std::string& ownerId) {
+    auto promise = std::make_shared<std::promise<void>>();
+    auto future = promise->get_future();
+    impl_->post([p = impl_.get(), ownerId, promise] {
+        try {
+            p->contexts->beginRevoke(ownerId);
+            for (auto& [id, job] : p->jobs) {
+                if (p->tasks.at(id).ownerId == ownerId)
+                    job->control->pause = true;
+            }
+            for (auto& [id, task] : p->tasks) {
+                if (task.ownerId != ownerId || isTerminal(task.state))
+                    continue;
+                task.state = p->jobs.contains(id) ? TaskState::Pausing : TaskState::Paused;
+                p->save(task);
+            }
+            p->pendingRevocations[ownerId].push_back(promise);
+            p->completeRevocations();
         } catch (...) {
             promise->set_exception(std::current_exception());
         }
     });
-    return result;
+    return future;
 }
-void DownloadService::pause(const std::string& id) {
-    impl_->post([p = impl_.get(), id] {
-        auto it = p->tasks.find(id);
-        if (it == p->tasks.end())
-            return;
-        auto& t = it->second;
-        if (p->jobs.contains(id)) {
-            p->jobs[id]->control->pause = true;
-            t.state = TaskState::Pausing;
-        } else if (!isTerminal(t.state)) {
-            t.state = TaskState::Paused;
-            p->save(t);
+std::future<void> DownloadService::rebindTask(const std::string& taskId, std::string grantId) {
+    return impl_->request([p = impl_.get(), taskId, grantId = std::move(grantId)] {
+        const auto found = p->tasks.find(taskId);
+        if (found == p->tasks.end() || p->jobs.contains(taskId) || isTerminal(found->second.state))
+            throw std::invalid_argument("Pause an unfinished task before rebinding it.");
+        auto task = found->second;
+        p->contexts->rebind(task, grantId);
+        task.state = TaskState::Paused;
+        task.error.clear();
+        p->save(task);
+        found->second = std::move(task);
+        p->publish();
+    });
+}
+std::future<std::string> DownloadService::addScoped(std::string token, ScopedDownloadDraft draft,
+                                                    std::string requestId) {
+    return impl_->request([p = impl_.get(), token = std::move(token), draft = std::move(draft),
+                           requestId = std::move(requestId)]() mutable {
+        auto task = p->contexts->prepareScoped(token, draft);
+        if (!isOpaqueId(requestId))
+            throw std::invalid_argument("Invalid request ID.");
+        return p->addPrepared(std::move(task), std::move(requestId), false, false);
+    });
+}
+std::future<ScopedTaskPage> DownloadService::listScoped(std::string token, std::size_t limit,
+                                                        std::string afterId) {
+    return impl_->request([p = impl_.get(), token = std::move(token), limit, afterId = std::move(afterId)] {
+        const auto owner = p->contexts->ownerFor(token);
+        if (limit < 1 || limit > 1000)
+            throw std::invalid_argument("Invalid page limit.");
+        if (!afterId.empty()) {
+            const auto cursor = p->tasks.find(afterId);
+            if (cursor == p->tasks.end() || cursor->second.ownerId != owner)
+                throw std::invalid_argument("Invalid page cursor.");
         }
-    });
-}
-void DownloadService::resume(const std::string& id) {
-    impl_->post([p = impl_.get(), id] {
-        auto it = p->tasks.find(id);
-        if (it == p->tasks.end() || p->jobs.contains(id) || isTerminal(it->second.state))
-            return;
-        auto& t = it->second;
-        t.error.clear();
-        t.retries = 0;
-        if (t.spec.stopAt <= unixTime())
-            t.spec.stopAt = 0;
-        t.state = TaskState::Queued;
-        p->save(t);
-    });
-}
-void DownloadService::cancel(const std::string& id) {
-    impl_->post([p = impl_.get(), id] {
-        auto it = p->tasks.find(id);
-        if (it == p->tasks.end() || isTerminal(it->second.state))
-            return;
-        auto& t = it->second;
-        if (p->jobs.contains(id)) {
-            p->jobs[id]->control->cancel = true;
-            t.state = TaskState::Cancelling;
-        } else {
-            t.state = TaskState::Cancelled;
-            p->save(t);
-            p->clearOwnedParts(t);
+        ScopedTaskPage page;
+        for (const auto& [id, task] : p->tasks) {
+            if (task.ownerId != owner || (!afterId.empty() && id <= afterId))
+                continue;
+            if (page.tasks.size() == limit) {
+                page.nextCursor = page.tasks.back().id;
+                break;
+            }
+            const auto filename = task.spec.destination.filename().u8string();
+            page.tasks.push_back(
+                {id, std::string(filename.begin(), filename.end()), task.state, task.downloaded, task.total});
         }
+        return page;
     });
 }
-void DownloadService::remove(const std::string& id) {
-    impl_->post([p = impl_.get(), id] {
-        auto it = p->tasks.find(id);
-        if (it == p->tasks.end() || p->jobs.contains(id))
-            return;
-        p->repository->erase(id);
-        p->clearOwnedParts(it->second);
-        p->tasks.erase(it);
+std::future<void> DownloadService::controlScoped(std::string token, ScopedTaskCommand command,
+                                                 std::string taskId) {
+    return impl_->request([p = impl_.get(), token = std::move(token), command, taskId = std::move(taskId)] {
+        const auto owner = p->contexts->ownerFor(token);
+        const auto found = p->tasks.find(taskId);
+        if (found == p->tasks.end() || found->second.ownerId != owner)
+            throw std::invalid_argument("Task was not found.");
+        if (!p->control(taskId, command))
+            throw std::invalid_argument("Task cannot perform this operation in its current state.");
+        p->publish();
     });
 }
 void DownloadService::setLimits(int concurrentTasks, std::int64_t globalBytesPerSecond,
@@ -539,6 +752,8 @@ void DownloadService::updateUrl(const std::string& id, std::string url) {
         if (!validateSpec(spec).empty())
             return;
         spec.kind = sourceKind(spec);
+        if (it->second.spec.url != spec.url)
+            it->second.originGrantId.clear();
         it->second.spec = std::move(spec);
         it->second.state = TaskState::Paused;
         p->save(it->second);
@@ -592,6 +807,16 @@ void DownloadService::updateRequest(const std::string& id, DownloadSpec spec) {
                 return;
         }
         spec.destination = it->second.spec.destination;
+        if (it->second.ownerId != "standalone") {
+            // Profile route and origin authority are changed only through explicit rebinding.
+            spec.proxy = it->second.spec.proxy;
+            spec.proxyUsername.clear();
+            spec.proxyPassword.clear();
+            spec.proxyAuthenticationRequired = it->second.spec.proxyAuthenticationRequired;
+            spec.cookie = it->second.spec.cookie;
+            spec.authorization = it->second.spec.authorization;
+            spec.headers = it->second.spec.headers;
+        }
         spec.proxyAuthenticationRequired =
             spec.proxyAuthenticationRequired || !spec.proxyUsername.empty() || !spec.proxyPassword.empty();
         if (!validateSpec(spec).empty())
@@ -606,6 +831,12 @@ void DownloadService::updateRequest(const std::string& id, DownloadSpec spec) {
         }
         if (it->second.spec.kind != spec.kind)
             p->clearOwnedParts(it->second);
+        if (it->second.spec.url != spec.url)
+            it->second.originGrantId.clear();
+        if (it->second.ownerId == "standalone" &&
+            (it->second.spec.proxy != spec.proxy || !spec.proxyUsername.empty() ||
+             !spec.proxyPassword.empty()))
+            it->second.proxyCredentialRef.clear();
         it->second.spec = std::move(spec);
         it->second.state = TaskState::Paused;
         it->second.error.clear();
@@ -689,6 +920,6 @@ void DownloadService::schedule(const std::string& id, std::int64_t startAt, std:
 }
 std::string DownloadService::lastError() const {
     std::lock_guard lock(impl_->mutex);
-    return impl_->error;
+    return impl_->error.empty() ? impl_->contextWarning : impl_->error;
 }
 } // namespace maskpilot

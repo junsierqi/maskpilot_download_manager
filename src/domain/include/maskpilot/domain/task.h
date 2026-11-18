@@ -63,6 +63,15 @@ struct DownloadSpec {
 };
 struct Task {
     std::string id;
+    // Trusted server metadata; never accepted from a browser DownloadSpec.
+    std::string ownerId = "standalone";
+    std::string requestId;
+    std::string requestName;
+    std::int64_t contextRevision = 0;
+    std::string proxyCredentialRef;
+    bool originAuthenticationRequired = false;
+    // Per-start URL-specific capability; intentionally not persisted or exported.
+    std::string originGrantId;
     DownloadSpec spec;
     TaskState state = TaskState::Queued;
     std::int64_t downloaded = 0;

@@ -248,7 +248,7 @@ Probe probeOnce(const DownloadSpec& spec, TransferControl& control, Headers& hea
         throw std::runtime_error("Server ignored the requested byte encoding.");
     return result;
 }
-Probe probe(const DownloadSpec& initial, TransferControl& control) {
+Probe probe(const DownloadSpec& initial, TransferControl& control, bool exactOriginGrant) {
     auto spec = initial;
     for (int redirect = 0; redirect <= 5; ++redirect) {
         Headers headers;
@@ -260,6 +260,8 @@ Probe probe(const DownloadSpec& initial, TransferControl& control) {
         if (result.status == 301 || result.status == 302 || result.status == 303 || result.status == 307 ||
             result.status == 308) {
             auto next = resolveUrl(spec.url, headers.get("location"));
+            if (exactOriginGrant && next != initial.url)
+                throw std::runtime_error("Redirect requires a new URL-specific browser origin grant.");
             auto candidate = spec;
             candidate.url = next;
             if (!validateSpec(candidate).empty())
@@ -405,7 +407,7 @@ class CurlTransfer final : public ITransferTransport {
         };
         Probe remote;
         try {
-            remote = probe(task.spec, control);
+            remote = probe(task.spec, control, task.originAuthenticationRequired);
         } catch (const std::exception& e) {
             if (!stopped())
                 emit(TransferOutcome::Attention, e.what());

@@ -1,7 +1,9 @@
 #include <algorithm>
 #include <cctype>
 #include <charconv>
+#include <maskpilot/domain/proxy.h>
 #include <maskpilot/infrastructure/adapters.h>
+#include <mutex>
 #include <sqlite3.h>
 #include <sstream>
 #include <stdexcept>
@@ -39,15 +41,35 @@ class Statement {
             throw std::runtime_error("Database metadata binding failed.");
     }
 };
-class Repository final : public ITaskRepository {
+std::string columnText(sqlite3_stmt* statement, int column) {
+    const auto* value = sqlite3_column_text(statement, column);
+    return value ? std::string(reinterpret_cast<const char*>(value), sqlite3_column_bytes(statement, column))
+                 : std::string();
+}
+void validateTaskContext(const Task& task) {
+    if ((task.ownerId != "standalone" && !isOpaqueId(task.ownerId)) ||
+        (!task.requestId.empty() && !isOpaqueId(task.requestId)) || task.contextRevision < 0 ||
+        (task.ownerId != "standalone" && task.contextRevision == 0) ||
+        (!task.proxyCredentialRef.empty() && !isOpaqueId(task.proxyCredentialRef)) ||
+        task.requestName.size() > 1024 || task.requestName.find('\0') != std::string::npos)
+        throw std::invalid_argument("Invalid persistent task ownership metadata.");
+}
+void validateRecord(const CredentialRecord& record) {
+    if (!isOpaqueId(record.reference) || (record.ownerId != "standalone" && !isOpaqueId(record.ownerId)) ||
+        (!record.ownershipNonce.empty() && !isOpaqueId(record.ownershipNonce)) ||
+        parseProxyEndpoint(record.proxyEndpoint).type == ProxyType::Direct)
+        throw std::invalid_argument("Invalid credential ownership record.");
+}
+class Backend {
     sqlite3* db_ = nullptr;
+    std::mutex mutex_;
     void execute(const char* sql) {
         if (sqlite3_exec(db_, sql, nullptr, nullptr, nullptr) != SQLITE_OK)
             throw std::runtime_error("Database operation failed.");
     }
 
   public:
-    explicit Repository(const std::filesystem::path& path) {
+    explicit Backend(const std::filesystem::path& path) {
         std::filesystem::create_directories(path.parent_path());
         if (sqlite3_open_v2(utf8(path).c_str(), &db_,
                             SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX,
@@ -61,11 +83,12 @@ class Repository final : public ITaskRepository {
             int schemaVersion = 0;
             {
                 Statement version(db_, "PRAGMA user_version");
-                if (sqlite3_step(version.value) != SQLITE_ROW || sqlite3_column_int(version.value, 0) > 5)
+                if (sqlite3_step(version.value) != SQLITE_ROW || sqlite3_column_int(version.value, 0) > 6 ||
+                    sqlite3_column_int(version.value, 0) < 0)
                     throw std::runtime_error("Database was created by a newer version.");
                 schemaVersion = sqlite3_column_int(version.value, 0);
             }
-            if (schemaVersion > 0 && schemaVersion < 5) {
+            if (schemaVersion > 0 && schemaVersion < 6) {
                 auto backupPath = path;
                 backupPath += L".before-v" + std::to_wstring(schemaVersion + 1) + L"-" +
                               std::filesystem::path(newTaskId()).wstring() + L".db";
@@ -119,17 +142,44 @@ class Repository final : public ITaskRepository {
             if (schemaVersion < 5)
                 execute("BEGIN IMMEDIATE; ALTER TABLE tasks ADD COLUMN proxy_auth_required INTEGER "
                         "NOT NULL DEFAULT 0; PRAGMA user_version=5; COMMIT;");
+            if (schemaVersion < 6)
+                execute(R"sql(BEGIN IMMEDIATE;
+ALTER TABLE tasks ADD COLUMN owner_id TEXT NOT NULL DEFAULT 'standalone';
+ALTER TABLE tasks ADD COLUMN request_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE tasks ADD COLUMN context_revision INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tasks ADD COLUMN proxy_credential_ref TEXT NOT NULL DEFAULT '';
+ALTER TABLE tasks ADD COLUMN origin_auth_required INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tasks ADD COLUMN request_name TEXT NOT NULL DEFAULT '';
+UPDATE tasks SET request_id=id WHERE owner_id='standalone';
+CREATE UNIQUE INDEX tasks_owner_request ON tasks(owner_id,request_id) WHERE request_id<>'';
+CREATE TABLE download_contexts(
+ id TEXT PRIMARY KEY, external_key TEXT NOT NULL UNIQUE, label TEXT NOT NULL,
+ download_root TEXT NOT NULL, proxy_endpoint TEXT NOT NULL,
+ proxy_auth_required INTEGER NOT NULL CHECK(proxy_auth_required IN(0,1)),
+ proxy_credential_ref TEXT NOT NULL, origin_auth_required INTEGER NOT NULL CHECK(origin_auth_required IN(0,1)),
+ revision INTEGER NOT NULL CHECK(revision>0), enabled INTEGER NOT NULL CHECK(enabled IN(0,1)));
+CREATE TABLE credential_records(reference TEXT PRIMARY KEY,owner_id TEXT NOT NULL,proxy_endpoint TEXT NOT NULL,
+ ownership_nonce TEXT NOT NULL DEFAULT '');
+CREATE TABLE store_metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+PRAGMA user_version=6;
+COMMIT;)sql");
+            Statement installation(
+                db_, "INSERT OR IGNORE INTO store_metadata(key,value) VALUES('installation_id',?)");
+            installation.text(1, newTaskId());
+            if (sqlite3_step(installation.value) != SQLITE_DONE)
+                throw std::runtime_error("Cannot initialize store identity.");
         } catch (...) {
             sqlite3_close(db_);
             db_ = nullptr;
             throw;
         }
     }
-    ~Repository() override {
+    ~Backend() {
         if (db_)
             sqlite3_close(db_);
     }
-    std::vector<Task> load() override {
+    std::vector<Task> load() {
+        std::lock_guard lock(mutex_);
         Statement q(db_, "SELECT * FROM tasks ORDER BY created_at,id");
         std::vector<Task> result;
         auto text = [&](int col) {
@@ -208,6 +258,13 @@ class Repository final : public ITaskRepository {
             t.torrentPublished = sqlite3_column_int(q.value, 36) != 0;
             t.uploaded = sqlite3_column_int64(q.value, 37);
             t.spec.proxyAuthenticationRequired = sqlite3_column_int(q.value, 38) != 0;
+            t.ownerId = text(39);
+            t.requestId = text(40);
+            t.contextRevision = sqlite3_column_int64(q.value, 41);
+            t.proxyCredentialRef = text(42);
+            t.originAuthenticationRequired = sqlite3_column_int(q.value, 43) != 0;
+            t.requestName = text(44);
+            validateTaskContext(t);
             if (t.id.size() != 32 || !std::all_of(t.id.begin(), t.id.end(), [](unsigned char c) {
                     return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
                 }))
@@ -218,10 +275,32 @@ class Repository final : public ITaskRepository {
             throw std::runtime_error("Cannot read task database.");
         return result;
     }
-    void save(const Task& t) override {
-        Statement q(db_,
-                    "INSERT OR REPLACE INTO tasks "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+    void save(const Task& t) {
+        std::lock_guard lock(mutex_);
+        validateTaskContext(t);
+        Statement q(db_, R"sql(INSERT INTO tasks(
+id,url,destination,category,referrer,user_agent,proxy,expected_sha256,connections,priority,max_retries,
+speed_limit,scheduled_at,stop_at,state,downloaded,total,created_at,updated_at,retries,resumable,error,
+media,audio_only,media_format,media_downloader,media_muxer,ftp_tls,ftp_active,ftp_ca,kind,bt_all,bt_selection,
+bt_seed,bt_upload_limit,bt_metadata,bt_published,bt_uploaded,proxy_auth_required,owner_id,request_id,
+context_revision,proxy_credential_ref,origin_auth_required,request_name)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+ON CONFLICT(id) DO UPDATE SET
+url=excluded.url,destination=excluded.destination,category=excluded.category,referrer=excluded.referrer,
+user_agent=excluded.user_agent,proxy=excluded.proxy,expected_sha256=excluded.expected_sha256,
+connections=excluded.connections,priority=excluded.priority,max_retries=excluded.max_retries,
+speed_limit=excluded.speed_limit,scheduled_at=excluded.scheduled_at,stop_at=excluded.stop_at,
+state=excluded.state,downloaded=excluded.downloaded,total=excluded.total,created_at=excluded.created_at,
+updated_at=excluded.updated_at,retries=excluded.retries,resumable=excluded.resumable,error=excluded.error,
+media=excluded.media,audio_only=excluded.audio_only,media_format=excluded.media_format,
+media_downloader=excluded.media_downloader,media_muxer=excluded.media_muxer,ftp_tls=excluded.ftp_tls,
+ftp_active=excluded.ftp_active,ftp_ca=excluded.ftp_ca,kind=excluded.kind,bt_all=excluded.bt_all,
+bt_selection=excluded.bt_selection,bt_seed=excluded.bt_seed,bt_upload_limit=excluded.bt_upload_limit,
+bt_metadata=excluded.bt_metadata,bt_published=excluded.bt_published,bt_uploaded=excluded.bt_uploaded,
+proxy_auth_required=excluded.proxy_auth_required,request_id=excluded.request_id,
+context_revision=excluded.context_revision,proxy_credential_ref=excluded.proxy_credential_ref,
+origin_auth_required=excluded.origin_auth_required,request_name=excluded.request_name
+WHERE tasks.owner_id=excluded.owner_id)sql");
         q.text(1, t.id);
         q.text(2, t.spec.url);
         q.text(3, utf8(t.spec.destination));
@@ -268,18 +347,178 @@ class Repository final : public ITaskRepository {
         q.number(38, t.uploaded);
         q.number(39, t.spec.proxyAuthenticationRequired || !t.spec.proxyUsername.empty() ||
                          !t.spec.proxyPassword.empty());
-        if (sqlite3_step(q.value) != SQLITE_DONE)
-            throw std::runtime_error("Cannot save task database.");
+        q.text(40, t.ownerId);
+        q.text(41, t.requestId);
+        q.number(42, t.contextRevision);
+        q.text(43, t.proxyCredentialRef);
+        q.number(44, t.originAuthenticationRequired);
+        q.text(45, t.requestName);
+        if (sqlite3_step(q.value) != SQLITE_DONE || sqlite3_changes(db_) != 1)
+            throw std::runtime_error("Cannot save task ownership or request identity.");
     }
-    void erase(const std::string& id) override {
+    void erase(const std::string& id) {
+        std::lock_guard lock(mutex_);
         Statement q(db_, "DELETE FROM tasks WHERE id=?");
         q.text(1, id);
         if (sqlite3_step(q.value) != SQLITE_DONE)
             throw std::runtime_error("Cannot remove task.");
     }
+    std::string installationId() {
+        std::lock_guard lock(mutex_);
+        Statement q(db_, "SELECT value FROM store_metadata WHERE key='installation_id'");
+        if (sqlite3_step(q.value) != SQLITE_ROW)
+            throw std::runtime_error("Store identity is unavailable.");
+        const auto id = columnText(q.value, 0);
+        if (!isOpaqueId(id))
+            throw std::runtime_error("Store identity is invalid.");
+        return id;
+    }
+    std::vector<DownloadContext> loadContexts() {
+        std::lock_guard lock(mutex_);
+        Statement q(
+            db_,
+            "SELECT id,external_key,label,download_root,proxy_endpoint,proxy_auth_required,"
+            "proxy_credential_ref,origin_auth_required,revision,enabled FROM download_contexts ORDER BY id");
+        std::vector<DownloadContext> contexts;
+        int status;
+        while ((status = sqlite3_step(q.value)) == SQLITE_ROW) {
+            DownloadContext context;
+            context.id = columnText(q.value, 0);
+            context.externalKey = columnText(q.value, 1);
+            context.label = columnText(q.value, 2);
+            const auto root = columnText(q.value, 3);
+            context.downloadRoot = std::filesystem::path(std::u8string(root.begin(), root.end()));
+            context.proxyEndpoint = columnText(q.value, 4);
+            context.proxyAuthenticationRequired = sqlite3_column_int(q.value, 5) != 0;
+            context.proxyCredentialRef = columnText(q.value, 6);
+            context.originAuthenticationRequired = sqlite3_column_int(q.value, 7) != 0;
+            context.revision = sqlite3_column_int64(q.value, 8);
+            context.enabled = sqlite3_column_int(q.value, 9) != 0;
+            if (!validateDownloadContext(context).empty())
+                throw std::runtime_error("Saved download context is invalid.");
+            contexts.push_back(std::move(context));
+        }
+        if (status != SQLITE_DONE)
+            throw std::runtime_error("Cannot read download contexts.");
+        return contexts;
+    }
+    void saveContext(const DownloadContext& context) {
+        std::lock_guard lock(mutex_);
+        if (!validateDownloadContext(context).empty())
+            throw std::invalid_argument("Invalid download context.");
+        {
+            Statement exists(db_, "SELECT revision FROM download_contexts WHERE id=?");
+            exists.text(1, context.id);
+            const auto status = sqlite3_step(exists.value);
+            if (status != SQLITE_ROW && status != SQLITE_DONE)
+                throw std::runtime_error("Cannot inspect context revision.");
+            if (status == SQLITE_DONE && context.revision != 1)
+                throw std::invalid_argument("New download contexts must start at revision one.");
+        }
+        Statement q(db_, R"sql(INSERT INTO download_contexts(
+id,external_key,label,download_root,proxy_endpoint,proxy_auth_required,proxy_credential_ref,
+origin_auth_required,revision,enabled) VALUES(?,?,?,?,?,?,?,?,?,?)
+ON CONFLICT(id) DO UPDATE SET external_key=excluded.external_key,label=excluded.label,
+download_root=excluded.download_root,proxy_endpoint=excluded.proxy_endpoint,
+proxy_auth_required=excluded.proxy_auth_required,proxy_credential_ref=excluded.proxy_credential_ref,
+origin_auth_required=excluded.origin_auth_required,revision=excluded.revision,enabled=excluded.enabled
+WHERE excluded.revision=download_contexts.revision+1 OR
+(excluded.revision=download_contexts.revision AND excluded.external_key=download_contexts.external_key
+AND excluded.label=download_contexts.label AND excluded.download_root=download_contexts.download_root
+AND excluded.proxy_endpoint=download_contexts.proxy_endpoint
+AND excluded.proxy_auth_required=download_contexts.proxy_auth_required
+AND excluded.proxy_credential_ref=download_contexts.proxy_credential_ref
+AND excluded.origin_auth_required=download_contexts.origin_auth_required
+AND excluded.enabled=download_contexts.enabled))sql");
+        q.text(1, context.id);
+        q.text(2, context.externalKey);
+        q.text(3, context.label);
+        q.text(4, utf8(context.downloadRoot));
+        q.text(5, context.proxyEndpoint);
+        q.number(6, context.proxyAuthenticationRequired);
+        q.text(7, context.proxyCredentialRef);
+        q.number(8, context.originAuthenticationRequired);
+        q.number(9, context.revision);
+        q.number(10, context.enabled);
+        if (sqlite3_step(q.value) != SQLITE_DONE || sqlite3_changes(db_) != 1)
+            throw std::runtime_error("Cannot save context revision or external identity.");
+    }
+    std::vector<CredentialRecord> loadCredentialRecords() {
+        std::lock_guard lock(mutex_);
+        Statement q(db_, "SELECT reference,owner_id,proxy_endpoint,ownership_nonce FROM credential_records "
+                         "ORDER BY reference");
+        std::vector<CredentialRecord> records;
+        int status;
+        while ((status = sqlite3_step(q.value)) == SQLITE_ROW) {
+            CredentialRecord record{columnText(q.value, 0), columnText(q.value, 1), columnText(q.value, 2),
+                                    columnText(q.value, 3)};
+            validateRecord(record);
+            records.push_back(std::move(record));
+        }
+        if (status != SQLITE_DONE)
+            throw std::runtime_error("Cannot read credential ownership records.");
+        return records;
+    }
+    void saveCredentialRecord(const CredentialRecord& record) {
+        std::lock_guard lock(mutex_);
+        validateRecord(record);
+        Statement q(
+            db_,
+            R"sql(INSERT INTO credential_records(reference,owner_id,proxy_endpoint,ownership_nonce) VALUES(?,?,?,?)
+ON CONFLICT(reference) DO UPDATE SET reference=excluded.reference
+WHERE credential_records.owner_id=excluded.owner_id AND credential_records.proxy_endpoint=excluded.proxy_endpoint
+AND credential_records.ownership_nonce=excluded.ownership_nonce)sql");
+        q.text(1, record.reference);
+        q.text(2, record.ownerId);
+        q.text(3, record.proxyEndpoint);
+        q.text(4, record.ownershipNonce);
+        if (sqlite3_step(q.value) != SQLITE_DONE || sqlite3_changes(db_) != 1)
+            throw std::runtime_error("Cannot save credential ownership record.");
+    }
+    void eraseCredentialRecord(const std::string& reference) {
+        std::lock_guard lock(mutex_);
+        if (!isOpaqueId(reference))
+            throw std::invalid_argument("Invalid credential ownership reference.");
+        Statement q(db_, "DELETE FROM credential_records WHERE reference=?");
+        q.text(1, reference);
+        if (sqlite3_step(q.value) != SQLITE_DONE)
+            throw std::runtime_error("Cannot erase credential ownership record.");
+    }
+};
+class TaskRepository final : public ITaskRepository {
+    std::shared_ptr<Backend> backend_;
+
+  public:
+    explicit TaskRepository(std::shared_ptr<Backend> backend) : backend_(std::move(backend)) {}
+    std::vector<Task> load() override { return backend_->load(); }
+    void save(const Task& task) override { backend_->save(task); }
+    void erase(const std::string& id) override { backend_->erase(id); }
+};
+class ContextRepository final : public IContextRepository {
+    std::shared_ptr<Backend> backend_;
+
+  public:
+    explicit ContextRepository(std::shared_ptr<Backend> backend) : backend_(std::move(backend)) {}
+    std::string installationId() override { return backend_->installationId(); }
+    std::vector<DownloadContext> loadContexts() override { return backend_->loadContexts(); }
+    void saveContext(const DownloadContext& context) override { backend_->saveContext(context); }
+    std::vector<CredentialRecord> loadCredentialRecords() override {
+        return backend_->loadCredentialRecords();
+    }
+    void saveCredentialRecord(const CredentialRecord& record) override {
+        backend_->saveCredentialRecord(record);
+    }
+    void eraseCredentialRecord(const std::string& reference) override {
+        backend_->eraseCredentialRecord(reference);
+    }
 };
 } // namespace
+SqliteStore makeSqliteStore(const std::filesystem::path& path) {
+    auto backend = std::make_shared<Backend>(path);
+    return {std::make_unique<TaskRepository>(backend),
+            std::make_unique<ContextRepository>(std::move(backend))};
+}
 std::unique_ptr<ITaskRepository> makeSqliteRepository(const std::filesystem::path& path) {
-    return std::make_unique<Repository>(path);
+    return makeSqliteStore(path).tasks;
 }
 } // namespace maskpilot

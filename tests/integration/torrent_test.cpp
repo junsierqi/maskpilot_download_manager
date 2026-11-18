@@ -593,6 +593,34 @@ TEST(TorrentProxy, DifferentCredentialsAtOneEndpointNeverShareAnActiveSession) {
     EXPECT_GT(state.value("auth_rejected").toInt(), 0);
 }
 
+TEST(TorrentProxy, DifferentOwnersNeverShareAnActiveSessionEvenWithIdenticalProxyCredentials) {
+    TorrentFixture fixture;
+    RecordingProxyFixture proxy("http", "fixture-user", "fixture-secret");
+    auto first = fixture.task(fixture.temporary.path / "first-owner");
+    first.ownerId = maskpilot::newTaskId();
+    first.spec.proxy = proxy.endpoint();
+    first.spec.proxyUsername = "fixture-user";
+    first.spec.proxyPassword = "fixture-secret";
+    auto second = fixture.task(fixture.temporary.path / "second-owner");
+    second.ownerId = maskpilot::newTaskId();
+    second.spec = first.spec;
+    second.spec.destination = fixture.temporary.path / "second-owner";
+    ASSERT_NE(first.ownerId, second.ownerId);
+    const auto factory = localFactory();
+    maskpilot::TransferControl firstControl, secondControl;
+    auto active = std::async(std::launch::async, [&] {
+        return run(factory, first, fixture.temporary.path / "work" / first.id, firstControl);
+    });
+    const auto parallel = run(factory, second, fixture.temporary.path / "work" / second.id, secondControl);
+    expectComplete(active.get());
+    expectComplete(parallel);
+    fixture.expectPayload(first.spec.destination);
+    fixture.expectPayload(second.spec.destination);
+    const auto state = proxy.snapshot();
+    EXPECT_GT(state.value("auth_accepted").toInt(), 0);
+    EXPECT_GT(state.value("forwarded_bytes").toDouble(), 1000000);
+}
+
 TEST(TorrentProxy, MissingSecretsAndUnsupportedHttpsFailBeforeContactingTheSource) {
     TorrentFixture fixture;
     for (const bool missing : {true, false}) {

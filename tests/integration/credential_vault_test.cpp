@@ -1,3 +1,5 @@
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QUuid>
@@ -113,6 +115,8 @@ TEST_F(CredentialVault, InvalidInputAndOversizedBlobNeverWrite) {
     expectFailure(CredentialVaultFailure::InvalidInput,
                   [&] { makeNativeCredentialVault("../invalid-installation"); });
     for (const auto& reference : {std::string{}, std::string("../other"), std::string(32, 'G')}) {
+        expectFailure(CredentialVaultFailure::InvalidInput,
+                      [&] { vault->store(reference, binding, secrets); });
         expectFailure(CredentialVaultFailure::InvalidInput, [&] { vault->recall(binding, reference); });
         expectFailure(CredentialVaultFailure::InvalidInput, [&] { vault->forget(binding, reference); });
     }
@@ -127,6 +131,75 @@ TEST_F(CredentialVault, InvalidInputAndOversizedBlobNeverWrite) {
                   [&] { vault->remember(binding, {"fixture-user", ""}); });
     expectFailure(CredentialVaultFailure::InvalidInput,
                   [&] { vault->remember(binding, {"fixture-user", std::string(1, '\xff')}); });
+}
+TEST_F(CredentialVault, StoreUsesTheReservedReferenceAndNeverOverwritesAnExistingEntry) {
+    const auto reference = randomId();
+    EXPECT_FALSE(vault->recall(binding, reference));
+    vault->store(reference, binding, secrets);
+    entries.emplace_back(binding, reference);
+    auto reopened = makeNativeCredentialVault(installation);
+    const auto restored = reopened->recall(binding, reference);
+    ASSERT_TRUE(restored);
+    EXPECT_EQ(restored->username, secrets.username);
+    EXPECT_EQ(restored->password, secrets.password);
+    expectFailure(CredentialVaultFailure::AlreadyExists,
+                  [&] { reopened->store(reference, binding, {"replacement-user", "replacement-password"}); });
+    auto anotherOwner = binding;
+    anotherOwner.ownerId = randomId();
+    expectFailure(CredentialVaultFailure::AlreadyExists,
+                  [&] { reopened->store(reference, anotherOwner, secrets); });
+    const auto unchanged = vault->recall(binding, reference);
+    ASSERT_TRUE(unchanged);
+    EXPECT_EQ(unchanged->username, secrets.username);
+    EXPECT_EQ(unchanged->password, secrets.password);
+    const auto absent = randomId();
+    EXPECT_FALSE(reopened->forget(binding, absent));
+    EXPECT_FALSE(reopened->recall(binding, absent));
+}
+TEST_F(CredentialVault, OwnershipNonceProtectsOlderEntriesFromFailedWriteCleanup) {
+    auto owned = binding;
+    owned.ownershipNonce = randomId();
+    const auto reference = remember(owned, secrets);
+    auto failedIntent = owned;
+    failedIntent.ownershipNonce = randomId();
+    expectFailure(CredentialVaultFailure::AlreadyExists,
+                  [&] { vault->store(reference, failedIntent, {"other-user", "other-password"}); });
+    expectFailure(CredentialVaultFailure::Binding, [&] { vault->recall(failedIntent, reference); });
+    expectFailure(CredentialVaultFailure::Binding, [&] { vault->forget(failedIntent, reference); });
+    expectFailure(CredentialVaultFailure::Binding, [&] { vault->forget(binding, reference); });
+    const auto preserved = vault->recall(owned, reference);
+    ASSERT_TRUE(preserved);
+    EXPECT_EQ(preserved->username, secrets.username);
+    EXPECT_EQ(preserved->password, secrets.password);
+    auto invalidNonce = binding;
+    invalidNonce.ownershipNonce = "../invalid";
+    expectFailure(CredentialVaultFailure::InvalidInput,
+                  [&] { vault->store(randomId(), invalidNonce, secrets); });
+}
+TEST_F(CredentialVault, LegacyBlobWithoutNonceRemainsBoundToAnEmptyNonce) {
+    const auto reference = remember(binding, secrets);
+    auto target = QString::fromStdString("MaskPilot.DownloadManager/v1/" + installation + "/" + reference)
+                      .toStdWString();
+    PCREDENTIALW native = nullptr;
+    ASSERT_TRUE(CredReadW(target.c_str(), CRED_TYPE_GENERIC, 0, &native));
+    auto object = QJsonDocument::fromJson(QByteArray(reinterpret_cast<const char*>(native->CredentialBlob),
+                                                     static_cast<qsizetype>(native->CredentialBlobSize)))
+                      .object();
+    CredFree(native);
+    object.remove("nonce");
+    auto legacy = QJsonDocument(object).toJson(QJsonDocument::Compact);
+    CREDENTIALW entry{};
+    entry.Type = CRED_TYPE_GENERIC;
+    entry.TargetName = target.data();
+    entry.Persist = CRED_PERSIST_LOCAL_MACHINE;
+    entry.CredentialBlob = reinterpret_cast<LPBYTE>(legacy.data());
+    entry.CredentialBlobSize = static_cast<DWORD>(legacy.size());
+    ASSERT_TRUE(CredWriteW(&entry, 0));
+    ASSERT_TRUE(vault->recall(binding, reference));
+    auto newIntent = binding;
+    newIntent.ownershipNonce = randomId();
+    expectFailure(CredentialVaultFailure::Binding, [&] { vault->forget(newIntent, reference); });
+    EXPECT_TRUE(vault->recall(binding, reference));
 }
 TEST_F(CredentialVault, NativePersistenceAndCorruptionFailClosed) {
     const auto reference = remember(binding, secrets);
@@ -188,6 +261,9 @@ TEST(CredentialVault, UnsupportedPlatformFailsExplicitly) {
     auto vault = makeNativeCredentialVault(randomId());
     expectFailure(CredentialVaultFailure::Unavailable,
                   [&] { vault->remember({"standalone", "http://proxy.example"}, {"user", "password"}); });
+    expectFailure(CredentialVaultFailure::Unavailable, [&] {
+        vault->store(randomId(), {"standalone", "http://proxy.example"}, {"user", "password"});
+    });
 }
 #endif
 } // namespace

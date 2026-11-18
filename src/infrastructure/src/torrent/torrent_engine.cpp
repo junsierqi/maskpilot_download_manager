@@ -20,6 +20,7 @@
 #include <libtorrent/write_resume_data.hpp>
 #include <limits>
 #include <map>
+#include <maskpilot/domain/download_context.h>
 #include <maskpilot/domain/proxy.h>
 #include <mutex>
 #include <optional>
@@ -696,14 +697,16 @@ struct LazyRuntime {
     std::mutex mutex;
     // Private process-local keys are never serialized/logged. Idle sessions expire;
     // their credential-bearing keys are pruned on the next acquisition or destruction.
-    using RouteKey = std::tuple<ProxyType, std::string, int, std::string, std::string>;
+    using RouteKey = std::tuple<std::string, ProxyType, std::string, int, std::string, std::string>;
     std::map<RouteKey, std::weak_ptr<Runtime>> runtimes;
     explicit LazyRuntime(TorrentRuntimeOptions configured) : options(std::move(configured)) {}
-    std::shared_ptr<Runtime> get(const DownloadSpec& route) {
+    std::shared_ptr<Runtime> get(const Task& task) {
+        const auto& route = task.spec;
         std::lock_guard lock(mutex);
         std::erase_if(runtimes, [](const auto& entry) { return entry.second.expired(); });
         const auto proxy = parseProxyEndpoint(route.proxy);
-        RouteKey key{proxy.type, proxy.host, proxy.port, route.proxyUsername, route.proxyPassword};
+        RouteKey key{task.ownerId, proxy.type,          proxy.host,
+                     proxy.port,   route.proxyUsername, route.proxyPassword};
         auto runtime = runtimes[key].lock();
         if (!runtime || !runtime->alive()) {
             runtime = std::make_shared<Runtime>(options, route);
@@ -781,6 +784,8 @@ class TorrentTransfer final : public ITransferTransport {
         try {
             if (const auto invalid = validateSpec(task.spec); !invalid.empty())
                 throw std::invalid_argument(invalid);
+            if (task.ownerId != "standalone" && !isOpaqueId(task.ownerId))
+                throw std::invalid_argument("Invalid task owner identity.");
             if (const auto invalid = validateProxy(task.spec, true); !invalid.empty())
                 throw std::invalid_argument(invalid);
             if (parseProxyEndpoint(task.spec.proxy).type == ProxyType::Https)
@@ -830,7 +835,7 @@ class TorrentTransfer final : public ITransferTransport {
                 outcome = TransferOutcome::SelectionRequired;
             } else {
                 checkProxyEndpoint(task.spec, control);
-                runtime = owner_->get(task.spec);
+                runtime = owner_->get(task);
                 job = runtime->add(parameters(parsed, task, *storage, storage->published, control), control);
                 bool haveMetadata = static_cast<bool>(parsed.description.files);
                 bool prioritiesReady = haveMetadata;
