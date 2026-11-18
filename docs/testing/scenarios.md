@@ -1,5 +1,17 @@
 # 验证场景
 
+## 发布资格基线
+
+`python scripts/release_manifest.py create --root . --build-directory <build> --output <新基线.json>` 为 Release 构建建立不可覆盖的本地资格清单，记录原生源码、程序、依赖、媒体启动器、版本和环境。实际外部组件与 Qt 插件使用重复的 `--external 名称=绝对路径` 加入。`verify --root . --build-directory <build> --manifest <基线.json>` 核对完整文件集合及哈希；这类私有测试基线包含本机路径，不放进发行包，也不证明发布者身份。
+
+长测使用 `python benchmarks/run.py --desktop <build>/maskpilot.exe --native-host <build>/maskpilot_native_host.exe --build-directory <build> --release-manifest <基线.json> --duration 28800 --report out/qa/stress-0.3.json`；媒体阶段另传 `--media-parser`、`--media-muxer` 和 `--media-fixtures`。部署了本地 Qt／运行库／插件的资格目录还应传入 `--isolated-runtime`，只清除受测子进程的开发环境路径，保留测试器核对源码所需的 Git。复制的构建缓存仅作私有资格证据，不随包分发。
+
+基线在启动前及清理后核对，变化会使测试失败；同时检查桌面实际映射的 DLL，系统模块豁免限于 Windows 系统二进制目录。先执行 300 秒预检；短测或中断不能记为 8 小时通过。独立的发布脚本／文档变动不会改变冻结的原生源码集合，新增或变化的原生输入会被拒绝。
+
+`python tests/system/release_manifest_test.py` 覆盖资格清单的哈希、文件集合、路径、构建缓存和版本反例，不替代实际负载。最终报告还须与发行包内同一组程序字节对应。历史版本长测、当前功能回归和新版长测分别记录。
+
+## 功能回归
+
 站点项目运行 `python tests/integration/site_project_test.py --exercise <cli.exe>`，覆盖真实创建零请求、HTML／CSS 预览与资源计划、同源／路径／循环限制、明确启动、不可覆盖发布、手动更新、失败或取消后旧版本保留，以及下载中强制退出与明确恢复。设置 `MASKPILOT_TEST_BROWSER=<chromium.exe>` 并传入 `--browser tests/system/site_project_test.mjs`，会在关闭来源后用真实浏览器验证已发布文件、图片解码、CSS 导入、页面往返、零来源请求和无活动脚本。
 
 `ctest --test-dir <build> -R 'SiteProject|ProjectTask|site_project_' --output-on-failure --no-tests=error` 包含 SQLite 12→13、原子项目清单、发布回执、实际 Windows 目录联接拒绝及 Qt 项目控件流程。原生队列窗口／日额度由测试所属时钟和真实 Curl 传输驱动，不修改系统时间。保存失败、旧代回调及精确状态交错属于 fixture-only，补充实际协议、文件和界面证据。`maskpilot_site_project_system_tests.exe --screenshot <绝对路径.png>` 可保存项目视图；设置 `MASKPILOT_TEST_NATIVE_UI=1` 使用原生窗口。测试不执行真正关机。

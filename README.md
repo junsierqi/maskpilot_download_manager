@@ -2,7 +2,7 @@
 
 基于 C++20 和 Qt 6 Widgets 的 Windows 下载管理器。HTTP/HTTPS、FTP/FTPS、媒体适配器及独立 BT 引擎负责传输、恢复、校验和安全落盘；桌面、命令行与浏览器共用任务调度和持久化层。
 
-发布候选包仍为 **0.2.0**；开发分支已接入动态分段、命名队列、每周窗口、原生正文日额度、媒体格式选择、页面面板、Firefox 及有界静态站点项目。完成后扫描、更新交付和新版本发布验收仍在后续工程中，详见 [功能与缺口](docs/product/feature-matrix.md)。已有包的验收不能代替开发代码的新版本验收。
+**0.3.0 正在发布验收**，包含动态分段、命名队列、每周窗口、原生正文日额度、媒体格式选择、页面面板、Firefox 及有界静态站点项目。冻结的 0.2.0 包保留。升级工具、当前包和新版长测完成前不视为发布通过；完成后外部扫描等差距见 [功能与缺口](docs/product/feature-matrix.md)。
 
 ## 使用
 
@@ -119,7 +119,7 @@ npm.cmd --prefix browser_extension ci
 npm.cmd --prefix browser_extension test
 ./scripts/dependency-sources.ps1
 ./scripts/package.ps1
-./scripts/smoke.ps1 -PackageDirectory out/package/MaskPilot-0.2.0-windows-x64
+./scripts/smoke.ps1 -PackageDirectory out/package/MaskPilot-0.3.0-windows-x64
 ```
 
 已有独立 Release 构建时，可用 `./scripts/package.ps1 -SkipBuild -BuildDirectory out/build/windows-msvc-protocols` 明确选择产物。脚本检查项目版本、运行客户端、Qt 和编译器匹配，避免将旧二进制混入新包。

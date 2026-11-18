@@ -13,6 +13,7 @@ from ctypes import wintypes as wt
 import hashlib
 import functools
 import http.server
+import importlib.util
 import json
 import math
 import os
@@ -49,7 +50,41 @@ class Memory(ct.Structure):
         ['peak_working', 'working', 'peak_paged', 'paged', 'peak_nonpaged', 'nonpaged', 'pagefile', 'peak_pagefile', 'private']]
 
 psapi.GetProcessMemoryInfo.argtypes = [wt.HANDLE, ct.POINTER(Memory), wt.DWORD]
+psapi.EnumProcessModulesEx.argtypes = [wt.HANDLE, ct.POINTER(wt.HMODULE), wt.DWORD, ct.POINTER(wt.DWORD), wt.DWORD]
+psapi.GetModuleFileNameExW.argtypes = [wt.HANDLE, wt.HMODULE, wt.LPWSTR, wt.DWORD]
+psapi.GetModuleFileNameExW.restype = wt.DWORD
 user.GetGuiResources.argtypes, user.GetGuiResources.restype = [wt.HANDLE, wt.DWORD], wt.DWORD
+
+
+def is_system_module(path, system_root):
+    return any(path.is_relative_to(system_root / directory)
+               for directory in ('System32', 'SysWOW64', 'WinSxS'))
+
+
+def verify_loaded_runtime(handle, manifest, build):
+    """Check the actual desktop mappings, including accidental developer PATH fallback."""
+    expected = {build / name for name in manifest['runtime']}
+    expected.update(Path(record['path']).resolve() for record in manifest['external'].values())
+    pinned_names = {path.name.casefold() for path in expected}
+    system_root = Path(os.environ['SystemRoot']).resolve()
+    modules = (wt.HMODULE * 2048)()
+    needed = wt.DWORD()
+    if not psapi.EnumProcessModulesEx(handle, modules, ct.sizeof(modules), ct.byref(needed), 3):
+        raise ct.WinError(ct.get_last_error())
+    if needed.value > ct.sizeof(modules) or needed.value % ct.sizeof(wt.HMODULE):
+        raise RuntimeError('Loaded module inventory exceeds its bounded buffer')
+    result = {}
+    for module in modules[:needed.value // ct.sizeof(wt.HMODULE)]:
+        name = ct.create_unicode_buffer(32768)
+        count = psapi.GetModuleFileNameExW(handle, module, name, len(name))
+        if not count or count >= len(name) - 1:
+            raise RuntimeError('Cannot identify a loaded desktop module')
+        path = Path(name.value).resolve(strict=True)
+        if path in expected:
+            result[str(path)] = hashlib.sha256(path.read_bytes()).hexdigest()
+        elif path.name.casefold() in pinned_names or not is_system_module(path, system_root):
+            raise RuntimeError('Unqualified desktop module loaded: ' + path.name)
+    return result
 
 def write_report(path, value):
     """Publish complete JSON, tolerating brief Windows reader/scan handles."""
@@ -206,6 +241,10 @@ def run(options):
                   binaries={str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in binaries},
                   thresholds=dict(memoryMiB=512, quarterDriftMiB=64, guiPingP95ms=200, maxSampleGapSeconds=30), maxSampleGapSeconds=0, cycles=0, verifiedFiles=0,
                   pausedResumed=0, peakActive=0, segmentLayouts=0, mediaCycles=0, mediaOutputs=[], samples=[], pingMs=[])
+    harness_path = Path(__file__).resolve()
+    report['harnessSha256'] = hashlib.sha256(harness_path.read_bytes()).hexdigest()
+    qualification = None
+    qualification_path = getattr(options, 'release_manifest', None)
     started, last_sample, last_write, last_console = None, 0, 0, 0
     process, memory_handle, fixture, media_fixture, accepted = None, None, None, None, False
     def save(status=None):
@@ -221,6 +260,45 @@ def run(options):
             print(json.dumps(dict(event='progress', **progress)), flush=True)
             last_console = last_write
     try:
+        if getattr(options, 'isolated_runtime', False):
+            if not qualification_path or not (options.desktop.parent / 'Qt6Core.dll').is_file():
+                raise ValueError('Isolated qualification requires a baseline and locally deployed Qt runtime')
+            environment['PATH'] = str(options.desktop.parent) + os.pathsep + str(options.native_host.parent) + os.pathsep + os.environ['SystemRoot'] + '/System32' + os.pathsep + os.environ['SystemRoot']
+            for name in ('QT_PLUGIN_PATH', 'QT_QPA_PLATFORM_PLUGIN_PATH', 'QML2_IMPORT_PATH', 'QT_ROOT_DIR'):
+                environment.pop(name, None)
+            environment['QT_PLUGIN_PATH'] = str(options.desktop.parent / 'plugins')
+        if qualification_path:
+            repository = harness_path.parents[1]
+            build = (getattr(options, 'build_directory', None) or options.desktop.parent).resolve(strict=True)
+            if not options.desktop.samefile(build / 'maskpilot.exe') or not options.native_host.samefile(build / 'maskpilot_native_host.exe'):
+                raise ValueError('Qualification must bind the actual desktop and native host build directory')
+            qualification_path = Path(qualification_path).resolve(strict=True)
+            if qualification_path.stat().st_size > 4 * 1024**2:
+                raise ValueError('Qualification manifest exceeds 4 MiB')
+            raw = qualification_path.read_bytes()
+            manifest = json.loads(raw)
+            helper_path = repository / 'scripts/release_manifest.py'
+            spec = importlib.util.spec_from_file_location('maskpilot_release_qualification', helper_path)
+            helper = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(helper)
+            helper.verify(manifest, repository, build)
+            external = {Path(value['path']).resolve() for value in manifest['external'].values()}
+            pinned = external | {build / name for name in manifest['runtime']}
+            required_external = [options.media_parser, options.media_muxer, options.media_muxer.with_name('ffprobe.exe')] if options.media_parser else []
+            for name in ('QT_PLUGIN_PATH', 'QT_QPA_PLATFORM_PLUGIN_PATH'):
+                for directory in environment.get(name, '').split(os.pathsep):
+                    if directory:
+                        required_external.extend(Path(directory).resolve(strict=True).rglob('*.dll'))
+            for required in required_external:
+                if not any(required.samefile(value) for value in pinned):
+                    raise ValueError('Actual helper or Qt plugin is absent from the qualification baseline: ' + required.name)
+            qualification = (helper, manifest, repository, build, helper_path,
+                             hashlib.sha256(helper_path.read_bytes()).hexdigest())
+            report['qualification'] = dict(manifestSha256=hashlib.sha256(raw).hexdigest(),
+                                          sourceCommit=manifest['sourceCommit'], sourceDirty=manifest['sourceDirty'],
+                                          version=manifest['version'], environment=manifest['environment'],
+                                          helperSha256=qualification[-1], verifiedBeforeLaunch=True,
+                                          verifiedAfterCleanup=False)
         if not kernel.SetThreadExecutionState(0x80000001):
             raise ct.WinError(ct.get_last_error())
         def tool(binary, arguments):
@@ -259,6 +337,8 @@ def run(options):
         bridge = Bridge(data)
         memory_handle = kernel.OpenProcess(0x410, False, process.pid)
         if not memory_handle: raise ct.WinError(ct.get_last_error())
+        if qualification:
+            report['mappedRuntimeBeforeLoad'] = verify_loaded_runtime(memory_handle, qualification[1], qualification[3])
         fixture = Fixture(); threading.Thread(target=fixture.serve_forever, daemon=True).start()
         started = time.monotonic(); save('running')
         def observe(force=False):
@@ -360,6 +440,8 @@ def run(options):
         report['quarterDriftMiB'] = (statistics.median(last) - statistics.median(first)) / 1024**2
         if not (elapsed >= options.duration and report['cycles'] and report['verifiedFiles'] >= COUNT and report['pausedResumed'] and report['peakActive'] == 8 and report['segmentLayouts'] and len(samples) >= 8 and report['quarterDriftMiB'] < 64 and report['guiPingP95ms'] < 200 and (not options.media_parser or report['mediaCycles'])): raise AssertionError('Duration/load/pause/drift/latency/media acceptance failed')
         report['workloadElapsedSeconds'] = elapsed
+        if qualification:
+            report['mappedRuntimeAfterLoad'] = verify_loaded_runtime(memory_handle, qualification[1], qualification[3])
         save('finishing')
         accepted = True
     except BaseException as error:
@@ -385,6 +467,14 @@ def run(options):
             if media_fixture: media_fixture.shutdown(); media_fixture.server_close()
             if 'log' in locals(): log.close()
             report['processCleaned'] = process is None or process.poll() is not None
+            if accepted and qualification:
+                helper, manifest, repository, build, helper_path, helper_hash = qualification
+                if (hashlib.sha256(qualification_path.read_bytes()).hexdigest() != report['qualification']['manifestSha256'] or
+                        hashlib.sha256(helper_path.read_bytes()).hexdigest() != helper_hash or
+                        hashlib.sha256(harness_path.read_bytes()).hexdigest() != report['harnessSha256']):
+                    raise RuntimeError('Qualification baseline or harness changed during the load')
+                helper.verify(manifest, repository, build)
+                report['qualification']['verifiedAfterCleanup'] = True
             if accepted and not options.keep_artifacts:
                 if root.parent != Path(tempfile.gettempdir()).resolve() or not root.name.startswith('maskpilot-stress-'): raise RuntimeError('Refusing unsafe artifact cleanup')
                 shutil.rmtree(root); report['artifactsRemoved'] = True
@@ -400,6 +490,9 @@ if __name__ == '__main__':
     parser.add_argument('--duration', type=int, default=300); parser.add_argument('--report', type=Path, default=Path('out/qa/stress.json'))
     parser.add_argument('--qt-platform', default='offscreen'); parser.add_argument('--keep-artifacts', action='store_true')
     parser.add_argument('--stop-file', type=Path, help='Gracefully stop without accepting this run when the file appears')
+    parser.add_argument('--release-manifest', type=Path, help='Verify an immutable local runtime/source baseline before launch and after cleanup')
+    parser.add_argument('--build-directory', type=Path, help='Build root bound by --release-manifest; defaults to the actual desktop directory')
+    parser.add_argument('--isolated-runtime', action='store_true', help='Run a deployed qualification runtime with developer PATH and Qt overrides removed')
     parser.add_argument('--media-parser', type=Path); parser.add_argument('--media-muxer', type=Path)
     parser.add_argument('--media-fixtures', type=Path, default=Path('out/qa/media-fixtures')); parser.add_argument('--media-every', type=int, default=10)
     arguments = parser.parse_args()
