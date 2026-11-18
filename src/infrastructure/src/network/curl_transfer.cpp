@@ -261,7 +261,7 @@ Probe probe(const DownloadSpec& initial, TransferControl& control, bool exactOri
             result.status == 308) {
             auto next = resolveUrl(spec.url, headers.get("location"));
             if (exactOriginGrant && next != initial.url)
-                throw std::runtime_error("Redirect requires a new URL-specific browser origin grant.");
+                throw std::runtime_error("Redirect requires fresh source authorization for the new URL.");
             auto candidate = spec;
             candidate.url = next;
             if (!validateSpec(candidate).empty())
@@ -407,7 +407,12 @@ class CurlTransfer final : public ITransferTransport {
         };
         Probe remote;
         try {
-            remote = probe(task.spec, control, task.originAuthenticationRequired);
+            auto spec = task.spec;
+            spec.originAuthenticationRequired =
+                task.originAuthenticationRequired || requiresOriginAuthentication(spec);
+            if (const auto error = validateOriginAuthentication(spec, true); !error.empty())
+                throw std::invalid_argument(error);
+            remote = probe(spec, control, requiresOriginAuthentication(spec));
         } catch (const std::exception& e) {
             if (!stopped())
                 emit(TransferOutcome::Attention, e.what());

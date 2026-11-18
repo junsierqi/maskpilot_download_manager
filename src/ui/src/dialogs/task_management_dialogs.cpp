@@ -1,4 +1,7 @@
+#include "../models/task_list_codec.h"
 #include "../windows/main_window_p.h"
+#include <QHeaderView>
+#include <QTreeWidget>
 #include <cmath>
 namespace maskpilot {
 void MainWindow::Impl::details() {
@@ -45,173 +48,201 @@ void MainWindow::Impl::details() {
     dialog->show();
 }
 
+struct MainWindow::Impl::ImportBatch {
+    std::vector<DownloadSpec> specs;
+    std::vector<std::string> requestIds;
+    std::size_t next = 0, contextBound = 0;
+    int version = 0;
+    bool busy = false;
+};
+namespace {
+enum class ImportReview { Cancel, Confirm, Discard };
+ImportReview reviewImport(QWidget* parent, const std::vector<DownloadSpec>& specs, std::size_t completed,
+                          int version, std::size_t contextBound, bool chinese, bool retained = false) {
+    const auto t = [chinese](const char* en, const char* zh) { return QString::fromUtf8(chinese ? zh : en); };
+    QDialog dialog(parent);
+    dialog.setObjectName("taskImportPreview");
+    dialog.setWindowTitle(t("Review standalone import", "检查独立任务导入"));
+    dialog.resize(960, 520);
+    auto* layout = new QVBoxLayout(&dialog);
+    auto* summary = new QLabel(&dialog);
+    summary->setObjectName("taskImportSummary");
+    summary->setWordWrap(true);
+    auto message =
+        t("%1 tasks; %2 already imported; %3 remaining. Imported tasks belong to standalone and remain "
+          "paused. "
+          "Context bindings and credentials are not restored.",
+          "%1 个任务；已导入 %2 个；剩余 %3 个。导入的任务属于独立任务并保持暂停。不会恢复上下文绑定和凭据。")
+            .arg(specs.size())
+            .arg(completed)
+            .arg(specs.size() - completed);
+    if (contextBound)
+        message += "\n" + t("%1 context-bound sources will be imported as standalone.",
+                            "%1 个上下文来源将导入为独立任务。")
+                              .arg(contextBound);
+    if (version == 1)
+        message +=
+            "\n" +
+            t("Version 1 did not record source-login requirements. Review login needs before resuming.",
+              "版本 1 未记录来源登录要求。恢复前请检查登录需求。");
+    if (retained)
+        message += "\n" + t("Cancel keeps the remaining requests for later. Discard remaining leaves "
+                            "imported tasks untouched.",
+                            "取消会保留剩余请求。丢弃剩余请求不会更改已导入的任务。");
+    summary->setText(message);
+    layout->addWidget(summary);
+    auto* tree = new QTreeWidget(&dialog);
+    tree->setObjectName("taskImportPreviewTasks");
+    tree->setHeaderLabels({t("Source", "来源"), t("Destination", "目标"), t("Proxy route", "代理路径"),
+                           t("Source login", "来源登录"), t("Proxy login", "代理登录")});
+    for (std::size_t n = completed; n < specs.size(); ++n) {
+        const auto& spec = specs[n];
+        const auto sourceAuth = requiresOriginAuthentication(spec)
+                                    ? t("Required; reenter credentials", "需要；请重新输入凭据")
+                                : version == 1 ? t("Unknown (version 1)", "未知（版本 1）")
+                                               : t("Not required", "不需要");
+        new QTreeWidgetItem(tree, {qs(spec.url), pathString(spec.destination),
+                                   spec.proxy.empty() ? t("Direct", "直连") : qs(spec.proxy), sourceAuth,
+                                   spec.proxyAuthenticationRequired
+                                       ? t("Required; reenter credentials", "需要；请重新输入凭据")
+                                       : t("Not required", "不需要")});
+    }
+    tree->setRootIsDecorated(false);
+    tree->header()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    tree->header()->setStretchLastSection(true);
+    layout->addWidget(tree);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Cancel, &dialog);
+    auto* confirm = buttons->addButton(retained ? t("Retry remaining into standalone", "重试剩余独立任务")
+                                                : t("Import into standalone", "导入为独立任务"),
+                                       QDialogButtonBox::AcceptRole);
+    confirm->setObjectName("confirmTaskImport");
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    if (retained) {
+        auto* discard =
+            buttons->addButton(t("Discard remaining", "丢弃剩余请求"), QDialogButtonBox::DestructiveRole);
+        discard->setObjectName("discardTaskImport");
+        QObject::connect(discard, &QPushButton::clicked, &dialog, [&dialog] { dialog.done(2); });
+    }
+    layout->addWidget(buttons);
+    const auto result = dialog.exec();
+    return result == 2                   ? ImportReview::Discard
+           : result == QDialog::Accepted ? ImportReview::Confirm
+                                         : ImportReview::Cancel;
+}
+} // namespace
 void MainWindow::Impl::exportTasks() {
-    auto path = QFileDialog::getSaveFileName(window,
-                                             t("Export task list — contains URLs and torrent metadata",
-                                               "导出任务列表（包含原始地址与种子元数据）"),
-                                             "downloads.json", "JSON (*.json)");
+    const auto path = QFileDialog::getSaveFileName(window,
+                                                   t("Export task list — contains URLs and torrent metadata",
+                                                     "导出任务列表（包含原始地址与种子元数据）"),
+                                                   "downloads.json", "JSON (*.json)");
     if (path.isEmpty())
         return;
-    QJsonArray array;
-    qsizetype encodedBytes = 0;
-    for (const auto& task : all) {
-        QJsonObject value{{"url", qs(task.spec.url)},
-                          {"destination", pathString(task.spec.destination)},
-                          {"category", qs(task.spec.category)},
-                          {"connections", task.spec.connections},
-                          {"proxy", qs(task.spec.proxy)},
-                          {"proxyAuthenticationRequired", task.spec.proxyAuthenticationRequired ||
-                                                              !task.spec.proxyUsername.empty() ||
-                                                              !task.spec.proxyPassword.empty()},
-                          {"media", (task.spec.kind == maskpilot::TransferKind::Media)},
-                          {"audioOnly", task.spec.audioOnly},
-                          {"mediaFormat", qs(task.spec.mediaFormat)},
-                          {"sha256", qs(task.spec.expectedSha256)},
-                          {"ftpTls", task.spec.ftpExplicitTls},
-                          {"ftpActive", task.spec.ftpActiveMode},
-                          {"ftpCa", pathString(task.spec.ftpCaBundle)}};
-        if (task.spec.kind == TransferKind::BitTorrent) {
-            QJsonArray selected;
-            for (const auto index : task.spec.torrent.selectedFiles)
-                selected.append(index);
-            QByteArray metadata;
-            if (task.spec.torrent.metadata)
-                metadata = QByteArray(task.spec.torrent.metadata->data(),
-                                      static_cast<qsizetype>(task.spec.torrent.metadata->size()))
-                               .toBase64();
-            value.insert("torrent",
-                         QJsonObject{{"allFiles", task.spec.torrent.allFiles},
-                                     {"files", selected},
-                                     {"seedAfterDownload", task.spec.torrent.seedAfterDownload},
-                                     {"uploadLimit", static_cast<double>(task.spec.torrent.uploadLimit)},
-                                     {"metadata", QString::fromLatin1(metadata)}});
-        }
-        encodedBytes += QJsonDocument(value).toJson(QJsonDocument::Compact).size() + 2;
-        if (encodedBytes > 32 * 1024 * 1024 - 1024) {
-            QMessageBox::warning(window, "MaskPilot",
-                                 t("Task list exceeds 32 MiB.", "任务清单超过 32 MiB。"));
+    try {
+        const auto output = ui::encodeTaskList(all);
+        QSaveFile file(path);
+        if (!file.open(QIODevice::WriteOnly) || file.write(output) != output.size() || !file.commit())
+            throw std::runtime_error("Cannot save the exported task list.");
+    } catch (const std::exception& error) {
+        QMessageBox::warning(window, t("Export failed", "导出失败"), qs(error.what()));
+    }
+}
+void MainWindow::Impl::importTasks() {
+    if (pendingImport) {
+        if (pendingImport->busy) {
+            notify("MaskPilot", t("An import is still being saved.", "导入仍在保存。"));
             return;
         }
-        array.append(value);
+        const auto decision =
+            reviewImport(window, pendingImport->specs, pendingImport->next, pendingImport->version,
+                         pendingImport->contextBound, chinese, true);
+        if (decision == ImportReview::Confirm)
+            continueImport();
+        else if (decision == ImportReview::Discard)
+            pendingImport.reset();
+        return;
     }
-    const auto output =
-        QJsonDocument(QJsonObject{{"version", 1}, {"downloads", array}}).toJson(QJsonDocument::Compact);
-    QSaveFile file(path);
-    if (!file.open(QIODevice::WriteOnly) || file.write(output) != output.size() || !file.commit())
-        QMessageBox::warning(window, t("Export failed", "导出失败"), file.errorString());
-}
-
-void MainWindow::Impl::importTasks() {
-    auto path =
+    const auto path =
         QFileDialog::getOpenFileName(window, t("Import task list", "导入任务列表"), {}, "JSON (*.json)");
     if (path.isEmpty())
         return;
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly) || file.size() > 32 * 1024 * 1024) {
-        QMessageBox::warning(window, "MaskPilot",
-                             t("Cannot read this file (maximum 32 MiB).", "无法读取文件（最大 32 MiB）。"));
-        return;
-    }
-    QJsonParseError error;
-    auto doc = QJsonDocument::fromJson(file.readAll(), &error);
-    auto object = doc.object();
-    auto array = object.value("downloads").toArray();
-    std::vector<DownloadSpec> specs;
-    if (error.error != QJsonParseError::NoError || object.value("version").toInt() != 1 ||
-        !object.value("downloads").isArray() || array.size() > 10000) {
-        QMessageBox::warning(
-            window, "MaskPilot",
-            t("Invalid task list. Existing tasks were preserved.", "任务列表无效，现有任务未修改。"));
-        return;
-    }
-    for (const auto& entry : array) {
-        auto value = entry.toObject();
-        auto spec = window->defaultSpec(value.value("url").toString());
-        spec.destination = std::filesystem::path(value.value("destination").toString().toStdWString());
-        spec.category = value.value("category").toString("General").toStdString();
-        spec.connections = value.value("connections").toInt(4);
-        spec.proxy = value.value("proxy").toString(settings.value("proxy").toString()).toStdString();
-        spec.proxyAuthenticationRequired = value.value("proxyAuthenticationRequired").toBool();
-        const bool invalidProxyFields = (value.contains("proxy") && !value.value("proxy").isString()) ||
-                                        (value.contains("proxyAuthenticationRequired") &&
-                                         !value.value("proxyAuthenticationRequired").isBool());
-        spec.expectedSha256 = value.value("sha256").toString().toStdString();
-        const bool invalidMediaFields =
-            (value.contains("media") && !value.value("media").isBool()) ||
-            (value.contains("audioOnly") && !value.value("audioOnly").isBool()) ||
-            (value.contains("mediaFormat") && !value.value("mediaFormat").isString());
-        spec.kind =
-            value.value("media").toBool() ? maskpilot::TransferKind::Media : maskpilot::TransferKind::Http;
-        spec.audioOnly = value.value("audioOnly").toBool();
-        spec.mediaFormat = value.value("mediaFormat").toString(qs(spec.mediaFormat)).toStdString();
-        spec.ftpExplicitTls = value.value("ftpTls").toBool();
-        spec.ftpActiveMode = value.value("ftpActive").toBool();
-        spec.ftpCaBundle = std::filesystem::path(value.value("ftpCa").toString().toStdWString());
-        const bool invalidFtpFields = (value.contains("ftpTls") && !value.value("ftpTls").isBool()) ||
-                                      (value.contains("ftpActive") && !value.value("ftpActive").isBool()) ||
-                                      (value.contains("ftpCa") && !value.value("ftpCa").isString());
-        bool invalidTorrentFields = value.contains("torrent") && !value.value("torrent").isObject();
-        if (value.contains("torrent") && !invalidTorrentFields) {
-            const auto torrent = value.value("torrent").toObject();
-            invalidTorrentFields =
-                !isTorrentUrl(spec.url) || !torrent.value("allFiles").isBool() ||
-                !torrent.value("files").isArray() || !torrent.value("seedAfterDownload").isBool() ||
-                !torrent.value("uploadLimit").isDouble() || !torrent.value("metadata").isString();
-            spec.torrent.allFiles = torrent.value("allFiles").toBool(true);
-            spec.torrent.seedAfterDownload = torrent.value("seedAfterDownload").toBool();
-            const auto upload = torrent.value("uploadLimit").toDouble(-1);
-            if (!std::isfinite(upload) || upload < 0 || upload > 2147483647.0 || upload != std::floor(upload))
-                invalidTorrentFields = true;
-            else
-                spec.torrent.uploadLimit = static_cast<qint64>(upload);
-            const auto selected = torrent.value("files").toArray();
-            if (selected.size() > static_cast<qsizetype>(maxTorrentFiles))
-                invalidTorrentFields = true;
-            else
-                for (const auto& index : selected) {
-                    if (!index.isDouble() || index.toDouble(-1) != index.toInt(-1) || index.toInt(-1) < 0)
-                        invalidTorrentFields = true;
-                    else
-                        spec.torrent.selectedFiles.push_back(index.toInt());
+    try {
+        QFile file(path);
+        if (!file.open(QIODevice::ReadOnly) || file.size() > 32 * 1024 * 1024)
+            throw std::runtime_error("Cannot read this task list (maximum 32 MiB).");
+        auto decoded = ui::decodeTaskList(file.readAll(),
+                                          [this](const QString& url) { return window->defaultSpec(url); });
+        auto batch = std::make_shared<ImportBatch>();
+        batch->version = decoded.version;
+        batch->contextBound = decoded.contextBoundCount;
+        auto future = std::make_shared<std::future<std::vector<DownloadSpec>>>(
+            service.prepareImport(std::move(decoded.downloads)));
+        batch->busy = true;
+        pendingImport = batch;
+        auto* poll = new QTimer(window);
+        QObject::connect(poll, &QTimer::timeout, window, [this, poll, future, batch] {
+            if (future->wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+                return;
+            poll->stop();
+            poll->deleteLater();
+            try {
+                batch->specs = future->get();
+                if (pendingImport != batch)
+                    throw std::runtime_error("Another import is already pending.");
+                batch->busy = false;
+                if (reviewImport(window, batch->specs, 0, batch->version, batch->contextBound, chinese) !=
+                    ImportReview::Confirm) {
+                    pendingImport.reset();
+                    return;
                 }
-            const auto encoded = torrent.value("metadata").toString().toLatin1();
-            if (encoded.size() > static_cast<qsizetype>((maxTorrentMetadataBytes + 2) / 3 * 4))
-                invalidTorrentFields = true;
-            else if (!encoded.isEmpty()) {
-                const auto metadata =
-                    QByteArray::fromBase64(encoded, QByteArray::AbortOnBase64DecodingErrors);
-                if (metadata.isEmpty() || metadata.size() > static_cast<qsizetype>(maxTorrentMetadataBytes))
-                    invalidTorrentFields = true;
-                else
-                    spec.torrent.metadata = std::make_shared<const std::vector<char>>(
-                        metadata.constData(), metadata.constData() + metadata.size());
+                for (std::size_t n = 0; n < batch->specs.size(); ++n)
+                    batch->requestIds.push_back(newTaskId());
+                pendingImport = batch;
+                continueImport();
+            } catch (const std::exception& error) {
+                if (pendingImport == batch)
+                    pendingImport.reset();
+                QMessageBox::warning(window, t("Import failed", "导入失败"), qs(error.what()));
             }
-        }
-        spec.startPaused = true;
-        if (invalidMediaFields || invalidFtpFields || invalidTorrentFields || invalidProxyFields ||
-            !validateSpec(spec).empty()) {
-            QMessageBox::warning(window, "MaskPilot",
-                                 t("Task list validation failed. Nothing was imported.",
-                                   "任务列表校验失败，未导入任何任务。"));
-            return;
-        }
-        specs.push_back(std::move(spec));
+        });
+        poll->start(50);
+    } catch (const std::exception& error) {
+        QMessageBox::warning(window, t("Import failed", "导入失败"), qs(error.what()));
     }
-    auto prepared =
-        std::make_shared<std::future<std::vector<DownloadSpec>>>(service.prepareImport(std::move(specs)));
+}
+void MainWindow::Impl::continueImport() {
+    const auto batch = pendingImport;
+    if (!batch || batch->busy)
+        return;
+    if (batch->next == batch->specs.size()) {
+        const auto count = batch->next;
+        pendingImport.reset();
+        notify("MaskPilot",
+               t("Imported %1 paused standalone tasks.", "已导入 %1 个暂停的独立任务。").arg(count));
+        return;
+    }
+    batch->busy = true;
+    auto result = std::make_shared<std::future<std::string>>(
+        service.add(batch->specs[batch->next], batch->requestIds[batch->next], false));
     auto* poll = new QTimer(window);
-    QObject::connect(poll, &QTimer::timeout, window, [this, poll, prepared] {
-        if (prepared->wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+    QObject::connect(poll, &QTimer::timeout, window, [this, poll, batch, result] {
+        if (result->wait_for(std::chrono::seconds(0)) != std::future_status::ready)
             return;
         poll->stop();
         poll->deleteLater();
+        batch->busy = false;
         try {
-            for (auto& spec : prepared->get())
-                window->enqueue(std::move(spec));
-            notify("MaskPilot",
-                   t("Imported tasks will not start until reviewed.", "导入任务不会自动开始，请先检查。"));
-        } catch (const std::exception& error) {
-            QMessageBox::warning(window, t("Import failed", "导入失败"), qs(error.what()));
+            result->get();
+            ++batch->next;
+            continueImport();
+        } catch (const std::exception&) {
+            QMessageBox::warning(
+                window, t("Import paused", "导入已暂停"),
+                t("%1 tasks were imported; %2 remain. Existing tasks were preserved. "
+                  "Choose Import tasks again to review and retry only the remaining tasks.",
+                  "已导入 %1 个任务；剩余 %2 个。现有任务已保留。再次选择导入任务可检查并仅重试剩余任务。")
+                    .arg(batch->next)
+                    .arg(batch->specs.size() - batch->next));
         }
     });
     poll->start(50);

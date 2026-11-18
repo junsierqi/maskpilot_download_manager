@@ -42,6 +42,11 @@ class DownloadService {
     void setPriority(const std::string& id, int priority);
     void updateUrl(const std::string& id, std::string url);
     void updateRequest(const std::string& id, DownloadSpec spec);
+    // Complete trusted desktop edit; explicit persistence and source-requirement choices.
+    std::future<void> updateRequestWithCredentials(const std::string& id, DownloadSpec spec,
+                                                  bool rememberProxy);
+    std::future<void> forgetSavedProxyCredentials(const std::string& id);
+    std::future<void> retryCredentialCleanup();
     void restart(const std::string& id);
     void schedule(const std::string& id, std::int64_t startAt, std::int64_t stopAt);
     std::vector<Task> snapshot() const;

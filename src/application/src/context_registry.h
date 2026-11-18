@@ -10,6 +10,8 @@ class ContextRegistry {
     explicit ContextRegistry(ContextDependencies dependencies);
     ~ContextRegistry();
     void initialize(const std::vector<Task>& savedTasks);
+    // Caller must ensure every worker has stopped. Startup also meets this condition.
+    bool cleanupUnused(const std::vector<Task>& savedTasks);
     DownloadContext configure(ContextConfiguration, ProxyCredentials, bool remember);
     std::vector<DownloadContext> list() const;
     std::string issueClient(const std::string& ownerId);

@@ -1,4 +1,5 @@
 #pragma once
+#include "../dialogs/download_name.h"
 #include "../style/appearance.h"
 #include <QAbstractTableModel>
 #include <QApplication>
@@ -53,6 +54,7 @@
 #include <QVBoxLayout>
 #include <algorithm>
 #include <array>
+#include <map>
 #include <maskpilot/ui/add_download_dialog.h>
 #include <maskpilot/ui/main_window.h>
 #include <set>
@@ -73,25 +75,7 @@ inline QString bytes(std::int64_t value) {
     }
     return QString::number(number, 'f', unit ? 1 : 0) + " " + units[unit];
 }
-inline QString filenameFor(const QString& url) {
-    auto name = url.startsWith("torrent:") ? QFileInfo(url.mid(8)).completeBaseName()
-                                           : QFileInfo(QUrl(url).path()).fileName();
-    if (url.startsWith("magnet:?"))
-        name = QUrlQuery(QUrl(url)).queryItemValue("dn");
-    if (isTorrentUrl(url.toStdString()) && name.isEmpty())
-        name = "Torrent download";
-    name.replace(QRegularExpression(R"([<>:"/\\|?*\x00-\x1f])"), "_");
-    while (name.endsWith(' ') || name.endsWith('.'))
-        name.chop(1);
-    if (name.isEmpty() || name == "." || name == "..")
-        name = "download.bin";
-    if (QRegularExpression(R"(^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\.|$))",
-                           QRegularExpression::CaseInsensitiveOption)
-            .match(name)
-            .hasMatch())
-        name.prepend('_');
-    return name.left(180);
-}
+inline QString filenameFor(const QString& url) { return ui::defaultDownloadName(url); }
 inline QString stateText(TaskState state, bool chinese) {
     static const char* zh[] = {"排队中",   "已计划",   "连接中",     "下载中",   "正在暂停",    "已暂停",
                                "等待重试", "校验中",   "正在完成",   "已完成",   "失败",        "正在取消",
@@ -106,6 +90,7 @@ class TaskModel final : public QAbstractTableModel {
 
   public:
     std::vector<Task> rows;
+    std::map<std::string, QString> contextLabels;
     bool chinese = false;
     explicit TaskModel(QObject* parent)
         : QAbstractTableModel(parent), icons_{ui::icon(ui::Icon::Download), ui::icon(ui::Icon::Download),
@@ -138,8 +123,14 @@ class TaskModel final : public QAbstractTableModel {
             return icons_[kind < icons_.size() ? kind : 0];
         }
         if (role == Qt::UserRole + 2) {
+            const auto scope =
+                task.ownerId == "standalone"
+                    ? (chinese ? QStringLiteral("独立下载区") : QStringLiteral("Standalone"))
+                    : (contextLabels.contains(task.ownerId)
+                           ? contextLabels.at(task.ownerId)
+                           : (chinese ? QStringLiteral("未知上下文") : QStringLiteral("Unknown context")));
             if (task.spec.kind == TransferKind::BitTorrent)
-                return QStringLiteral("BT · ") +
+                return scope + QStringLiteral(" · BT · ") +
                        (task.spec.url.starts_with("magnet:?")
                             ? (chinese ? QStringLiteral("磁力链接") : QStringLiteral("Magnet link"))
                             : (chinese ? QStringLiteral("种子文件") : QStringLiteral("Torrent file")));
@@ -149,7 +140,7 @@ class TaskModel final : public QAbstractTableModel {
                 protocol = chinese ? QStringLiteral("媒体") : QStringLiteral("MEDIA");
             else if (task.spec.ftpExplicitTls)
                 protocol = QStringLiteral("FTPS");
-            return protocol + (source.host().isEmpty() ? QString() : " · " + source.host());
+            return scope + " · " + protocol + (source.host().isEmpty() ? QString() : " · " + source.host());
         }
         if (role == Qt::TextAlignmentRole)
             return static_cast<int>(

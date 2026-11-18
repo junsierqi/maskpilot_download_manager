@@ -1,0 +1,13 @@
+# Task list interchange
+
+Desktop export writes UTF-8 JSON version 2: `{"version":2,"downloads":[...]}`. Input is limited to 32 MiB and 10,000 tasks. Unknown keys, wrong types, unsupported versions and invalid specifications fail before any task is added. Torrent metadata has its own 16 MiB per-item and 24 MiB aggregate decoded limits.
+
+Each item contains `url`, `destination`, `category`, `connections`, credential-free `proxy`, mandatory boolean `proxyAuthenticationRequired` and `originAuthenticationRequired`, advisory `contextBound`, media options, expected SHA-256 and FTP TLS options. Torrent items additionally carry bounded metadata, file selection and seeding options. Cookies, authorization/custom headers, account/password values, credential references, owner IDs, session/grant tokens and helper executable paths are excluded. Original URLs and torrent metadata may contain signed parameters or private tracker credentials; protect exported files.
+
+Version 1 remains readable, but did not record source authentication requirements. Preview explicitly reports this uncertainty. Review login requirements before resuming an old task list. A missing legacy proxy uses the visible local default; version 2 exports the explicit route, including an empty string for direct connections.
+
+Import validates the complete list and previews source, destination, route and authentication requirements. Nothing is added before confirmation. All imported tasks belong to the standalone area and start paused. `contextBound` is informational: it cannot restore a browser identity or grant authority. Local trusted configuration supplies media executable paths.
+
+After confirmation, each task is persisted sequentially with a stable import request ID. If a save fails, accepted tasks remain, the remaining batch stays in memory and the next Import action offers to retry the remaining items. Cancel creates no additional tasks and retains a pending retry. The explicit Discard remaining action releases the pending batch so another file can be selected; already accepted tasks remain. Closing the application also discards the remaining in-memory batch. Import is not an atomic transaction spanning the entire batch.
+
+Required authentication survives export, import and restart even though secret material does not. Resume fails before network/helper creation until credentials are refreshed, or a standalone user explicitly clears the source-login requirement. Profile tasks must instead use an owner-bound, exact-URL browser grant; they cannot be converted by editing task metadata.

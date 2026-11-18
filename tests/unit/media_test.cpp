@@ -10,6 +10,33 @@
 #include <maskpilot/infrastructure/media_tools.h>
 #include <sqlite3.h>
 
+TEST(MediaBoundary, UnresolvedOriginRequirementNeverStartsAHelper) {
+    QTemporaryDir temporary;
+    ASSERT_TRUE(temporary.isValid());
+    for (const bool taskMarker : {false, true}) {
+        maskpilot::Task task;
+        task.id = maskpilot::newTaskId();
+        task.spec.kind = maskpilot::TransferKind::Media;
+        task.spec.url = "https://example.invalid/private";
+        task.spec.destination = std::filesystem::path(temporary.path().toStdWString()) / "never-created.mkv";
+        task.originAuthenticationRequired = taskMarker;
+        task.spec.originAuthenticationRequired = !taskMarker;
+        maskpilot::TransferControl control;
+        int terminals = 0;
+        maskpilot::makeMediaTransfer()->run(
+            task, task.spec.destination.parent_path() / task.id, control, [&](const auto& event) {
+                if (event.outcome != maskpilot::TransferOutcome::Progress) {
+                    ++terminals;
+                    EXPECT_EQ(event.outcome, maskpilot::TransferOutcome::Attention);
+                    EXPECT_NE(event.error.find("Origin authentication"), std::string::npos);
+                }
+            });
+        EXPECT_EQ(terminals, 1);
+        EXPECT_FALSE(std::filesystem::exists(task.spec.destination));
+        EXPECT_FALSE(std::filesystem::exists(task.spec.destination.parent_path() / task.id));
+    }
+}
+
 TEST(MediaArguments, IsolatesSecretsAndPassesUrlAsData) {
     maskpilot::Task task;
     task.spec.url = "https://example.test/video?x=1&y=2";

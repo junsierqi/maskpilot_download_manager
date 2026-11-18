@@ -82,7 +82,7 @@ The application defines `ICredentialVault` independently of Windows. Its native 
 
 This protects persisted credentials at the Windows logon-user boundary; it does not isolate hostile processes running as the same user. The adapter does not enumerate entries or accept caller-selected native target names. Native-read buffers are cleared before release, but complete in-process secret zeroization is not claimed. Callers must store a returned reference transactionally, clean up a failed reference commit, and revoke active use before deleting owned entries. Factory creation itself performs no writes.
 
-The context core now connects optional storage to task/policy persistence; the desktop Remember control and scoped IPC remain required before claiming browser integration readiness. Browser cookies are not stored in this vault. Tests use random owned installation IDs, real native writes/reads/deletes and a second process; they never enumerate or delete unrelated credentials.
+The context core connects optional storage to task/policy persistence, desktop Remember/Forget controls and scoped IPC. Browser cookies are not stored in this vault. Tests use random owned installation IDs, real native writes/reads/deletes and a second process; they never enumerate or delete unrelated credentials.
 
 ## Actor-owned download contexts
 
@@ -94,10 +94,18 @@ Optional native writes have a durable ownership journal before the OS call. A se
 
 Revocation first persists disabled policy and denies new work, then pauses owned workers. Acknowledgement waits for their teardown and exact owned credential cleanup; cleanup errors keep the context disabled and report incomplete cleanup. Published files survive. Failed unused-entry cleanup reports a warning without disabling unrelated downloads. Per-context processes, schedulers and SQLite writers are unnecessary. BT sessions include owner identity even when route credentials match.
 
-The typed core is tested independently of the desktop composition. Framed broker authorization, actual profile/Remember/rebind/revoke widgets, and genuine sibling-browser issuance remain separate acceptance work; core fixtures alone do not establish those paths.
+The typed core is tested independently of desktop composition. Framed broker authorization and actual profile/Remember/rebind/revoke widgets have separate product-path tests. Genuine sibling-browser issuance remains separate acceptance work; downloader fixtures alone do not establish that path.
 
 ## Scoped native broker composition
 
 Desktop startup supplies the shared task/context store and native vault to the single coordinator. A Qt Core protocol adapter replaces window-owned native request handling. Administrative broker authority and legacy extension authority have separate per-start tokens; ordinary bearer requests use the core session registry and never fall back to another authority. The native host has a deliberate local broker invocation distinct from browser-origin invocation. Credentials use framed standard input, not command-line arguments.
 
-The current extension remains a standalone v1 client. v2 fixtures establish downloader-side context readiness; they do not establish actual fingerprint-browser Profile/Storage/Bridge issuance. Context and optional credential management widgets are still required acceptance work. The UI remains trusted local administration, while browser projections and controls are owner-scoped inside the application actor.
+The current extension remains a standalone v1 client. v2 fixtures establish downloader-side context readiness; they do not establish actual fingerprint-browser Profile/Storage/Bridge issuance. The UI remains trusted local administration, while browser projections and controls are owner-scoped inside the application actor.
+
+## Context controls and authentication recovery
+
+Profile administration and narrow profile submission live in a dedicated dialog implementation. QObject-bound future polling keeps actor persistence, worker teardown and vault calls off the UI thread. Accepted tasks retain their route snapshot; only explicit inactive rebind adopts current policy. Profile selection filters presentation, while the actor independently authorizes every scoped call. Revocation cleanup clears the durable policy reference before successful acknowledgement; incomplete cleanup cannot reactivate a profile.
+
+Source-login requirements are part of the specification and task persistence contract. Cookie/Authorization/custom header material and FTP credentials derive the marker automatically. Restart and interchange remove material but retain the marker. Standalone edits can deliberately clear it; profile rebind retains an earlier grant requirement. Each adapter checks requirements before network/helper creation. Bound HTTP requests stop at any changed URL, including same-origin changes, until fresh authorization is supplied.
+
+Task-list JSON is handled by a bounded codec separate from dialogs. Version 2 exports authentication markers and advisory context provenance without authorities or secrets. Import validates everything, obtains explicit standalone preview acceptance, then persists sequentially with stable request IDs. A retained in-memory batch makes partial-save retry idempotent without pretending the entire batch is transactional.

@@ -37,6 +37,7 @@
 #include <QScopedValueRollback>
 #include <QScrollBar>
 #include <QSettings>
+#include <QSignalBlocker>
 #include <QSpinBox>
 #include <QSplitter>
 #include <QStandardPaths>
@@ -89,6 +90,12 @@ struct MainWindow::Impl {
     };
     std::vector<Pending> pending;
     std::vector<Task> all;
+    QComboBox* contextFilter = nullptr;
+    std::vector<DownloadContext> knownContexts;
+    std::optional<std::future<std::vector<DownloadContext>>> contextRequest;
+    std::int64_t lastContextRefresh = 0;
+    struct ImportBatch;
+    std::shared_ptr<ImportBatch> pendingImport;
     explicit Impl(MainWindow* w, DownloadService& s);
     QString t(const char* en, const char* zh) const;
     std::vector<Task> selected() const;
@@ -102,6 +109,10 @@ struct MainWindow::Impl {
     void mediaSupport();
     void exportTasks();
     void importTasks();
+    void continueImport();
+    void refreshContexts();
+    void contextsDialog();
+    void newContextDownload(const QString& url);
     void batch();
 };
 } // namespace maskpilot

@@ -37,6 +37,8 @@ struct DownloadSpec {
     std::string userAgent = defaultUserAgent;
     std::string cookie;
     std::string authorization;
+    // Persist the requirement, never the source credentials. Missing material fails before contact.
+    bool originAuthenticationRequired = false;
     std::string proxy;
     // Proxy secrets are process-local. The persisted marker prevents anonymous fallback after restart.
     std::string proxyUsername, proxyPassword;
@@ -94,6 +96,9 @@ struct Segment {
 };
 std::vector<Segment> splitSegments(std::int64_t length, int count);
 std::string validateSpec(const DownloadSpec& spec);
+bool hasOriginMaterial(const DownloadSpec& spec);
+bool requiresOriginAuthentication(const DownloadSpec& spec);
+std::string validateOriginAuthentication(const DownloadSpec& spec, bool requireMaterial = false);
 bool isFtpUrl(const std::string& url);
 bool isTorrentUrl(const std::string& url);
 TransferKind sourceKind(const DownloadSpec& spec);

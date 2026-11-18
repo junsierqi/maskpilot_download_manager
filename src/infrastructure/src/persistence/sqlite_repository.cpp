@@ -263,6 +263,7 @@ COMMIT;)sql");
             t.contextRevision = sqlite3_column_int64(q.value, 41);
             t.proxyCredentialRef = text(42);
             t.originAuthenticationRequired = sqlite3_column_int(q.value, 43) != 0;
+            t.spec.originAuthenticationRequired = t.originAuthenticationRequired;
             t.requestName = text(44);
             validateTaskContext(t);
             if (t.id.size() != 32 || !std::all_of(t.id.begin(), t.id.end(), [](unsigned char c) {
@@ -351,7 +352,7 @@ WHERE tasks.owner_id=excluded.owner_id)sql");
         q.text(41, t.requestId);
         q.number(42, t.contextRevision);
         q.text(43, t.proxyCredentialRef);
-        q.number(44, t.originAuthenticationRequired);
+        q.number(44, t.originAuthenticationRequired || requiresOriginAuthentication(t.spec));
         q.text(45, t.requestName);
         if (sqlite3_step(q.value) != SQLITE_DONE || sqlite3_changes(db_) != 1)
             throw std::runtime_error("Cannot save task ownership or request identity.");

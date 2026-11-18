@@ -784,6 +784,12 @@ class TorrentTransfer final : public ITransferTransport {
         try {
             if (const auto invalid = validateSpec(task.spec); !invalid.empty())
                 throw std::invalid_argument(invalid);
+            auto authenticatedSpec = task.spec;
+            authenticatedSpec.originAuthenticationRequired =
+                task.originAuthenticationRequired || requiresOriginAuthentication(task.spec);
+            if (const auto originError = validateOriginAuthentication(authenticatedSpec, true);
+                !originError.empty())
+                throw std::invalid_argument(originError);
             if (task.ownerId != "standalone" && !isOpaqueId(task.ownerId))
                 throw std::invalid_argument("Invalid task owner identity.");
             if (const auto invalid = validateProxy(task.spec, true); !invalid.empty())

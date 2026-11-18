@@ -171,6 +171,13 @@ class MediaTransfer final : public ITransferTransport {
             event.speed = 0;
             callback(event);
         };
+        auto authenticatedSpec = task.spec;
+        authenticatedSpec.originAuthenticationRequired =
+            task.originAuthenticationRequired || requiresOriginAuthentication(task.spec);
+        if (const auto error = validateOriginAuthentication(authenticatedSpec, true); !error.empty()) {
+            finish(TransferOutcome::Attention, error);
+            return;
+        }
         if (task.spec.proxyAuthenticationRequired || !task.spec.proxyUsername.empty() ||
             !task.spec.proxyPassword.empty()) {
             finish(TransferOutcome::Attention,

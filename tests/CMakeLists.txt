@@ -1,4 +1,4 @@
-add_executable(maskpilot_tests unit/domain_test.cpp integration/engine_test.cpp integration/credential_vault_test.cpp integration/context_test.cpp)
+add_executable(maskpilot_tests unit/domain_test.cpp integration/engine_test.cpp integration/credential_vault_test.cpp integration/context_test.cpp unit/context_ui_test.cpp unit/task_list_test.cpp)
 target_link_libraries(maskpilot_tests PRIVATE maskpilot_application maskpilot_infrastructure GTest::gtest_main)
 include(GoogleTest)
 gtest_discover_tests(maskpilot_tests DISCOVERY_MODE PRE_TEST)

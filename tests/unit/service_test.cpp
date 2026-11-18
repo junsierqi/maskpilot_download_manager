@@ -1,17 +1,20 @@
 #include <QAction>
 #include <QApplication>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDir>
 #include <QEventLoop>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QPixmap>
 #include <QPushButton>
 #include <QSettings>
+#include <QStatusBar>
 #include <QTabWidget>
 #include <QTableView>
 #include <QTemporaryDir>
@@ -491,10 +494,14 @@ TEST(DesktopFlow, ExportImportPreservesMediaModeWithoutExportingLoginHeaders) {
     EXPECT_FALSE(bytes.contains("fixture-private-proxy-user"));
     EXPECT_FALSE(bytes.contains("fixture-private-proxy-password"));
     const auto saved = QJsonDocument::fromJson(bytes).object().value("downloads").toArray();
+    EXPECT_EQ(QJsonDocument::fromJson(bytes).object().value("version").toInt(), 2);
     ASSERT_EQ(saved.size(), 2);
     bool foundMedia = false;
     for (const auto& entry : saved)
         EXPECT_TRUE(entry.toObject().value("proxyAuthenticationRequired").toBool());
+    for (const auto& entry : saved)
+        EXPECT_EQ(entry.toObject().value("originAuthenticationRequired").toBool(),
+                  entry.toObject().value("url").toString() == QString::fromStdString(file.url));
     for (const auto& entry : saved)
         if (entry.toObject().value("url").toString().contains("playlist")) {
             foundMedia = true;
@@ -507,10 +514,36 @@ TEST(DesktopFlow, ExportImportPreservesMediaModeWithoutExportingLoginHeaders) {
     for (int n = 0; n < 100 && !service.snapshot().empty(); ++n)
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     ASSERT_TRUE(service.snapshot().empty());
+    bool previewSeen = false;
+    QTimer previewHandler;
+    previewHandler.setInterval(25);
+    QObject::connect(&previewHandler, &QTimer::timeout, &window, [&] {
+        auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+        if (!dialog || dialog->objectName() != "taskImportPreview")
+            return;
+        auto* summary = dialog->findChild<QLabel*>("taskImportSummary");
+        auto* rows = dialog->findChild<QTreeWidget*>("taskImportPreviewTasks");
+        auto* confirm = dialog->findChild<QPushButton*>("confirmTaskImport");
+        ASSERT_NE(summary, nullptr);
+        ASSERT_NE(rows, nullptr);
+        ASSERT_NE(confirm, nullptr);
+        EXPECT_TRUE(summary->text().contains("standalone"));
+        EXPECT_EQ(rows->topLevelItemCount(), 2);
+        EXPECT_EQ(dialog->findChildren<QComboBox*>().size(), 0);
+        previewSeen = true;
+        confirm->click();
+    });
+    previewHandler.start();
     fileChooser.start();
     importAction->trigger();
     fileChooser.stop();
-    waitEvents();
+    for (int n = 0; n < 500 && service.snapshot().size() != 2; ++n) {
+        QApplication::processEvents();
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    previewHandler.stop();
+    modalWatchdog.stop();
+    EXPECT_TRUE(previewSeen);
     const auto imported = service.snapshot();
     ASSERT_EQ(imported.size(), 2);
     for (const auto& task : imported) {
@@ -521,6 +554,11 @@ TEST(DesktopFlow, ExportImportPreservesMediaModeWithoutExportingLoginHeaders) {
         EXPECT_TRUE(task.spec.proxyAuthenticationRequired);
         EXPECT_TRUE(task.spec.proxyUsername.empty());
         EXPECT_TRUE(task.spec.proxyPassword.empty());
+        EXPECT_EQ(task.ownerId, "standalone");
+        EXPECT_EQ(task.contextRevision, 0);
+        EXPECT_TRUE(task.proxyCredentialRef.empty());
+        EXPECT_TRUE(task.originGrantId.empty());
+        EXPECT_EQ(task.spec.originAuthenticationRequired, task.spec.url == file.url);
         if (task.spec.url == media.url) {
             EXPECT_TRUE(task.spec.kind == maskpilot::TransferKind::Media);
             EXPECT_TRUE(task.spec.audioOnly);
@@ -530,6 +568,238 @@ TEST(DesktopFlow, ExportImportPreservesMediaModeWithoutExportingLoginHeaders) {
             EXPECT_FALSE(task.spec.kind == maskpilot::TransferKind::Media);
         }
     }
+}
+
+TEST(DesktopFlow, TaskImportCancelAndPartialSaveRetryPreserveCountsAndRequestIdentity) {
+    qputenv("QT_QPA_PLATFORM", "offscreen");
+    QCoreApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
+    int argc = 1;
+    char program[] = "MaskPilotImportRetryTest";
+    char* argv[] = {program, nullptr};
+    QApplication application(argc, argv);
+    QCoreApplication::setOrganizationName("MaskPilotTests");
+    QCoreApplication::setApplicationName("ImportRetryFlow");
+    QTemporaryDir temporary;
+    ASSERT_TRUE(temporary.isValid());
+    QSettings::setDefaultFormat(QSettings::IniFormat);
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, temporary.path());
+    QSettings().setValue("language", "en");
+    struct Attempts {
+        std::mutex mutex;
+        std::vector<std::string> ids;
+        std::atomic_int transfers{0};
+        std::atomic_size_t failAt{2};
+    };
+    struct FailingRepository final : maskpilot::ITaskRepository {
+        std::shared_ptr<Attempts> attempts;
+        MemoryRepository inner;
+        explicit FailingRepository(std::shared_ptr<Attempts> value) : attempts(std::move(value)) {}
+        std::vector<maskpilot::Task> load() override { return inner.load(); }
+        void save(const maskpilot::Task& task) override {
+            {
+                std::lock_guard lock(attempts->mutex);
+                attempts->ids.push_back(task.id);
+                if (attempts->ids.size() == attempts->failAt)
+                    throw std::runtime_error("Owned fixture save failure");
+            }
+            inner.save(task);
+        }
+        void erase(const std::string& id) override { inner.erase(id); }
+    };
+    struct UnexpectedTransfer final : maskpilot::ITransferTransport {
+        std::shared_ptr<Attempts> attempts;
+        explicit UnexpectedTransfer(std::shared_ptr<Attempts> value) : attempts(std::move(value)) {}
+        void run(const maskpilot::Task&, const std::filesystem::path&, maskpilot::TransferControl&,
+                 const std::function<void(maskpilot::TransferEvent)>& callback) override {
+            ++attempts->transfers;
+            maskpilot::TransferEvent event;
+            event.outcome = maskpilot::TransferOutcome::Failed;
+            callback(event);
+        }
+    };
+    const auto attempts = std::make_shared<Attempts>();
+    const auto root = std::filesystem::path(temporary.path().toStdWString());
+    maskpilot::DownloadService service(
+        std::make_unique<FailingRepository>(attempts),
+        [attempts] { return std::make_unique<UnexpectedTransfer>(attempts); }, root / "parts");
+    QJsonArray rows;
+    for (int n = 0; n < 3; ++n)
+        rows.append(QJsonObject{{"url", QString("https://example.test/file-%1").arg(n)},
+                                {"destination", temporary.filePath(QString("file-%1.bin").arg(n))},
+                                {"proxy", ""},
+                                {"proxyAuthenticationRequired", false},
+                                {"originAuthenticationRequired", true},
+                                {"contextBound", true}});
+    const auto listPath = temporary.filePath("import.json");
+    QFile file(listPath);
+    ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+    file.write(QJsonDocument(QJsonObject{{"version", 2}, {"downloads", rows}}).toJson());
+    file.close();
+    maskpilot::MainWindow window(service);
+    window.show();
+    QAction* importAction = nullptr;
+    for (auto* action : window.findChildren<QAction*>())
+        if (action->text().startsWith("Import tasks"))
+            importAction = action;
+    ASSERT_NE(importAction, nullptr);
+    enum Phase {
+        Cancel,
+        Partial,
+        Retry,
+        KeepRemaining,
+        Discard,
+        FirstFailure,
+        DiscardZero,
+        ChooseNew
+    } phase = Cancel;
+    int previews = 0;
+    bool partialWarning = false;
+    bool newChooserSeen = false;
+    QTimer handler;
+    handler.setInterval(25);
+    QObject::connect(&handler, &QTimer::timeout, &window, [&] {
+        auto* modal = QApplication::activeModalWidget();
+        if (auto* chooser = qobject_cast<QFileDialog*>(modal)) {
+            if (phase == ChooseNew) {
+                newChooserSeen = true;
+                chooser->reject();
+                return;
+            }
+            const QFileInfo target(listPath);
+            if (chooser->directory().absolutePath() != target.absolutePath())
+                chooser->setDirectory(target.absolutePath());
+            auto* name = chooser->findChild<QLineEdit*>("fileNameEdit");
+            if (!name)
+                return;
+            name->setText(target.fileName());
+            if (QDir::cleanPath(chooser->selectedFiles().value(0)) == QDir::cleanPath(listPath))
+                QMetaObject::invokeMethod(chooser, "accept", Qt::DirectConnection);
+        } else if (auto* dialog = qobject_cast<QDialog*>(modal);
+                   dialog && dialog->objectName() == "taskImportPreview") {
+            ++previews;
+            auto* summary = dialog->findChild<QLabel*>("taskImportSummary");
+            auto* tasks = dialog->findChild<QTreeWidget*>("taskImportPreviewTasks");
+            ASSERT_NE(summary, nullptr);
+            ASSERT_NE(tasks, nullptr);
+            EXPECT_TRUE(summary->text().contains("standalone"));
+            if (phase == Retry || phase == KeepRemaining || phase == Discard) {
+                EXPECT_TRUE(summary->text().contains("1 already imported"));
+                EXPECT_EQ(tasks->topLevelItemCount(), 2);
+            } else
+                EXPECT_EQ(tasks->topLevelItemCount(), 3);
+            if (phase == Cancel || phase == KeepRemaining)
+                dialog->reject();
+            else if (phase == Discard || phase == DiscardZero) {
+                auto* discard = dialog->findChild<QPushButton*>("discardTaskImport");
+                ASSERT_NE(discard, nullptr);
+                if (phase == DiscardZero)
+                    EXPECT_TRUE(summary->text().contains("0 already imported"));
+                discard->click();
+            } else
+                dialog->findChild<QPushButton*>("confirmTaskImport")->click();
+        } else if (auto* warning = qobject_cast<QMessageBox*>(modal)) {
+            EXPECT_TRUE(phase == Partial || phase == FirstFailure);
+            EXPECT_TRUE(warning->text().contains(phase == FirstFailure ? "0 tasks were imported"
+                                                                       : "1 tasks were imported"));
+            EXPECT_TRUE(warning->text().contains(phase == FirstFailure ? "3 remain" : "2 remain"));
+            partialWarning = true;
+            warning->accept();
+        }
+    });
+    QTimer watchdog;
+    watchdog.setSingleShot(true);
+    QObject::connect(&watchdog, &QTimer::timeout, &window, [] {
+        ADD_FAILURE() << "Import preview/retry modal exceeded bounded test deadline";
+        if (auto* modal = qobject_cast<QDialog*>(QApplication::activeModalWidget()))
+            modal->reject();
+    });
+    watchdog.start(15000);
+    handler.start();
+    auto waitFor = [&](const auto& predicate) {
+        for (int n = 0; n < 1000 && !predicate(); ++n) {
+            QApplication::processEvents();
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        return predicate();
+    };
+    importAction->trigger();
+    ASSERT_TRUE(waitFor([&] { return previews == 1; }));
+    EXPECT_TRUE(service.snapshot().empty());
+    {
+        std::lock_guard lock(attempts->mutex);
+        EXPECT_TRUE(attempts->ids.empty());
+    }
+    phase = Partial;
+    importAction->trigger();
+    ASSERT_TRUE(waitFor([&] { return partialWarning; }));
+    ASSERT_EQ(service.snapshot().size(), 1);
+    phase = Retry;
+    importAction->trigger();
+    ASSERT_TRUE(waitFor([&] {
+        return service.snapshot().size() == 3 &&
+               window.statusBar()->currentMessage().startsWith("Imported 3 paused");
+    }));
+    EXPECT_EQ(previews, 3);
+    EXPECT_EQ(attempts->transfers, 0);
+    EXPECT_TRUE(service.lastError().empty());
+    {
+        std::lock_guard lock(attempts->mutex);
+        ASSERT_EQ(attempts->ids.size(), 4);
+        EXPECT_EQ(attempts->ids[1], attempts->ids[2]);
+        EXPECT_NE(attempts->ids[0], attempts->ids[1]);
+    }
+    for (const auto& task : service.snapshot()) {
+        EXPECT_EQ(task.ownerId, "standalone");
+        EXPECT_EQ(task.state, maskpilot::TaskState::Paused);
+        EXPECT_TRUE(task.spec.originAuthenticationRequired);
+        EXPECT_TRUE(task.originGrantId.empty());
+        EXPECT_TRUE(task.proxyCredentialRef.empty());
+    }
+    attempts->failAt = 6; // One success, then a second partial-batch failure.
+    partialWarning = false;
+    phase = Partial;
+    importAction->trigger();
+    ASSERT_TRUE(waitFor([&] { return partialWarning; }));
+    ASSERT_EQ(service.snapshot().size(), 4);
+    const auto preserved = service.snapshot();
+    {
+        std::ofstream preservedOutput(preserved.front().spec.destination);
+        preservedOutput << "preserve imported task bytes";
+    }
+    phase = KeepRemaining;
+    importAction->trigger();
+    EXPECT_EQ(service.snapshot().size(), preserved.size());
+    phase = Discard;
+    importAction->trigger();
+    phase = ChooseNew;
+    importAction->trigger();
+    EXPECT_TRUE(newChooserSeen);
+    const auto afterDiscard = service.snapshot();
+    for (const auto& task : preserved)
+        EXPECT_TRUE(std::any_of(afterDiscard.begin(), afterDiscard.end(),
+                                [&](const auto& current) { return current.id == task.id; }));
+    {
+        std::ifstream preservedInput(preserved.front().spec.destination);
+        EXPECT_EQ(std::string((std::istreambuf_iterator<char>(preservedInput)), {}),
+                  "preserve imported task bytes");
+    }
+
+    // A failure before any successful item still needs an explicit escape from the retained batch.
+    attempts->failAt = 7;
+    partialWarning = false;
+    phase = FirstFailure;
+    importAction->trigger();
+    ASSERT_TRUE(waitFor([&] { return partialWarning; }));
+    phase = DiscardZero;
+    importAction->trigger();
+    newChooserSeen = false;
+    phase = ChooseNew;
+    importAction->trigger();
+    EXPECT_TRUE(newChooserSeen);
+    EXPECT_EQ(service.snapshot().size(), preserved.size());
+    EXPECT_EQ(attempts->transfers, 0);
+    handler.stop();
+    watchdog.stop();
 }
 
 TEST(DesktopFlow, FtpCredentialsReachPausedTaskWithoutHttpHeaders) {

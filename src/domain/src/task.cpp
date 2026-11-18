@@ -9,6 +9,28 @@
 #include <system_error>
 
 namespace maskpilot {
+bool hasOriginMaterial(const DownloadSpec& spec) {
+    return !spec.cookie.empty() || !spec.authorization.empty() || !spec.headers.empty() ||
+           !spec.ftpUsername.empty() || !spec.ftpPassword.empty();
+}
+bool requiresOriginAuthentication(const DownloadSpec& spec) {
+    return spec.originAuthenticationRequired || hasOriginMaterial(spec);
+}
+std::string validateOriginAuthentication(const DownloadSpec& spec, bool requireMaterial) {
+    if (!requireMaterial || !requiresOriginAuthentication(spec))
+        return {};
+    if (spec.kind == TransferKind::Media || spec.kind == TransferKind::BitTorrent || isTorrentUrl(spec.url))
+        return "Origin authentication is unsupported for media and torrent tasks. Choose a public source "
+               "explicitly.";
+    if (isFtpUrl(spec.url)) {
+        if (spec.ftpUsername.empty())
+            return "FTP authentication is required. Reenter the FTP username and password before resuming.";
+    } else if (spec.cookie.empty() && spec.authorization.empty() && spec.headers.empty()) {
+        return "Source authentication is required. Reenter the URL-bound request credentials or explicitly "
+               "allow anonymous access.";
+    }
+    return {};
+}
 std::vector<Segment> splitSegments(std::int64_t length, int count) {
     if (length < 0 || count < 1 || count > 32)
         return {};

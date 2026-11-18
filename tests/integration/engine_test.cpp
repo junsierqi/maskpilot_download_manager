@@ -39,6 +39,8 @@ TEST(Storage, PersistsTaskButNeverAuthenticationSecrets) {
     EXPECT_EQ(loaded[0].spec.destination, t.spec.destination);
     EXPECT_TRUE(loaded[0].spec.cookie.empty());
     EXPECT_TRUE(loaded[0].spec.authorization.empty());
+    EXPECT_TRUE(loaded[0].originAuthenticationRequired);
+    EXPECT_TRUE(loaded[0].spec.originAuthenticationRequired);
     EXPECT_TRUE(loaded[0].spec.proxyUsername.empty());
     EXPECT_TRUE(loaded[0].spec.proxyPassword.empty());
     EXPECT_TRUE(loaded[0].spec.proxyAuthenticationRequired);
@@ -63,6 +65,56 @@ TEST(Checksums, UsesKnownSha256Vector) {
     }
     EXPECT_EQ(maskpilot::sha256File(path),
               "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+}
+TEST(Storage, SourceRequirementMirrorsTaskSpecAndProcessMaterialWithoutPersistingSecrets) {
+    TempDirectory temporary;
+    const auto path = temporary.path / "tasks.db";
+    std::vector<maskpilot::Task> originals;
+    {
+        auto repository = maskpilot::makeSqliteRepository(path);
+        for (int source = 0; source < 6; ++source) {
+            maskpilot::Task task;
+            task.id = maskpilot::newTaskId();
+            task.spec.url = source == 3 ? "ftp://example.test/file" : "https://example.test/file";
+            task.spec.destination = temporary.path / task.id;
+            if (source == 0)
+                task.spec.cookie = "storage-source-cookie-private";
+            if (source == 1)
+                task.spec.authorization = "storage-source-authorization-private";
+            if (source == 2)
+                task.spec.headers = {{"X-Api-Key", "storage-source-header-private"}};
+            if (source == 3) {
+                task.spec.ftpUsername = "storage-source-ftp-user-private";
+                task.spec.ftpPassword = "storage-source-ftp-password-private";
+            }
+            if (source == 4)
+                task.spec.originAuthenticationRequired = true;
+            if (source == 5)
+                task.originAuthenticationRequired = true;
+            repository->save(task);
+            originals.push_back(task);
+        }
+    }
+    auto repository = maskpilot::makeSqliteRepository(path);
+    const auto loaded = repository->load();
+    ASSERT_EQ(loaded.size(), originals.size());
+    for (const auto& task : loaded) {
+        EXPECT_TRUE(task.originAuthenticationRequired);
+        EXPECT_TRUE(task.spec.originAuthenticationRequired);
+        EXPECT_FALSE(maskpilot::hasOriginMaterial(task.spec));
+        EXPECT_TRUE(maskpilot::validateSpec(task.spec).empty());
+        EXPECT_FALSE(maskpilot::validateOriginAuthentication(task.spec, true).empty());
+    }
+    for (const auto& file : std::filesystem::directory_iterator(temporary.path)) {
+        if (!file.is_regular_file())
+            continue;
+        std::ifstream input(file.path(), std::ios::binary);
+        const std::string bytes((std::istreambuf_iterator<char>(input)), {});
+        for (const auto* secret : {"storage-source-cookie-private", "storage-source-authorization-private",
+                                   "storage-source-header-private", "storage-source-ftp-user-private",
+                                   "storage-source-ftp-password-private"})
+            EXPECT_EQ(bytes.find(secret), std::string::npos);
+    }
 }
 TEST(Storage, MigratesVersionFourBeforeAddingProxyCredentialRequirement) {
     TempDirectory temporary;

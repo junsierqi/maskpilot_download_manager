@@ -3,6 +3,47 @@
 #include <maskpilot/domain/proxy.h>
 #include <maskpilot/domain/task.h>
 
+TEST(OriginAuthentication, MissingSavedMaterialIsStructurallyValidButCannotStart) {
+    maskpilot::DownloadSpec spec;
+    spec.url = "https://example.test/private";
+    spec.destination = "private.bin";
+    spec.originAuthenticationRequired = true;
+    EXPECT_TRUE(maskpilot::validateSpec(spec).empty());
+    EXPECT_TRUE(maskpilot::validateOriginAuthentication(spec).empty());
+    EXPECT_FALSE(maskpilot::validateOriginAuthentication(spec, true).empty());
+    spec.cookie = "session=fixture";
+    EXPECT_TRUE(maskpilot::validateOriginAuthentication(spec, true).empty());
+    spec.originAuthenticationRequired = false;
+    EXPECT_TRUE(maskpilot::requiresOriginAuthentication(spec));
+    spec.cookie.clear();
+    spec.headers = {{"X-Request-Identity", "fixture"}};
+    EXPECT_TRUE(maskpilot::hasOriginMaterial(spec));
+    EXPECT_TRUE(maskpilot::requiresOriginAuthentication(spec));
+    spec.headers.clear();
+    spec.proxyUsername = "proxy-user";
+    spec.proxyPassword = "proxy-password";
+    EXPECT_FALSE(maskpilot::requiresOriginAuthentication(spec));
+}
+TEST(OriginAuthentication, RuntimeMaterialMustMatchItsProtocol) {
+    maskpilot::DownloadSpec spec;
+    spec.url = "ftp://example.test/private";
+    spec.destination = "private.bin";
+    spec.kind = maskpilot::TransferKind::Ftp;
+    spec.originAuthenticationRequired = true;
+    EXPECT_FALSE(maskpilot::validateOriginAuthentication(spec, true).empty());
+    spec.ftpPassword = "password-only";
+    EXPECT_FALSE(maskpilot::validateOriginAuthentication(spec, true).empty());
+    spec.ftpUsername = "fixture-user";
+    spec.ftpPassword.clear();
+    EXPECT_TRUE(maskpilot::validateOriginAuthentication(spec, true).empty());
+    spec.ftpUsername.clear();
+    spec.url = "https://example.test/media";
+    spec.kind = maskpilot::TransferKind::Media;
+    EXPECT_FALSE(maskpilot::validateOriginAuthentication(spec, true).empty());
+    spec.kind = maskpilot::TransferKind::BitTorrent;
+    EXPECT_FALSE(maskpilot::validateOriginAuthentication(spec, true).empty());
+}
+
 TEST(Proxy, KeepsProxyHeadersSeparateFromOriginRequestHeaders) {
     maskpilot::DownloadSpec spec;
     spec.url = "https://example.test/file";

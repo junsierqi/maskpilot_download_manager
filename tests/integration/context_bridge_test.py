@@ -384,6 +384,38 @@ def run(host, desktop):
         harness.scoped(tickets['b'], 'list')
         print('PASS exact-URL redirect/expiry denial, ticket renewal and revoke waits for paused work', flush=True)
 
+        # Legacy Cookie handoff is standalone but must retain the same no-anonymous source policy.
+        legacy_cookie_url = origin.url('a', '/legacy-cookie')
+        legacy_cookie = harness.legacy('prepare', url=legacy_cookie_url, filename='legacy-cookie.bin',
+                                       cookie=COOKIES['a'])['taskId']
+        with contextlib.closing(sqlite3.connect((harness.data / 'tasks.db').as_uri() + '?mode=ro', uri=True)) as database:
+            assert database.execute('SELECT origin_auth_required FROM tasks WHERE id=?',
+                                    (legacy_cookie,)).fetchone() == (1,)
+        harness.legacy('resume', taskId=legacy_cookie)
+        assert Path(harness.wait(legacy_cookie, {9})[2]).read_bytes() == DATA
+        legacy_redirect = harness.legacy('add', url=origin.url('a', '/redirect'), filename='legacy-redirect.bin',
+                                         cookie=COOKIES['a'])['taskId']
+        harness.wait(legacy_redirect, {13})
+        assert not any(path == '/redirect-target' for _, path, _, _ in origin.snapshot())
+        legacy_private_pending = harness.legacy('prepare', url=origin.url('a', '/legacy-restart'),
+                                                filename='legacy-private-restart.bin', cookie=COOKIES['a'])['taskId']
+
+        # Supplying an optional URL grant must not be downgraded by rebinding to a public policy.
+        contexts['b'] = configure('b', contexts['b'], originAuthenticationRequired=False)
+        tickets['b'] = issue('b')
+        optional_url = origin.url('b', '/optional-grant')
+        optional_grant = grant('b', optional_url)
+        optional_task = harness.scoped(tickets['b'], 'prepare', dict(url=optional_url, filename='optional-grant.bin',
+                                                                    originGrantId=optional_grant))['taskId']
+        before = len(origin.snapshot())
+        harness.admin('task.rebind', {'taskId': optional_task}, expected=False)
+        assert len(origin.snapshot()) == before
+        harness.admin('task.rebind', {'taskId': optional_task, 'originGrantId': grant('b', optional_url)})
+        with contextlib.closing(sqlite3.connect((harness.data / 'tasks.db').as_uri() + '?mode=ro', uri=True)) as database:
+            assert database.execute('SELECT origin_auth_required FROM tasks WHERE id=?',
+                                    (optional_task,)).fetchone() == (1,)
+        print('PASS legacy Cookie durable requirement/changed-path denial and optional-grant rebind cannot drop authentication', flush=True)
+
         # Preserve a live-owner paused task to prove restart does not invent vanished cookie/proxy secrets.
         pending_url = origin.url('b', '/after-restart')
         pending = harness.scoped(tickets['b'], 'prepare', dict(url=pending_url, filename='after-restart.bin',
@@ -408,7 +440,7 @@ def run(host, desktop):
         harness.scoped(tickets['b'], 'list', expected=False)
         tickets['b'] = issue('b')
         listing = harness.scoped(tickets['b'], 'list', {'limit': 1000})
-        expected_b = {tasks['b'], redirected, pending}
+        expected_b = {tasks['b'], redirected, pending, optional_task}
         assert {item['id'] for item in listing['tasks']} == expected_b
         page = harness.scoped(tickets['b'], 'list', {'limit': 1})
         collected = []
@@ -429,6 +461,10 @@ def run(host, desktop):
         harness.scoped(tickets['b'], 'resume', {'taskId': pending})
         harness.wait(pending, {13})
         assert len(origin.snapshot()) == before and not Path(harness.row(pending)[2]).exists()
+        harness.legacy('resume', taskId=legacy_private_pending)
+        harness.wait(legacy_private_pending, {13})
+        assert len(origin.snapshot()) == before
+        assert not Path(harness.row(legacy_private_pending)[2]).exists()
         harness.legacy('resume', taskId=pending, expected=False)
         contexts_after = harness.admin('context.list')['contexts']
         assert len(contexts_after) == 2 and not next(item for item in contexts_after if item['id'] == contexts['a']['id'])['enabled']

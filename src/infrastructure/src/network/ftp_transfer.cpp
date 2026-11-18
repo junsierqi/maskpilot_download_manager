@@ -213,6 +213,11 @@ Result transfer(const Task& task, const std::filesystem::path& work, TransferCon
         return {TransferOutcome::Attention, "This transfer requires an FTP or FTPS URL."};
     if (const auto error = validateSpec(task.spec); !error.empty())
         return {TransferOutcome::Attention, error};
+    auto authenticatedSpec = task.spec;
+    authenticatedSpec.originAuthenticationRequired =
+        task.originAuthenticationRequired || requiresOriginAuthentication(task.spec);
+    if (const auto error = validateOriginAuthentication(authenticatedSpec, true); !error.empty())
+        return {TransferOutcome::Attention, error};
     if (isStopped(control))
         return stopped(control);
     const auto remote = probe(task.spec, control);

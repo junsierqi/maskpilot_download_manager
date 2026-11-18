@@ -46,4 +46,6 @@ python benchmarks/run.py --desktop out/package/MaskPilot-0.1.0-windows-x64/maskp
 
 ## 上下文原生消息验证
 
-`ctest --test-dir <build> -R scoped_native_bridge_product_path --output-on-failure --no-tests=error` 调用实际桌面与 host。夹具验证独立管理权限、两个会话、请求去重、跨上下文拒绝、旧客户端隔离、撤销／重新签发／重启及真实代理和 Cookie 路由。大历史数据只在夹具所属桌面关闭时写入；运行时不另起数据库写入器。此夹具仅使用进程内代理凭据，安全保存的实际控件验收另列，不能据此推断 UI 或浏览器侧签发已完成。
+`ctest --test-dir <build> -R scoped_native_bridge_product_path --output-on-failure --no-tests=error` 调用实际桌面与 host。夹具验证独立管理权限、两个会话、请求去重、跨上下文拒绝、旧客户端隔离、撤销／重新签发／重启及真实代理和 Cookie 路由。大历史数据只在夹具所属桌面关闭时写入；运行时不另起数据库写入器。它也验证 v1 登录任务重启后不匿名下载、精确 URL 改变时不请求新目标，以及可选授权任务重新绑定后仍要求授权。不能据此推断浏览器侧签发已完成。
+
+`ctest --test-dir <build> -R 'ContextUi\.|TaskList|DesktopFlow\.|DownloadContexts\.' --output-on-failure --no-tests=error` 覆盖实际环境管理、筛选、新建／重新绑定、撤销／恢复／清理按钮，独立任务安全记住／忘记、重开编辑器保留认证需求，以及导入取消／中途保存失败／剩余重试。原生凭据用随机安装命名空间，结束时仅删除所属日志记录。控件测试默认 offscreen；设置 `MASKPILOT_TEST_NATIVE_UI=1` 使用真实 Windows 窗口，并可用 `MASKPILOT_TEST_CONTEXT_SCREENSHOT=<绝对路径.png>` 保存环境对话框截图。

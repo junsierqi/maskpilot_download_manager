@@ -1,0 +1,216 @@
+#include "task_list_codec.h"
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QSet>
+#include <cmath>
+#include <stdexcept>
+
+namespace maskpilot::ui {
+namespace {
+constexpr qsizetype maxBytes = 32 * 1024 * 1024;
+[[noreturn]] void invalid() {
+    throw std::invalid_argument("Invalid task list. Existing tasks were preserved.");
+}
+QString text(const std::string& value) { return QString::fromStdString(value); }
+QString pathText(const std::filesystem::path& path) {
+    const auto bytes = path.u8string();
+    return QString::fromUtf8(reinterpret_cast<const char*>(bytes.data()),
+                             static_cast<qsizetype>(bytes.size()));
+}
+std::filesystem::path path(const QString& value) {
+    const auto bytes = value.toUtf8();
+    return std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(bytes.data()),
+                                               static_cast<std::size_t>(bytes.size())));
+}
+void keys(const QJsonObject& object, const QSet<QString>& allowed) {
+    for (auto it = object.begin(); it != object.end(); ++it)
+        if (!allowed.contains(it.key()))
+            invalid();
+}
+QString string(const QJsonObject& object, const char* key, QString fallback = {}) {
+    if (!object.contains(key))
+        return fallback;
+    const auto value = object.value(key);
+    if (!value.isString() || value.toString().contains(QChar::Null))
+        invalid();
+    return value.toString();
+}
+bool boolean(const QJsonObject& object, const char* key, bool fallback = false, bool required = false) {
+    if (!object.contains(key)) {
+        if (required)
+            invalid();
+        return fallback;
+    }
+    if (!object.value(key).isBool())
+        invalid();
+    return object.value(key).toBool();
+}
+int integer(const QJsonObject& object, const char* key, int fallback, int minimum, int maximum) {
+    if (!object.contains(key))
+        return fallback;
+    const auto value = object.value(key);
+    const auto number = value.toDouble(-1);
+    if (!value.isDouble() || !std::isfinite(number) || number != std::floor(number) || number < minimum ||
+        number > maximum)
+        invalid();
+    return static_cast<int>(number);
+}
+} // namespace
+QByteArray encodeTaskList(const std::vector<Task>& tasks) {
+    if (tasks.size() > 10000)
+        invalid();
+    QJsonArray array;
+    qsizetype estimatedBytes = 0;
+    for (const auto& task : tasks) {
+        const auto& spec = task.spec;
+        QJsonObject object{{"url", text(spec.url)},
+                           {"destination", pathText(spec.destination)},
+                           {"category", text(spec.category)},
+                           {"connections", spec.connections},
+                           {"proxy", text(spec.proxy)},
+                           {"proxyAuthenticationRequired", spec.proxyAuthenticationRequired ||
+                                                               !spec.proxyUsername.empty() ||
+                                                               !spec.proxyPassword.empty()},
+                           {"originAuthenticationRequired",
+                            task.originAuthenticationRequired || requiresOriginAuthentication(spec)},
+                           {"contextBound", task.ownerId != "standalone"},
+                           {"media", spec.kind == TransferKind::Media},
+                           {"audioOnly", spec.audioOnly},
+                           {"mediaFormat", text(spec.mediaFormat)},
+                           {"sha256", text(spec.expectedSha256)},
+                           {"ftpTls", spec.ftpExplicitTls},
+                           {"ftpActive", spec.ftpActiveMode},
+                           {"ftpCa", pathText(spec.ftpCaBundle)}};
+        if (spec.kind == TransferKind::BitTorrent) {
+            QJsonArray selected;
+            for (const auto index : spec.torrent.selectedFiles)
+                selected.append(index);
+            QByteArray metadata;
+            if (spec.torrent.metadata) {
+                if (spec.torrent.metadata->size() > maxTorrentMetadataBytes)
+                    invalid();
+                metadata = QByteArray(spec.torrent.metadata->data(),
+                                      static_cast<qsizetype>(spec.torrent.metadata->size()))
+                               .toBase64();
+            }
+            object.insert("torrent",
+                          QJsonObject{{"allFiles", spec.torrent.allFiles},
+                                      {"files", selected},
+                                      {"seedAfterDownload", spec.torrent.seedAfterDownload},
+                                      {"uploadLimit", static_cast<double>(spec.torrent.uploadLimit)},
+                                      {"metadata", QString::fromLatin1(metadata)}});
+        }
+        estimatedBytes += QJsonDocument(object).toJson(QJsonDocument::Compact).size() + 2;
+        if (estimatedBytes > maxBytes - 128)
+            invalid();
+        array.append(object);
+    }
+    const auto result =
+        QJsonDocument(QJsonObject{{"version", 2}, {"downloads", array}}).toJson(QJsonDocument::Compact);
+    if (result.size() > maxBytes)
+        invalid();
+    return result;
+}
+DecodedTaskList decodeTaskList(const QByteArray& bytes,
+                               const std::function<DownloadSpec(const QString&)>& defaults) {
+    if (bytes.size() > maxBytes || !defaults)
+        invalid();
+    QJsonParseError error;
+    const auto document = QJsonDocument::fromJson(bytes, &error);
+    if (error.error != QJsonParseError::NoError || !document.isObject())
+        invalid();
+    const auto root = document.object();
+    keys(root, {"version", "downloads"});
+    const auto version = integer(root, "version", 0, 1, 2);
+    if (version == 0 || !root.value("downloads").isArray())
+        invalid();
+    const auto array = root.value("downloads").toArray();
+    if (array.size() > 10000)
+        invalid();
+    DecodedTaskList result;
+    result.version = version;
+    std::size_t metadataBytes = 0;
+    for (const auto& entry : array) {
+        if (!entry.isObject())
+            invalid();
+        const auto object = entry.toObject();
+        keys(object, {"url", "destination", "category", "connections", "proxy", "proxyAuthenticationRequired",
+                      "originAuthenticationRequired", "contextBound", "media", "audioOnly", "mediaFormat",
+                      "sha256", "ftpTls", "ftpActive", "ftpCa", "torrent"});
+        const auto url = string(object, "url");
+        if (url.isEmpty() || url.size() > 32768)
+            invalid();
+        auto spec = defaults(url);
+        spec.url = url.toStdString();
+        spec.cookie.clear();
+        spec.authorization.clear();
+        spec.headers.clear();
+        spec.ftpUsername.clear();
+        spec.ftpPassword.clear();
+        spec.proxyUsername.clear();
+        spec.proxyPassword.clear();
+        spec.destination = path(string(object, "destination"));
+        spec.category = string(object, "category", "General").toStdString();
+        spec.connections = integer(object, "connections", 4, 1, 8);
+        spec.proxy = string(object, "proxy", text(spec.proxy)).toStdString();
+        spec.proxyAuthenticationRequired =
+            boolean(object, "proxyAuthenticationRequired", false, version == 2);
+        spec.originAuthenticationRequired =
+            boolean(object, "originAuthenticationRequired", false, version == 2);
+        if (boolean(object, "contextBound"))
+            ++result.contextBoundCount;
+        spec.expectedSha256 = string(object, "sha256").toStdString();
+        spec.kind = boolean(object, "media") ? TransferKind::Media : TransferKind::Http;
+        spec.audioOnly = boolean(object, "audioOnly");
+        spec.mediaFormat = string(object, "mediaFormat", text(spec.mediaFormat)).toStdString();
+        spec.ftpExplicitTls = boolean(object, "ftpTls");
+        spec.ftpActiveMode = boolean(object, "ftpActive");
+        spec.ftpCaBundle = path(string(object, "ftpCa"));
+        spec.torrent = {};
+        if (object.contains("torrent")) {
+            if (!object.value("torrent").isObject() || !isTorrentUrl(spec.url))
+                invalid();
+            const auto torrent = object.value("torrent").toObject();
+            keys(torrent, {"allFiles", "files", "seedAfterDownload", "uploadLimit", "metadata"});
+            spec.torrent.allFiles = boolean(torrent, "allFiles", true, true);
+            spec.torrent.seedAfterDownload = boolean(torrent, "seedAfterDownload", false, true);
+            if (!torrent.contains("uploadLimit"))
+                invalid();
+            spec.torrent.uploadLimit = integer(torrent, "uploadLimit", 0, 0, 2147483647);
+            if (!torrent.value("files").isArray())
+                invalid();
+            const auto selected = torrent.value("files").toArray();
+            if (selected.size() > static_cast<qsizetype>(maxTorrentFiles))
+                invalid();
+            for (const auto& index : selected) {
+                if (!index.isDouble() || index.toDouble(-1) != index.toInt(-1) || index.toInt(-1) < 0)
+                    invalid();
+                spec.torrent.selectedFiles.push_back(index.toInt());
+            }
+            if (!torrent.value("metadata").isString())
+                invalid();
+            const auto encoded = string(torrent, "metadata").toLatin1();
+            if (encoded.size() > static_cast<qsizetype>((maxTorrentMetadataBytes + 2) / 3 * 4))
+                invalid();
+            if (!encoded.isEmpty()) {
+                const auto metadata =
+                    QByteArray::fromBase64(encoded, QByteArray::AbortOnBase64DecodingErrors);
+                if (metadata.isEmpty() || metadata.size() > static_cast<qsizetype>(maxTorrentMetadataBytes))
+                    invalid();
+                metadataBytes += static_cast<std::size_t>(metadata.size());
+                if (metadataBytes > 24 * 1024 * 1024)
+                    invalid();
+                spec.torrent.metadata =
+                    std::make_shared<const std::vector<char>>(metadata.begin(), metadata.end());
+            }
+        }
+        spec.kind = sourceKind(spec);
+        spec.startPaused = true;
+        if (!validateSpec(spec).empty())
+            invalid();
+        result.downloads.push_back(std::move(spec));
+    }
+    return result;
+}
+} // namespace maskpilot::ui

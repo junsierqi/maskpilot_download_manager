@@ -40,7 +40,11 @@ std::string credentialFromEnvironment(const std::string& name) {
 void readOptions(maskpilot::DownloadSpec& spec, int argc, char** argv, int start) {
     for (int n = start; n < argc; ++n) {
         const std::string option = argv[n];
-        if (option == "--proxy-auth-required")
+        if (option == "--origin-auth-required")
+            spec.originAuthenticationRequired = true;
+        else if (option == "--allow-anonymous")
+            spec.originAuthenticationRequired = false;
+        else if (option == "--proxy-auth-required")
             spec.proxyAuthenticationRequired = true;
         else if (option == "--ftp-explicit-tls")
             spec.ftpExplicitTls = true;
@@ -127,6 +131,8 @@ int runClient(int argc, char** argv) {
                "         --ftp-explicit-tls --ftp-active --ftp-ca PEM_FILE\n";
         std::cout << "Proxy: --proxy-user-env NAME --proxy-password-env NAME --proxy-auth-required\n"
                      "       --proxy-user USER --proxy-password PASS (visible in process arguments)\n";
+        std::cout << "Source: --origin-auth-required preserves a missing-login requirement; "
+                     "--allow-anonymous explicitly clears it when no source credentials are supplied.\n";
         std::cout << "Torrent: local.torrent or magnet:? URI, destination is a new directory.\n"
                      "         --choose-files --select-files 0,2 --all-files --seed --no-seed --upload-limit "
                      "BYTES\n"
@@ -174,7 +180,10 @@ int runClient(int argc, char** argv) {
             readOptions(spec, argc, argv, start);
             if (const auto error = maskpilot::validateSpec(spec); !error.empty())
                 throw std::invalid_argument(error);
-            service.updateRequest(id, std::move(spec));
+            const bool keepStored = !existing->proxyCredentialRef.empty() &&
+                                    spec.proxy == existing->spec.proxy && spec.proxyUsername.empty() &&
+                                    spec.proxyPassword.empty();
+            service.updateRequestWithCredentials(id, std::move(spec), keepStored).get();
             service.resume(id);
         } else {
             maskpilot::DownloadSpec spec;

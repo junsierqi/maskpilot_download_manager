@@ -5,12 +5,17 @@
 #include <deque>
 #include <map>
 #include <maskpilot/application/download_service.h>
+#include <maskpilot/domain/proxy.h>
 #include <mutex>
 #include <thread>
 #include <type_traits>
 
 namespace maskpilot {
 namespace {
+bool sameProxyRoute(const std::string& first, const std::string& second) {
+    const auto a = parseProxyEndpoint(first), b = parseProxyEndpoint(second);
+    return a.type == b.type && a.host == b.host && a.port == b.port;
+}
 void loadTorrentSource(DownloadSpec& spec, const TransportFactory& factory) {
     if (spec.kind != TransferKind::BitTorrent || spec.torrent.metadata || !spec.url.starts_with("torrent:"))
         return;
@@ -83,6 +88,9 @@ struct DownloadService::Impl {
         if (!healthy)
             throw std::runtime_error("Task storage unavailable.");
         auto& spec = task.spec;
+        task.originAuthenticationRequired =
+            task.originAuthenticationRequired || requiresOriginAuthentication(spec);
+        spec.originAuthenticationRequired = task.originAuthenticationRequired;
         spec.proxyAuthenticationRequired =
             spec.proxyAuthenticationRequired || !spec.proxyUsername.empty() || !spec.proxyPassword.empty();
         if (const auto message = validateSpec(spec); !message.empty())
@@ -159,6 +167,85 @@ struct DownloadService::Impl {
         tasks.emplace(id, std::move(task));
         publish();
         return id;
+    }
+    bool releaseUnusedReference(const Task& oldTask) {
+        const auto& reference = oldTask.proxyCredentialRef;
+        if (reference.empty())
+            return true;
+        for (const auto& [id, task] : tasks)
+            if (task.proxyCredentialRef == reference)
+                return true;
+        for (const auto& context : contexts->list())
+            if (context.proxyCredentialRef == reference)
+                return true;
+        try {
+            contexts->discardUncommitted(oldTask);
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
+    bool updateStandalone(const std::string& id, DownloadSpec spec, bool rememberProxy,
+                          bool preserveRequired) {
+        const auto found = tasks.find(id);
+        if (!healthy || found == tasks.end() || found->second.ownerId != "standalone" || jobs.contains(id) ||
+            isTerminal(found->second.state))
+            throw std::invalid_argument("Pause an unfinished standalone task before editing its request.");
+        const auto old = found->second;
+        if (old.spec.kind == TransferKind::BitTorrent || isTorrentUrl(spec.url)) {
+            if (old.spec.kind != TransferKind::BitTorrent || spec.url != old.spec.url)
+                throw std::invalid_argument("Create a new task when changing a torrent source.");
+            spec.torrent.metadata = old.spec.torrent.metadata;
+            if (old.torrentPublished && (spec.torrent.allFiles != old.spec.torrent.allFiles ||
+                                         spec.torrent.selectedFiles != old.spec.torrent.selectedFiles))
+                throw std::invalid_argument("Published torrent selection cannot be changed.");
+        }
+        spec.destination = old.spec.destination;
+        spec.proxyAuthenticationRequired =
+            spec.proxyAuthenticationRequired || !spec.proxyUsername.empty() || !spec.proxyPassword.empty();
+        if (const auto validationError = validateSpec(spec); !validationError.empty())
+            throw std::invalid_argument(validationError);
+        spec.kind = sourceKind(spec);
+        if (spec.kind == TransferKind::BitTorrent)
+            validateSelection(spec, old.torrent);
+        auto candidate = old;
+        candidate.spec = std::move(spec);
+        candidate.originAuthenticationRequired = (preserveRequired && old.originAuthenticationRequired) ||
+                                                 requiresOriginAuthentication(candidate.spec);
+        candidate.spec.originAuthenticationRequired = candidate.originAuthenticationRequired;
+        if (candidate.spec.url != old.spec.url)
+            candidate.originGrantId.clear();
+        const bool supplied = !candidate.spec.proxyUsername.empty() || !candidate.spec.proxyPassword.empty();
+        candidate.proxyCredentialRef.clear();
+        bool created = false;
+        if (rememberProxy) {
+            if (supplied) {
+                contexts->rememberTask(candidate);
+                created = true;
+            } else if (!old.proxyCredentialRef.empty() &&
+                       sameProxyRoute(old.spec.proxy, candidate.spec.proxy)) {
+                candidate.proxyCredentialRef = old.proxyCredentialRef;
+                candidate.spec.proxyAuthenticationRequired = true;
+            } else
+                throw std::invalid_argument("Enter proxy credentials before choosing Remember.");
+        }
+        candidate.state = TaskState::Paused;
+        candidate.error.clear();
+        try {
+            save(candidate);
+        } catch (...) {
+            if (created)
+                try {
+                    contexts->discardUncommitted(candidate);
+                } catch (...) {
+                }
+            throw;
+        }
+        found->second = std::move(candidate);
+        publish();
+        if (old.spec.kind != found->second.spec.kind)
+            clearOwnedParts(old);
+        return releaseUnusedReference(old);
     }
     bool control(const std::string& id, ScopedTaskCommand command) {
         auto it = tasks.find(id);
@@ -248,6 +335,9 @@ struct DownloadService::Impl {
         cv.notify_one();
     }
     void save(Task& task) {
+        task.originAuthenticationRequired =
+            task.originAuthenticationRequired || requiresOriginAuthentication(task.spec);
+        task.spec.originAuthenticationRequired = task.originAuthenticationRequired;
         task.updatedAt = unixTime();
         repository->save(task);
     }
@@ -794,53 +884,58 @@ void DownloadService::restart(const std::string& id) {
 }
 void DownloadService::updateRequest(const std::string& id, DownloadSpec spec) {
     impl_->post([p = impl_.get(), id, spec = std::move(spec)]() mutable {
-        auto it = p->tasks.find(id);
-        if (it == p->tasks.end() || p->jobs.contains(id) || isTerminal(it->second.state))
-            return;
-        if (it->second.spec.kind == TransferKind::BitTorrent || isTorrentUrl(spec.url)) {
-            if (it->second.spec.kind != TransferKind::BitTorrent || spec.url != it->second.spec.url)
+        try {
+            const auto old = p->tasks.find(id);
+            if (old == p->tasks.end() || old->second.ownerId != "standalone")
                 return;
-            spec.torrent.metadata = it->second.spec.torrent.metadata;
-            if (it->second.torrentPublished &&
-                (spec.torrent.allFiles != it->second.spec.torrent.allFiles ||
-                 spec.torrent.selectedFiles != it->second.spec.torrent.selectedFiles))
-                return;
+            const bool keepStored = !old->second.proxyCredentialRef.empty() && spec.proxyUsername.empty() &&
+                                    spec.proxyPassword.empty() &&
+                                    sameProxyRoute(old->second.spec.proxy, spec.proxy);
+            p->updateStandalone(id, std::move(spec), keepStored, true);
+        } catch (const std::invalid_argument&) {
+            // Preserve the legacy fire-and-forget API's validation behavior.
         }
-        spec.destination = it->second.spec.destination;
-        if (it->second.ownerId != "standalone") {
-            // Profile route and origin authority are changed only through explicit rebinding.
-            spec.proxy = it->second.spec.proxy;
-            spec.proxyUsername.clear();
-            spec.proxyPassword.clear();
-            spec.proxyAuthenticationRequired = it->second.spec.proxyAuthenticationRequired;
-            spec.cookie = it->second.spec.cookie;
-            spec.authorization = it->second.spec.authorization;
-            spec.headers = it->second.spec.headers;
-        }
-        spec.proxyAuthenticationRequired =
-            spec.proxyAuthenticationRequired || !spec.proxyUsername.empty() || !spec.proxyPassword.empty();
-        if (!validateSpec(spec).empty())
-            return;
-        spec.kind = sourceKind(spec);
-        if (spec.kind == TransferKind::BitTorrent) {
-            try {
-                validateSelection(spec, it->second.torrent);
-            } catch (const std::exception&) {
-                return;
-            }
-        }
-        if (it->second.spec.kind != spec.kind)
-            p->clearOwnedParts(it->second);
-        if (it->second.spec.url != spec.url)
-            it->second.originGrantId.clear();
-        if (it->second.ownerId == "standalone" &&
-            (it->second.spec.proxy != spec.proxy || !spec.proxyUsername.empty() ||
-             !spec.proxyPassword.empty()))
-            it->second.proxyCredentialRef.clear();
-        it->second.spec = std::move(spec);
-        it->second.state = TaskState::Paused;
-        it->second.error.clear();
-        p->save(it->second);
+    });
+}
+std::future<void> DownloadService::updateRequestWithCredentials(const std::string& id, DownloadSpec spec,
+                                                                bool rememberProxy) {
+    return impl_->request([p = impl_.get(), id, spec = std::move(spec), rememberProxy]() mutable {
+        if (!p->updateStandalone(id, std::move(spec), rememberProxy, false))
+            throw std::runtime_error("Task updated, but prior native credential cleanup requires retry.");
+    });
+}
+std::future<void> DownloadService::forgetSavedProxyCredentials(const std::string& id) {
+    return impl_->request([p = impl_.get(), id] {
+        const auto found = p->tasks.find(id);
+        if (!p->healthy || found == p->tasks.end() || found->second.ownerId != "standalone" ||
+            p->jobs.contains(id) || isTerminal(found->second.state))
+            throw std::invalid_argument("Pause an unfinished standalone task before forgetting credentials.");
+        const auto old = found->second;
+        if (old.proxyCredentialRef.empty())
+            throw std::invalid_argument("No saved proxy credentials are attached to this task.");
+        auto candidate = old;
+        candidate.proxyCredentialRef.clear();
+        candidate.spec.proxyUsername.clear();
+        candidate.spec.proxyPassword.clear();
+        candidate.spec.proxyAuthenticationRequired = true;
+        candidate.state = TaskState::Paused;
+        candidate.error.clear();
+        p->save(candidate);
+        found->second = std::move(candidate);
+        p->publish();
+        if (!p->releaseUnusedReference(old))
+            throw std::runtime_error(
+                "Task binding was removed, but native credential cleanup requires retry.");
+    });
+}
+std::future<void> DownloadService::retryCredentialCleanup() {
+    return impl_->request([p = impl_.get()] {
+        if (!p->jobs.empty())
+            throw std::invalid_argument("Pause all tasks before retrying credential cleanup.");
+        const bool complete = p->contexts->cleanupUnused(p->allTasks());
+        p->publish();
+        if (!complete)
+            throw std::runtime_error("Some owned native credentials still require cleanup retry.");
     });
 }
 std::future<std::string> DownloadService::selectTorrentFiles(const std::string& id, std::vector<int> indices,

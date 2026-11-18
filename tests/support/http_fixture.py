@@ -7,6 +7,7 @@ import http.server
 import pathlib
 import re
 import socketserver
+import sqlite3
 import subprocess
 import tempfile
 import threading
@@ -27,6 +28,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         global FLAKY
         route = urllib.parse.urlsplit(self.path).path
+        header = self.headers.get('Range', '')
+        REQUESTS.append((route, header))
         if route == '/redirect':
             self.send_response(302); self.send_header('Location', '/file'); self.send_header('Content-Length', '0'); self.end_headers(); return
         if route == '/unauthorized':
@@ -43,8 +46,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_response(416); self.send_header('Content-Range', 'bytes */0'); self.send_header('Content-Length', '0'); self.end_headers(); return
         content = DATA if route != '/different' else bytes(reversed(DATA))
         content_length=LARGE_SIZE if route=='/large' else len(content)
-        header = self.headers.get('Range', '')
-        REQUESTS.append((route,header))
         match = re.fullmatch(r'bytes=(\d+)-(\d*)', header)
         ranged = match is not None and route not in ['/ignore-range','/unknown']
         if route == '/ignore-after-probe' and header != 'bytes=0-0': ranged = False
@@ -126,12 +127,26 @@ def exercise(executable,large=False):
             result=subprocess.run([str(executable),f'{base}/file',str(target),str(root/'checksum'),'4','0'*64],capture_output=True,text=True,timeout=30)
             assert result.returncode!=0 and not target.exists()
             print('PASS checksum mismatch not published')
-            for route in ['authenticated','cross-origin']:
-                target=root/f'{route}.bin'
-                result=subprocess.run([str(executable),f'{base}/{route}',str(target),str(root/route),'4','','','session=fixture','Bearer fixture'],capture_output=True,text=True,timeout=30)
-                assert result.returncode==0,(route,result.stdout,result.stderr)
-                assert target.read_bytes()==DATA
-                print('PASS',route)
+            target=root/'authenticated.bin'
+            result=subprocess.run([str(executable),f'{base}/authenticated',str(target),str(root/'authenticated'),'4','','','session=fixture','Bearer fixture'],capture_output=True,text=True,timeout=30)
+            assert result.returncode==0,(result.stdout,result.stderr)
+            assert target.read_bytes()==DATA
+            print('PASS authenticated exact-URL payload')
+            for route, redirected_target in [('redirect', '/file'), ('cross-origin', '/no-credentials')]:
+                target=root/f'bound-{route}.bin';state=root/f'bound-{route}'
+                before=len(REQUESTS)
+                result=subprocess.run([str(executable),f'{base}/{route}',str(target),str(state),'4','','','session=fixture','Bearer fixture'],capture_output=True,text=True,timeout=30)
+                assert result.returncode!=0,(route,result.stdout,result.stderr)
+                assert not target.exists(),'Bound redirect published a final file'
+                requests=REQUESTS[before:]
+                assert any(path=='/'+route for path,_ in requests),'Bound redirect source was not exercised'
+                assert not any(path==redirected_target for path,_ in requests),'Bound redirect contacted a changed URL'
+                database=sqlite3.connect((state/'tasks.db').as_uri()+'?mode=ro',uri=True)
+                try:
+                    assert database.execute('SELECT state FROM tasks').fetchall()==[(13,)],'Bound redirect did not persist NeedsAttention'
+                finally:
+                    database.close()
+                print('PASS bound same-origin redirect blocked before target' if route=='redirect' else 'PASS bound cross-origin redirect blocked before target')
             target=root/'proxy.bin'
             result=subprocess.run([str(executable),'http://fixture.invalid/file',str(target),str(root/'proxy'),'4','',base],capture_output=True,text=True,timeout=30)
             assert result.returncode==0,(result.stdout,result.stderr)

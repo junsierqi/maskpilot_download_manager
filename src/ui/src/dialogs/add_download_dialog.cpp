@@ -1,3 +1,4 @@
+#include "download_name.h"
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDateTimeEdit>
@@ -25,30 +26,17 @@
 namespace maskpilot {
 namespace {
 std::filesystem::path nativePath(const QString& s) { return std::filesystem::path(s.toStdWString()); }
-QString safeName(const QString& url) {
-    auto name = url.startsWith("torrent:") ? QFileInfo(url.mid(8)).completeBaseName()
-                                           : QFileInfo(QUrl(url).path()).fileName();
-    if (url.startsWith("magnet:?"))
-        name = QUrlQuery(QUrl(url)).queryItemValue("dn");
-    if (isTorrentUrl(url.toStdString()) && name.isEmpty())
-        name = "Torrent download";
-    name.replace(QRegularExpression(R"([<>:"/\\|?*\x00-\x1f])"), "_");
-    while (name.endsWith('.') || name.endsWith(' '))
-        name.chop(1);
-    if (name.isEmpty() || name == "." || name == "..")
-        name = "download.bin";
-    if (QRegularExpression(R"(^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\.|$))",
-                           QRegularExpression::CaseInsensitiveOption)
-            .match(name)
-            .hasMatch())
-        name.prepend('_');
-    return name.left(180);
-}
+QString safeName(const QString& url) { return ui::defaultDownloadName(url); }
 } // namespace
 struct AddDownloadDialog::Impl {
     QLineEdit *url, *destination, *referrer, *agent, *cookie, *authorization, *proxy, *checksum;
     QLineEdit *proxyUsername, *proxyPassword;
     QCheckBox* proxyAuthenticationRequired;
+    QCheckBox *originAuthenticationRequired = nullptr, *rememberProxy = nullptr;
+    QLabel* storageNotice = nullptr;
+    bool storedProxy = false;
+    bool chinese = false;
+    QString storedProxyEndpoint;
     QComboBox* category;
     QSpinBox *connections, *speed, *priority;
     QCheckBox *paused, *schedule, *stop;
@@ -64,12 +52,39 @@ struct AddDownloadDialog::Impl {
     TorrentMetadata torrentMetadata;
     std::vector<int> torrentSelection;
     std::string torrentSource;
+    void updateStorage() {
+        if (!rememberProxy)
+            return;
+        const bool supplied = !proxyUsername->text().isEmpty() || !proxyPassword->text().isEmpty();
+        const bool retained = storedProxy && proxy->text().trimmed() == storedProxyEndpoint;
+        if (storageNotice)
+            storageNotice->setText(
+                chinese
+                    ? (retained ? QStringLiteral(
+                                      "已安全保存代理凭据。留空会保留当前配置；输入新凭据后可选择是否保存。")
+                                : QStringLiteral("默认不保存代理凭据，重启后需重新输入。SOCKS5 "
+                                                 "由代理解析地址；BT 代理使用 TCP。"))
+                    : (retained ? QStringLiteral("Proxy credentials are saved. Leave fields empty to keep "
+                                                 "them, or enter replacements and choose whether to save.")
+                                : QStringLiteral(
+                                      "Saving proxy credentials is optional. Otherwise reenter them after "
+                                      "restart. SOCKS5 resolves remotely; proxied BT uses TCP.")));
+        if (retained && !supplied) {
+            rememberProxy->setChecked(true);
+            rememberProxy->setEnabled(false);
+        } else {
+            rememberProxy->setEnabled(supplied && !proxy->text().trimmed().isEmpty());
+            if (!supplied)
+                rememberProxy->setChecked(false);
+        }
+    }
 };
 AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString initialUrl)
     : QDialog(parent), impl_(std::make_unique<Impl>()) {
+    impl_->chinese = chinese;
     auto t = [chinese](const char* en, const char* zh) { return QString::fromUtf8(chinese ? zh : en); };
     setWindowTitle(t("New download", "新建下载"));
-    resize(660, 510);
+    resize(660, 550);
     setMinimumWidth(560);
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(24, 20, 24, 20);
@@ -127,6 +142,14 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
         impl_->destination->setText(QDir(parent).filePath(safeName(impl_->url->text())));
     });
     connect(impl_->url, &QLineEdit::textEdited, this, [this] {
+        const bool required = requiresOriginAuthentication(specification());
+        impl_->cookie->clear();
+        impl_->authorization->clear();
+        impl_->headers->clear();
+        impl_->ftpUsername->clear();
+        impl_->ftpPassword->clear();
+        impl_->referrer->clear();
+        impl_->originAuthenticationRequired->setChecked(required);
         auto path = QFileInfo(impl_->destination->text()).absolutePath();
         impl_->destination->setText(QDir(path).filePath(safeName(impl_->url->text())));
     });
@@ -171,6 +194,13 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
     impl_->paused = new QCheckBox(t("Add paused", "添加后暂停"));
     impl_->paused->setObjectName("addPaused");
     form->addRow(impl_->paused);
+    impl_->originAuthenticationRequired =
+        new QCheckBox(t("Require source sign-in details before starting", "开始任务前必须提供来源登录信息"));
+    impl_->originAuthenticationRequired->setObjectName("originAuthenticationRequired");
+    impl_->originAuthenticationRequired->setToolTip(t(
+        "Source credentials stay in memory. Clear this only when the resource can be downloaded anonymously.",
+        "来源凭据仅在当前会话有效；只有来源允许匿名下载时才取消此要求。"));
+    form->addRow(impl_->originAuthenticationRequired);
     tabs->addTab(basic, t("Download", "下载"));
     auto* planning = new QWidget;
     auto* plan = new QFormLayout(planning);
@@ -206,8 +236,10 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
     line(impl_->agent, t("User agent", "用户代理"));
     impl_->agent->setText(QString::fromLatin1(defaultUserAgent));
     line(impl_->cookie, "Cookie");
+    impl_->cookie->setObjectName("requestCookie");
     impl_->cookie->setEchoMode(QLineEdit::Password);
     line(impl_->authorization, t("Authorization", "认证头"));
+    impl_->authorization->setObjectName("requestAuthorization");
     impl_->authorization->setEchoMode(QLineEdit::Password);
     line(impl_->checksum, "SHA-256");
     impl_->checksum->setPlaceholderText(t("Optional expected checksum", "可选：预期文件摘要"));
@@ -241,19 +273,31 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
         if (supplied)
             impl_->proxyAuthenticationRequired->setChecked(true);
         impl_->proxyAuthenticationRequired->setEnabled(!supplied);
+        impl_->updateStorage();
     };
     connect(impl_->proxyUsername, &QLineEdit::textChanged, this, updateCredentialRequirement);
     connect(impl_->proxyPassword, &QLineEdit::textChanged, this, updateCredentialRequirement);
-    auto* proxyNotice = new QLabel(
-        t("Credentials stay in memory; enter them again after restarting. SOCKS5 resolves destinations "
+    impl_->rememberProxy =
+        new QCheckBox(t("Save proxy credentials securely in Windows", "由 Windows 安全保存代理凭据"));
+    impl_->rememberProxy->setObjectName("rememberProxyCredentials");
+    impl_->rememberProxy->setEnabled(false);
+    proxyForm->addRow(impl_->rememberProxy);
+    impl_->storageNotice = new QLabel(
+        t("Saving is optional. Otherwise, reenter credentials after restarting. SOCKS5 resolves destinations "
           "through the proxy. Proxied BT uses TCP; HTTPS proxies are supported for direct files only.",
-          "凭据仅保存在内存，重启后需重新输入。SOCKS5 由代理解析目标地址。BT 代理使用 TCP；"
+          "默认不保存凭据，重启后需重新输入。SOCKS5 由代理解析目标地址。BT 代理使用 TCP；"
           "HTTPS 代理仅支持直接文件下载。"));
-    proxyNotice->setWordWrap(true);
-    proxyForm->addRow(proxyNotice);
+    impl_->storageNotice->setTextFormat(Qt::PlainText);
+    impl_->storageNotice->setWordWrap(true);
+    proxyForm->addRow(impl_->storageNotice);
     connect(impl_->proxy, &QLineEdit::textEdited, this, [this] {
         impl_->proxyUsername->clear();
         impl_->proxyPassword->clear();
+        impl_->storedProxy = false;
+        impl_->rememberProxy->setChecked(false);
+        if (impl_->proxy->text().trimmed().isEmpty())
+            impl_->proxyAuthenticationRequired->setChecked(false);
+        impl_->updateStorage();
     });
     tabs->addTab(proxyTab, t("Proxy", "代理"));
     auto* ftpTab = new QWidget;
@@ -378,6 +422,25 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
     connect(impl_->url, &QLineEdit::textChanged, this,
             [updateProtocol](const QString&) { updateProtocol(); });
     updateProtocol();
+    const auto updateSourceRequirement = [this] {
+        const auto source = impl_->url->text().toStdString();
+        const bool torrent = isTorrentUrl(source);
+        const bool material =
+            isFtpUrl(source)
+                ? (!impl_->ftpUsername->text().isEmpty() || !impl_->ftpPassword->text().isEmpty())
+                : (!impl_->cookie->text().isEmpty() || !impl_->authorization->text().isEmpty() ||
+                   !impl_->headers->toPlainText().trimmed().isEmpty());
+        if (torrent)
+            impl_->originAuthenticationRequired->setChecked(false);
+        else if (material)
+            impl_->originAuthenticationRequired->setChecked(true);
+        impl_->originAuthenticationRequired->setEnabled(!torrent && !material);
+    };
+    for (auto* field :
+         {impl_->cookie, impl_->authorization, impl_->ftpUsername, impl_->ftpPassword, impl_->url})
+        connect(field, &QLineEdit::textChanged, this, updateSourceRequirement);
+    connect(impl_->headers, &QPlainTextEdit::textChanged, this, updateSourceRequirement);
+    updateSourceRequirement();
     auto updateMedia = [this] {
         if (!impl_->media->isChecked())
             return;
@@ -444,6 +507,7 @@ DownloadSpec AddDownloadDialog::specification() const {
                                     !s.proxyUsername.empty() || !s.proxyPassword.empty();
     s.cookie = impl_->cookie->text().toStdString();
     s.authorization = impl_->authorization->text().toStdString();
+    s.originAuthenticationRequired = impl_->originAuthenticationRequired->isChecked();
     s.expectedSha256 = impl_->checksum->text().trimmed().toStdString();
     s.kind = impl_->media->isChecked() ? maskpilot::TransferKind::Media : maskpilot::TransferKind::Http;
     s.audioOnly = impl_->mode->currentIndex() == 1;
@@ -487,6 +551,7 @@ DownloadSpec AddDownloadDialog::specification() const {
                 s.torrent.selectedFiles = impl_->torrentSelection;
         }
     }
+    s.originAuthenticationRequired = s.originAuthenticationRequired || hasOriginMaterial(s);
     return s;
 }
 void AddDownloadDialog::setSpecification(const DownloadSpec& spec) {
@@ -537,5 +602,15 @@ void AddDownloadDialog::setSpecification(const DownloadSpec& spec) {
     if (!spec.mediaMuxer.empty())
         impl_->muxer->setText(QString::fromStdWString(spec.mediaMuxer.wstring()));
     impl_->destination->setText(QString::fromStdWString(spec.destination.wstring()));
+    impl_->originAuthenticationRequired->setChecked(requiresOriginAuthentication(spec));
+    impl_->originAuthenticationRequired->setEnabled(!isTorrentUrl(spec.url) && !hasOriginMaterial(spec));
+    impl_->updateStorage();
+}
+bool AddDownloadDialog::rememberProxyCredentials() const { return impl_->rememberProxy->isChecked(); }
+void AddDownloadDialog::setStoredProxyCredentials(bool stored) {
+    impl_->storedProxy = stored;
+    impl_->storedProxyEndpoint = impl_->proxy->text().trimmed();
+    impl_->rememberProxy->setChecked(stored);
+    impl_->updateStorage();
 }
 } // namespace maskpilot

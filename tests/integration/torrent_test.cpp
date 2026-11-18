@@ -820,6 +820,23 @@ TEST(TorrentEngine, LocalTorrentTransfersVerifiedFilesWithoutPublicDiscovery) {
     expectComplete(result);
     fixture.expectPayload(task.spec.destination);
 }
+TEST(TorrentEngine, RequiredOriginAuthenticationIsRejectedBeforeSessionOrSourceContact) {
+    TorrentFixture fixture;
+    for (const bool taskMarker : {false, true}) {
+        auto task = fixture.task(fixture.temporary.path / (taskMarker ? "task-marker" : "spec-marker"));
+        task.originAuthenticationRequired = taskMarker;
+        task.spec.originAuthenticationRequired = !taskMarker;
+        maskpilot::TransferControl control;
+        const auto started = std::chrono::steady_clock::now();
+        const auto result = run(localFactory(), task, fixture.temporary.path / "work" / task.id, control);
+        EXPECT_LT(std::chrono::steady_clock::now() - started, 2s);
+        EXPECT_FALSE(result.timedOut);
+        EXPECT_EQ(result.terminals, 1);
+        EXPECT_EQ(result.terminal.outcome, maskpilot::TransferOutcome::Attention);
+        EXPECT_EQ(fixture.tracker->requests(), 0u);
+        EXPECT_FALSE(std::filesystem::exists(task.spec.destination));
+    }
+}
 
 TEST(TorrentEngine, MagnetFetchesMetadataThenTransfersVerifiedFiles) {
     const std::array<lt::create_flags_t, 3> variants{lt::create_torrent::v1_only, lt::create_torrent::v2_only,

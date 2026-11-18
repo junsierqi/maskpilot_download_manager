@@ -62,6 +62,7 @@ struct ContextRegistry::Impl {
     std::map<std::string, Session> sessions;
     std::map<std::string, Grant> grants;
     std::set<std::string> pendingCleanup;
+    std::set<std::string> pendingContextCleanup;
 
     void requireRepository() const {
         if (!repository)
@@ -105,6 +106,32 @@ struct ContextRegistry::Impl {
         } catch (...) {
             pendingCleanup.insert(reference);
             throw;
+        }
+    }
+    void clearRevokedReference(const std::string& owner) {
+        const auto found = contexts.find(owner);
+        if (found == contexts.end() || found->second.enabled)
+            return;
+        if (found->second.proxyCredentialRef.empty()) {
+            pendingContextCleanup.erase(owner);
+            return;
+        }
+        if (std::any_of(records.begin(), records.end(),
+                        [&](const auto& entry) { return entry.second.ownerId == owner; }))
+            return; // A failed exact native deletion must remain visible and retryable.
+        try {
+            auto cleared = found->second;
+            if (cleared.revision == std::numeric_limits<std::int64_t>::max())
+                throw std::runtime_error("Context revision limit reached.");
+            cleared.proxyCredentialRef.clear();
+            ++cleared.revision;
+            repository->saveContext(cleared);
+            found->second = std::move(cleared);
+            pendingContextCleanup.erase(owner);
+        } catch (...) {
+            pendingContextCleanup.insert(owner);
+            throw std::runtime_error(
+                "Context is revoked, but its saved credential status could not be updated. Retry cleanup.");
         }
     }
     std::string store(const std::string& owner, const std::string& endpoint,
@@ -191,6 +218,11 @@ void ContextRegistry::initialize(const std::vector<Task>& savedTasks) {
             !impl_->records.emplace(record.reference, record).second)
             throw std::runtime_error("Saved credential ownership journal is invalid.");
     }
+    cleanupUnused(savedTasks);
+}
+bool ContextRegistry::cleanupUnused(const std::vector<Task>& savedTasks) {
+    if (!impl_->repository)
+        return true;
     std::set<std::string> used;
     for (const auto& [id, context] : impl_->contexts)
         if (context.enabled && !context.proxyCredentialRef.empty())
@@ -207,6 +239,13 @@ void ContextRegistry::initialize(const std::vector<Task>& savedTasks) {
             impl_->cleanup(reference);
         } catch (...) { /* Journal and visible warning retain the retry. */
         }
+    for (const auto& [owner, context] : impl_->contexts)
+        if (!context.enabled)
+            try {
+                impl_->clearRevokedReference(owner);
+            } catch (...) { /* Persisted disabled state retains the retry. */
+            }
+    return impl_->pendingCleanup.empty() && impl_->pendingContextCleanup.empty();
 }
 DownloadContext ContextRegistry::configure(ContextConfiguration draft, ProxyCredentials credentials,
                                            bool remember) {
@@ -219,6 +258,10 @@ DownloadContext ContextRegistry::configure(ContextConfiguration draft, ProxyCred
         throw std::invalid_argument("Download context revision changed. Reload before editing.");
     if (previous && previous->revision == std::numeric_limits<std::int64_t>::max())
         throw std::invalid_argument("Download context revision limit reached.");
+    if (previous && !previous->enabled && draft.reactivate &&
+        std::any_of(impl_->records.begin(), impl_->records.end(),
+                    [&](const auto& entry) { return entry.second.ownerId == previous->id; }))
+        throw std::invalid_argument("Complete revoked context credential cleanup before reactivating it.");
     if (!previous && impl_->contexts.size() >= registryLimit)
         throw std::invalid_argument("Too many download contexts.");
     DownloadContext result;
@@ -268,6 +311,7 @@ DownloadContext ContextRegistry::configure(ContextConfiguration draft, ProxyCred
         throw;
     }
     impl_->contexts[result.id] = result;
+    impl_->pendingContextCleanup.erase(result.id);
     if (memory)
         impl_->memory[{result.id, result.revision}] = std::move(*memory);
     impl_->invalidateSessions(result.id);
@@ -359,11 +403,15 @@ DownloadSpec ContextRegistry::resolve(const Task& task) const {
         spec.proxyUsername = found->second.credentials.username;
         spec.proxyPassword = found->second.credentials.password;
     }
-    if (task.originAuthenticationRequired) {
+    if (task.ownerId != "standalone" && task.originAuthenticationRequired) {
         const auto& grant = impl_->grant(task.originGrantId, task.ownerId, spec.url);
         spec.cookie = grant.cookie;
         spec.authorization = grant.authorization;
     }
+    spec.originAuthenticationRequired =
+        task.originAuthenticationRequired || requiresOriginAuthentication(spec);
+    if (const auto error = validateOriginAuthentication(spec, true); !error.empty())
+        throw std::invalid_argument(error);
     if (const auto error = validateProxy(spec, true); !error.empty())
         throw std::invalid_argument(error);
     return spec;
@@ -423,6 +471,7 @@ void ContextRegistry::finishRevoke(const std::string& ownerId) {
         }
     if (failed)
         throw std::runtime_error("Context is revoked, but some native credential cleanup requires retry.");
+    impl_->clearRevokedReference(ownerId);
 }
 void ContextRegistry::rebind(Task& task, const std::string& grantId) const {
     const auto& context = impl_->context(task.ownerId);
@@ -438,7 +487,9 @@ void ContextRegistry::rebind(Task& task, const std::string& grantId) const {
     rebound.spec.cookie.clear();
     rebound.spec.authorization.clear();
     rebound.spec.headers.clear();
-    rebound.originAuthenticationRequired = context.originAuthenticationRequired || !grantId.empty();
+    rebound.originAuthenticationRequired =
+        task.originAuthenticationRequired || context.originAuthenticationRequired || !grantId.empty();
+    rebound.spec.originAuthenticationRequired = rebound.originAuthenticationRequired;
     rebound.originGrantId = grantId;
     if (rebound.originAuthenticationRequired)
         impl_->grant(grantId, task.ownerId, task.spec.url);
@@ -467,8 +518,9 @@ void ContextRegistry::discardUncommitted(const Task& task) {
 }
 bool ContextRegistry::enabled(const std::string& ownerId) const { return impl_->enabled(ownerId); }
 std::string ContextRegistry::warning() const {
-    return impl_->pendingCleanup.empty() ? std::string{}
-                                         : "Some owned native credentials could not be removed. Cleanup will "
-                                           "be retried; unavailable bindings will not be used.";
+    return impl_->pendingCleanup.empty() && impl_->pendingContextCleanup.empty()
+               ? std::string{}
+               : "Some owned credential cleanup or saved credential status requires retry. Unavailable "
+                 "bindings will not be used.";
 }
 } // namespace maskpilot

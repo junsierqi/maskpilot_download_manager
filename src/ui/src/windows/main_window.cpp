@@ -1,3 +1,4 @@
+#include "../dialogs/async_ui.h"
 #include "main_window_p.h"
 namespace maskpilot {
 MainWindow::Impl::Impl(MainWindow* w, DownloadService& s)
@@ -44,6 +45,7 @@ void MainWindow::Impl::refresh() {
     if (refreshing)
         return;
     QScopedValueRollback<bool> refreshGuard(refreshing, true);
+    refreshContexts();
     std::vector<Pending> ready;
     for (auto it = pending.begin(); it != pending.end();) {
         if (it->result.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
@@ -108,6 +110,8 @@ void MainWindow::Impl::refresh() {
                      (filter == "torrent" && task.spec.kind == TransferKind::BitTorrent) ||
                      (filter == "seeding" && task.state == TaskState::Seeding) ||
                      (filter.startsWith("category:") && qs(task.spec.category) == filter.mid(9));
+        const auto owner = contextFilter ? contextFilter->currentData().toString() : QString{};
+        match = match && (owner.isEmpty() || owner.toStdString() == task.ownerId);
         if (match && (query.isEmpty() ||
                       pathString(task.spec.destination.filename()).contains(query, Qt::CaseInsensitive) ||
                       qs(task.torrent.name).contains(query, Qt::CaseInsensitive) ||
@@ -248,6 +252,13 @@ MainWindow::MainWindow(DownloadService& service, QWidget* parent)
     p.search->setPlaceholderText(p.t("Search downloads…", "搜索下载任务…"));
     p.search->setFixedWidth(255);
     headerLayout->addWidget(p.search);
+    p.contextFilter = new QComboBox;
+    p.contextFilter->setObjectName("contextFilter");
+    p.contextFilter->setMinimumWidth(140);
+    p.contextFilter->setMaximumWidth(220);
+    p.contextFilter->addItem(p.t("All profiles", "全部环境"), QString{});
+    p.contextFilter->addItem(p.t("Standalone", "独立下载区"), "standalone");
+    headerLayout->addWidget(p.contextFilter);
     auto* newButton = new QPushButton(p.t("＋  New download", "＋  新建下载"));
     newButton->setDefault(true);
     newButton->setObjectName("newDownloadButton");
@@ -269,6 +280,10 @@ MainWindow::MainWindow(DownloadService& service, QWidget* parent)
     toolbar->addSeparator();
     auto* batch = addAction(p.t("Batch", "批量"), ui::Icon::Batch);
     auto* settings = addAction(p.t("Settings", "设置"), ui::Icon::Settings);
+    auto* contexts = addAction(p.t("Profiles & credentials", "环境与凭据"), ui::Icon::Settings);
+    contexts->setObjectName("manageContextsAction");
+    connect(contexts, &QAction::triggered, this, [&p] { p.contextsDialog(); });
+    connect(p.contextFilter, &QComboBox::currentIndexChanged, this, [&p] { p.refresh(); });
     auto* body = new QHBoxLayout;
     body->setContentsMargins(0, 0, 0, 0);
     body->setSpacing(0);
@@ -384,14 +399,16 @@ MainWindow::MainWindow(DownloadService& service, QWidget* parent)
             newDownload("torrent:" + QDir::fromNativeSeparators(file));
     });
     tools->addAction(p.t("Add magnet link…", "添加磁力链接…"), this, [this] { newDownload("magnet:?"); });
-    tools->addAction(p.t("New media download…", "新建媒体下载…"), this, [this, &p] {
+    tools->addAction(p.t("New standalone media download…", "新建独立媒体下载…"), this, [this, &p] {
         AddDownloadDialog dialog(p.chinese, this);
         auto spec = defaultSpec("https://");
         spec.kind = maskpilot::TransferKind::Media;
         spec.destination.replace_extension(L".mkv");
         dialog.setSpecification(spec);
-        if (dialog.exec() == QDialog::Accepted)
-            enqueue(dialog.specification());
+        if (dialog.exec() == QDialog::Accepted) {
+            p.contextFilter->setCurrentIndex(p.contextFilter->findData("standalone"));
+            enqueue(dialog.specification(), {}, {}, dialog.rememberProxyCredentials());
+        }
     });
     tools->addAction(p.t("Media support…", "媒体支持…"), this, [&p] { p.mediaSupport(); });
     tools->addAction(p.t("Start all", "全部开始"), this, [&p] {
@@ -487,10 +504,35 @@ MainWindow::MainWindow(DownloadService& service, QWidget* parent)
                            }
                            if (auto* button = dialog.findChild<QPushButton*>("confirmDownload"))
                                button->setText(p.t("Save request", "保存请求"));
-                           if (dialog.exec() == QDialog::Accepted)
-                               p.service.updateRequest(task.id, dialog.specification());
+                           dialog.setStoredProxyCredentials(!task.proxyCredentialRef.empty());
+                           if (dialog.exec() == QDialog::Accepted) {
+                               ui::watchFuture(
+                                   p.service.updateRequestWithCredentials(task.id, dialog.specification(),
+                                                                          dialog.rememberProxyCredentials()),
+                                   this, [&p] { p.refresh(); },
+                                   [this](QString error) { QMessageBox::warning(this, "MaskPilot", error); });
+                           }
                        })
-            ->setEnabled(!isActive(task.state) && !isTerminal(task.state));
+            ->setEnabled(task.ownerId == "standalone" && !isActive(task.state) && !isTerminal(task.state));
+        if (task.ownerId == "standalone") {
+            auto* forget = menu.addAction(
+                p.t("Forget saved proxy credentials", "清除已保存代理凭据"), this, [this, &p, task] {
+                    ui::watchFuture(
+                        p.service.forgetSavedProxyCredentials(task.id), this, [&p] { p.refresh(); },
+                        [this](QString error) { QMessageBox::warning(this, "MaskPilot", error); });
+                });
+            forget->setObjectName("forgetProxyCredentialsAction");
+            forget->setEnabled(!isActive(task.state) && !task.proxyCredentialRef.empty());
+        } else {
+            auto* rebind = menu.addAction(
+                p.t("Rebind to current context", "使用当前上下文配置重新绑定"), this, [this, &p, task] {
+                    ui::watchFuture(
+                        p.service.rebindTask(task.id), this, [&p] { p.refresh(); },
+                        [this](QString error) { QMessageBox::warning(this, "MaskPilot", error); });
+                });
+            rebind->setObjectName("rebindContextAction");
+            rebind->setEnabled(!isActive(task.state) && !isTerminal(task.state));
+        }
         menu.addAction(p.t("Update URL…", "更新下载地址…"), this,
                        [this, &p, task] {
                            bool ok;
@@ -620,16 +662,21 @@ void MainWindow::newDownload(QString url) {
             isFtpUrl(clipboard.toStdString()) || isTorrentUrl(clipboard.toStdString()))
             url = clipboard;
     }
+    const auto owner = impl_->contextFilter->currentData().toString();
+    if (!owner.isEmpty() && owner != "standalone") {
+        impl_->newContextDownload(url);
+        return;
+    }
     AddDownloadDialog dialog(impl_->chinese, this, url);
     if (dialog.exec() == QDialog::Accepted)
-        enqueue(dialog.specification());
+        enqueue(dialog.specification(), {}, {}, dialog.rememberProxyCredentials());
 }
 void MainWindow::enqueue(DownloadSpec spec, QString requestId,
-                         std::function<void(QString, QString)> completion) {
+                         std::function<void(QString, QString)> completion, bool rememberProxy) {
     if (impl_->completionDialog)
         impl_->completionDialog->reject();
     impl_->pending.push_back(
-        {impl_->service.add(std::move(spec), requestId.toStdString()), std::move(completion)});
+        {impl_->service.add(std::move(spec), requestId.toStdString(), rememberProxy), std::move(completion)});
 }
 void MainWindow::requestQuit() {
     impl_->quitting = true;
