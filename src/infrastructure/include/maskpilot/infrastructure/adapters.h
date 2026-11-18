@@ -8,6 +8,7 @@ struct SqliteStore {
     std::unique_ptr<ITaskRepository> tasks;
     std::unique_ptr<IContextRepository> contexts;
     std::unique_ptr<IQueueRepository> queues;
+    std::shared_ptr<IQueueTrafficRepository> traffic;
 };
 SqliteStore makeSqliteStore(const std::filesystem::path& path);
 std::shared_ptr<IQueueCivilTime> makeQueueCivilTime();

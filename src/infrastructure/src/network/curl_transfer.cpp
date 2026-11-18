@@ -219,7 +219,20 @@ Probe probeOnce(const DownloadSpec& spec, TransferControl& control, Headers& hea
     curl_easy_setopt(easy.handle, CURLOPT_RANGE, "0-0");
     curl_easy_setopt(easy.handle, CURLOPT_HTTPHEADER, easy.list);
     curl_easy_setopt(
-        easy.handle, CURLOPT_WRITEFUNCTION, +[](char*, size_t, size_t, void*) -> size_t { return 0; });
+        easy.handle, CURLOPT_WRITEFUNCTION, +[](char*, size_t size, size_t count, void* opaque) -> size_t {
+            auto& control = *static_cast<TransferControl*>(opaque);
+            if (count && size > std::numeric_limits<size_t>::max() / count)
+                return 0;
+            const auto bytes = size * count;
+            if (!control.payloadBudget)
+                return 0;
+            const auto accepted = control.payloadBudget->accept(bytes);
+            if (accepted < bytes)
+                control.pause = true;
+            // Consume the one-byte range probe; ignored-range bodies remain bounded to one callback.
+            return accepted == bytes && bytes == 1 ? bytes : 0;
+        });
+    curl_easy_setopt(easy.handle, CURLOPT_WRITEDATA, &control);
     auto code = curl_easy_perform(easy.handle);
     Probe result;
     result.code = code;
@@ -298,6 +311,7 @@ bool retryCode(CURLcode code) {
 struct Sink {
     int extentId = 0;
     bool attached = false;
+    TransferControl* control = nullptr;
     Easy easy;
     Headers headers;
     FILE* file = nullptr;
@@ -353,8 +367,18 @@ struct Sink {
     }
     static size_t write(char* data, size_t size, size_t count, void* context) {
         auto& sink = *static_cast<Sink*>(context);
+        if (count && size > std::numeric_limits<size_t>::max() / count)
+            return 0;
         auto length = size * count;
         try {
+            if (sink.control && sink.control->payloadBudget) {
+                const auto accepted = sink.control->payloadBudget->accept(length);
+                if (accepted < length)
+                    sink.control->pause = true;
+                length = accepted;
+                if (!length)
+                    return 0;
+            }
             if (sink.headers.status >= 300 && sink.headers.status < 400)
                 return length;
             if (!sink.validate())
@@ -585,6 +609,7 @@ class CurlTransfer final : public ITransferTransport {
             auto start = [&](const http::Extent& extent) {
                 auto sink = std::make_unique<Sink>();
                 sink->extentId = extent.id;
+                sink->control = &control;
                 sink->part = work / ("part-" + std::to_string(extent.id));
                 sink->offsetPath = work / ("offset-" + std::to_string(extent.id));
                 sink->partOffset = offsets.at(extent.id);

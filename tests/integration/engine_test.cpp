@@ -442,7 +442,8 @@ TEST(Storage, MigratesPreviousSchemaWithoutChangingExistingProtocolsOrFiles) {
         sqlite3_exec(
             connection,
             "DROP INDEX tasks_owner_request; DROP INDEX tasks_queue_state; DROP TABLE download_contexts; "
-            "DROP TABLE credential_records; DROP TABLE store_metadata; DROP TABLE download_queues;",
+            "DROP TABLE credential_records; DROP TABLE store_metadata; DROP TABLE download_queues; "
+            "DROP TABLE queue_traffic_runs; DROP TABLE queue_traffic_usage; DROP TABLE traffic_clock;",
             nullptr, nullptr, nullptr),
         SQLITE_OK);
     for (const auto* column :

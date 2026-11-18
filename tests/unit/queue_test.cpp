@@ -17,7 +17,9 @@ struct State {
     std::vector<std::string> starts;
     std::map<std::string, std::int64_t> rates;
     std::set<std::string> release, failFirst;
-    bool rejectMove = false;
+    bool rejectMove = false, consumePayload = false;
+    int factories = 0;
+    std::map<std::string, std::size_t> accepted;
     std::size_t saves = 0;
 };
 struct Tasks final : ITaskRepository {
@@ -114,6 +116,20 @@ struct Worker final : ITransferTransport {
         callback(progress);
         bool complete = false;
         while (!control.pause && !control.cancel) {
+            bool consume;
+            {
+                std::lock_guard lock(s->mutex);
+                consume = s->consumePayload;
+            }
+            if (consume && control.payloadBudget) {
+                const auto bytes = control.payloadBudget->accept(1024);
+                {
+                    std::lock_guard lock(s->mutex);
+                    s->accepted[t.id] += bytes;
+                }
+                if (bytes < 1024)
+                    control.pause = true;
+            }
             {
                 std::lock_guard lock(s->mutex);
                 s->rates[t.id] = control.speedLimit.load();
@@ -144,7 +160,8 @@ Task find(DownloadService& service, const std::string& id) {
     return {};
 }
 QueueConfiguration config(const DownloadQueue& q) {
-    return {q.id, q.name, q.revision, q.enabled, q.maxActive, q.downloadLimit, q.uploadLimit, q.schedule};
+    return {q.id,          q.name,     q.revision,          q.enabled, q.maxActive, q.downloadLimit,
+            q.uploadLimit, q.schedule, q.dailyPayloadBudget};
 }
 struct FakeCivilTime final : IQueueCivilTime {
     std::atomic<std::int64_t> utc{600};
@@ -166,12 +183,21 @@ struct Fixture {
     QTemporaryDir temporary;
     std::shared_ptr<State> s = std::make_shared<State>();
     std::shared_ptr<IQueueCivilTime> clock;
-    explicit Fixture(std::shared_ptr<IQueueCivilTime> time = {}) : clock(std::move(time)) {}
+    std::shared_ptr<IQueueTrafficRepository> traffic;
+    explicit Fixture(std::shared_ptr<IQueueCivilTime> time = {},
+                     std::shared_ptr<IQueueTrafficRepository> ledger = {})
+        : clock(std::move(time)), traffic(std::move(ledger)) {}
     DownloadService service{std::make_unique<Tasks>(s),
-                            [state = s] { return std::make_unique<Worker>(state); },
+                            [state = s] {
+                                {
+                                    std::lock_guard lock(state->mutex);
+                                    ++state->factories;
+                                }
+                                return std::make_unique<Worker>(state);
+                            },
                             std::filesystem::path(temporary.path().toStdWString()) / L"parts",
                             {},
-                            QueueDependencies{std::make_unique<Queues>(s), clock}};
+                            QueueDependencies{std::make_unique<Queues>(s), clock, {}, traffic}};
     DownloadQueue queue(std::string name, int activeSlots = 1) {
         QueueConfiguration c;
         c.name = std::move(name);
@@ -649,4 +675,233 @@ TEST(QueueWindows, InvalidInitialLimitsRejectBeforeAnyWorkerCanStart) {
                  std::invalid_argument);
     std::lock_guard lock(state->mutex);
     EXPECT_TRUE(state->starts.empty());
+}
+
+namespace {
+struct BudgetLedger final : IQueueTrafficRepository {
+    struct Run {
+        std::int64_t period = 0, reserved = 0, observed = 0;
+        bool closed = false;
+    };
+    std::mutex mutex;
+    std::map<std::string, Run> runs;
+    std::map<std::int64_t, TrafficUsage> periods;
+    std::int64_t floor = 0, limit = 10;
+    bool fail = false;
+    int abandoned = 0;
+    std::int64_t period(std::int64_t utc) {
+        floor = std::max(floor, utc / 86400 * 86400);
+        return floor;
+    }
+    TrafficRun openRun(const std::string&, const std::string&, std::int64_t utc) override {
+        std::lock_guard lock(mutex);
+        auto id = newTaskId();
+        auto day = period(utc);
+        runs[id].period = day;
+        return {id, day};
+    }
+    TrafficGrant reserve(const std::string& id, std::int64_t observed, std::int64_t desired,
+                         std::int64_t utc) override {
+        std::lock_guard lock(mutex);
+        if (fail)
+            throw std::runtime_error("ledger fault");
+        auto day = period(utc);
+        auto& r = runs.at(id);
+        if (r.closed)
+            throw std::runtime_error("closed");
+        if (r.period != day)
+            return {r.reserved, day};
+        auto& u = periods[day];
+        u.observed += std::max<std::int64_t>(0, observed - r.observed);
+        r.observed = std::max(r.observed, observed);
+        auto extra = std::min(std::max<std::int64_t>(0, desired - r.reserved),
+                              std::max<std::int64_t>(0, limit - u.charged));
+        r.reserved += extra;
+        u.charged += extra;
+        return {r.reserved, day};
+    }
+    void closeRun(const std::string& id, std::int64_t observed) override {
+        std::lock_guard lock(mutex);
+        auto& r = runs.at(id);
+        if (r.closed)
+            return;
+        auto& u = periods[r.period];
+        u.observed += std::max<std::int64_t>(0, observed - r.observed);
+        u.charged -= r.reserved - observed;
+        r.observed = observed;
+        r.closed = true;
+    }
+    TrafficUsage usage(const std::string&, std::int64_t utc) override {
+        std::lock_guard lock(mutex);
+        auto day = period(utc);
+        auto result = periods[day];
+        result.period = day;
+        return result;
+    }
+    std::int64_t currentPeriod(std::int64_t utc) override {
+        std::lock_guard lock(mutex);
+        return period(utc);
+    }
+    void abandonOpenRuns() override {
+        std::lock_guard lock(mutex);
+        ++abandoned;
+        for (auto& [id, r] : runs)
+            r.closed = true;
+    }
+};
+} // namespace
+TEST(QueueTraffic, ExhaustionPreservesRunAndNextDayResumesButManualPauseDominates) {
+    auto clock = std::make_shared<FakeCivilTime>();
+    auto ledger = std::make_shared<BudgetLedger>();
+    Fixture f(clock, ledger);
+    auto q = f.queue("Budget");
+    auto c = config(q);
+    c.dailyPayloadBudget = 10;
+    f.service.configureQueue(c).get();
+    {
+        std::lock_guard lock(f.s->mutex);
+        f.s->consumePayload = true;
+    }
+    auto id = f.add(q.id);
+    ASSERT_TRUE(waitFor([&] { return find(f.service, id).state == TaskState::PolicyWaiting; }));
+    EXPECT_EQ(find(f.service, id).runIntent, RunIntent::Run);
+    EXPECT_EQ(f.service.queueTraffic(q.id).get().charged, 10);
+    EXPECT_EQ(f.service.queueTraffic(q.id).get().observed, 10);
+    clock->utc = 86400 + 600;
+    ASSERT_TRUE(waitFor([&] {
+        std::lock_guard lock(f.s->mutex);
+        return f.s->starts.size() >= 2;
+    }));
+    ASSERT_TRUE(waitFor([&] { return find(f.service, id).state == TaskState::PolicyWaiting; }));
+    f.service.pause(id);
+    ASSERT_TRUE(waitFor([&] { return find(f.service, id).state == TaskState::Paused; }));
+    std::size_t starts;
+    {
+        std::lock_guard lock(f.s->mutex);
+        starts = f.s->starts.size();
+        EXPECT_EQ(f.s->accepted[id], 20);
+    }
+    clock->utc = 2 * 86400 + 600;
+    std::this_thread::sleep_for(std::chrono::milliseconds(350));
+    f.service.queues().get();
+    {
+        std::lock_guard lock(f.s->mutex);
+        EXPECT_EQ(f.s->starts.size(), starts);
+    }
+    EXPECT_EQ(find(f.service, id).runIntent, RunIntent::Paused);
+    EXPECT_EQ(ledger->abandoned, 1);
+}
+TEST(QueueTraffic, StrictBudgetRejectsExternalEnginesBeforeFactoryCreation) {
+    auto ledger = std::make_shared<BudgetLedger>();
+    Fixture f({}, ledger);
+    auto q = f.queue("Native only");
+    auto c = config(q);
+    c.dailyPayloadBudget = 10;
+    f.service.configureQueue(c).get();
+    auto media = f.add(q.id, false, TransferKind::Media);
+    auto torrent = f.add(q.id, false, TransferKind::BitTorrent);
+    EXPECT_EQ(find(f.service, media).state, TaskState::NeedsAttention);
+    EXPECT_EQ(find(f.service, torrent).state, TaskState::NeedsAttention);
+    DownloadSpec local;
+    local.kind = TransferKind::BitTorrent;
+    local.url = "torrent:/unread-owned-fixture.torrent";
+    local.destination = std::filesystem::path(f.temporary.path().toStdWString()) / L"local-torrent";
+    EXPECT_THROW(f.service.add(local, {}, false, q.id).get(), std::invalid_argument);
+    EXPECT_EQ(f.service.snapshot().size(), 2);
+    std::lock_guard lock(f.s->mutex);
+    EXPECT_EQ(f.s->factories, 0);
+    EXPECT_TRUE(f.s->starts.empty());
+}
+TEST(QueueTraffic, BudgetPolicyEditsRequireInactiveJobsAndMissingLedgerIsExplicit) {
+    Fixture unavailable;
+    auto q = unavailable.queue("No accounting");
+    auto c = config(q);
+    c.dailyPayloadBudget = 10;
+    EXPECT_THROW(unavailable.service.configureQueue(c).get(), std::invalid_argument);
+    auto ledger = std::make_shared<BudgetLedger>();
+    Fixture f({}, ledger);
+    q = f.queue("Accounting");
+    c = config(q);
+    c.dailyPayloadBudget = 10;
+    q = f.service.configureQueue(c).get();
+    auto id = f.add(q.id);
+    ASSERT_TRUE(waitFor([&] { return find(f.service, id).state == TaskState::Downloading; }));
+    c = config(q);
+    c.dailyPayloadBudget = 0;
+    EXPECT_THROW(f.service.configureQueue(c).get(), std::invalid_argument);
+    f.service.pause(id);
+    ASSERT_TRUE(waitFor([&] { return find(f.service, id).state == TaskState::Paused; }));
+    EXPECT_NO_THROW(f.service.configureQueue(c).get());
+}
+TEST(QueueTraffic, AccountingFailureBecomesAttentionAndStopsFurtherAdmission) {
+    auto ledger = std::make_shared<BudgetLedger>();
+    ledger->fail = true;
+    Fixture f({}, ledger);
+    auto q = f.queue("Fault");
+    auto c = config(q);
+    c.dailyPayloadBudget = 10;
+    f.service.configureQueue(c).get();
+    {
+        std::lock_guard lock(f.s->mutex);
+        f.s->consumePayload = true;
+    }
+    auto id = f.add(q.id);
+    ASSERT_TRUE(waitFor([&] { return find(f.service, id).state == TaskState::NeedsAttention; }));
+    EXPECT_FALSE(f.service.lastError().empty());
+    EXPECT_THROW(f.add(defaultQueueId), std::runtime_error);
+    EXPECT_EQ(f.service.queueTraffic(q.id).get().charged, 0);
+}
+
+TEST(QueueTraffic, RecoveryRetainsBudgetWaitAcrossRestartWithoutStartingBeforeAllowance) {
+    QTemporaryDir temporary;
+    ASSERT_TRUE(temporary.isValid());
+    auto state = std::make_shared<State>();
+    auto clock = std::make_shared<FakeCivilTime>();
+    auto ledger = std::make_shared<BudgetLedger>();
+    state->queues.front().dailyPayloadBudget = 10;
+    state->consumePayload = true;
+    ledger->periods[0] = {0, 10, 10};
+    Task task;
+    task.id = newTaskId();
+    task.spec.url = "https://example.test/budget-recovery";
+    task.spec.destination = std::filesystem::path(temporary.path().toStdWString()) / L"one.bin";
+    task.state = TaskState::PolicyWaiting;
+    task.runIntent = RunIntent::Run;
+    state->saved = {task};
+    auto factory = [state] {
+        std::lock_guard lock(state->mutex);
+        ++state->factories;
+        return std::make_unique<Worker>(state);
+    };
+    {
+        DownloadService service(
+            std::make_unique<Tasks>(state), factory,
+            std::filesystem::path(temporary.path().toStdWString()) / L"parts", {},
+            QueueDependencies{std::make_unique<Queues>(state), clock, InitialQueueLimits{1, 7, 0}, ledger});
+        std::this_thread::sleep_for(std::chrono::milliseconds(350));
+        EXPECT_EQ(find(service, task.id).state, TaskState::PolicyWaiting);
+        EXPECT_EQ(find(service, task.id).runIntent, RunIntent::Run);
+        {
+            std::lock_guard lock(state->mutex);
+            EXPECT_TRUE(state->starts.empty());
+            EXPECT_EQ(state->factories, 0);
+        }
+        clock->utc = 86400 + 600;
+        ASSERT_TRUE(waitFor([&] {
+            std::lock_guard lock(state->mutex);
+            return state->starts.size() == 1;
+        }));
+        ASSERT_TRUE(waitFor([&] { return find(service, task.id).state == TaskState::PolicyWaiting; }));
+    }
+    clock->utc = 2 * 86400 + 600;
+    DownloadService reopened(
+        std::make_unique<Tasks>(state), factory,
+        std::filesystem::path(temporary.path().toStdWString()) / L"parts", {},
+        QueueDependencies{std::make_unique<Queues>(state), clock, InitialQueueLimits{1, 7, 0}, ledger});
+    ASSERT_TRUE(waitFor([&] {
+        std::lock_guard lock(state->mutex);
+        return state->starts.size() == 2;
+    }));
+    ASSERT_TRUE(waitFor([&] { return find(reopened, task.id).state == TaskState::PolicyWaiting; }));
+    EXPECT_EQ(find(reopened, task.id).runIntent, RunIntent::Run);
 }

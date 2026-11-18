@@ -1,6 +1,10 @@
 #include "../windows/main_window_p.h"
 #include "async_ui.h"
+#include <QDateTime>
+#include <QDoubleSpinBox>
+#include <QScrollArea>
 #include <QTimeEdit>
+#include <QTimeZone>
 #include <QTreeWidget>
 #include <array>
 #include <limits>
@@ -25,10 +29,40 @@ class QueueManagerDialog final : public QDialog {
     std::array<QCheckBox*, 7> days_{};
     QTimeEdit *start_, *end_;
     QLineEdit* zone_;
+    QDoubleSpinBox* daily_;
+    QLabel* usage_;
+    bool usagePending_ = false;
     QLabel* status_;
     QWidget* editor_;
     QPushButton *save_, *create_, *pause_, *enable_, *remove_;
     QString tr(const char* en, const char* zh) const { return QString::fromUtf8(chinese_ ? zh : en); }
+    void refreshUsage() {
+        if (usagePending_ || busy_ || selected_.empty())
+            return;
+        usagePending_ = true;
+        const auto id = selected_;
+        ui::watchFuture(
+            service_.queueTraffic(id), this,
+            [this, id](TrafficUsage value) {
+                usagePending_ = false;
+                if (id != selected_)
+                    return;
+                const auto reset = QDateTime::fromSecsSinceEpoch(value.period + 86400, QTimeZone::utc())
+                                       .toString("yyyy-MM-dd HH:mm 'UTC'");
+                usage_->setText(tr("Confirmed received: %1 B\nCharged: %2 B; reserved / uncertain: %3 "
+                                   "B\nNext UTC day: %4",
+                                   "已确认接收：%1 B\n已扣额度：%2 B；预留／未核实：%3 B\n下个 UTC 日：%4")
+                                    .arg(value.observed)
+                                    .arg(value.charged)
+                                    .arg(std::max<std::int64_t>(0, value.charged - value.observed))
+                                    .arg(reset));
+            },
+            [this, id](QString error) {
+                usagePending_ = false;
+                if (id == selected_)
+                    usage_->setText(error);
+            });
+    }
     const DownloadQueue* current() const {
         const auto found = std::find_if(queues_.begin(), queues_.end(),
                                         [&](const auto& value) { return value.id == selected_; });
@@ -66,6 +100,8 @@ class QueueManagerDialog final : public QDialog {
         start_->setTime(QTime(value->schedule.startMinute / 60, value->schedule.startMinute % 60));
         end_->setTime(QTime(value->schedule.endMinute / 60, value->schedule.endMinute % 60));
         zone_->setText(qs(value->schedule.timeZone));
+        daily_->setValue(static_cast<double>(value->dailyPayloadBudget));
+        usage_->clear();
         status_->setText(
             value->enabled && value->schedule.enabled
                 ? tr("Weekly window configured. Eligible tasks wait outside its local hours.",
@@ -75,6 +111,7 @@ class QueueManagerDialog final : public QDialog {
                 : tr("Paused. Enabling this queue keeps manually paused tasks stopped.",
                      "队列已暂停；启用后，手动暂停的任务仍保持停止。"));
         busy(false);
+        refreshUsage();
     }
     void newQueue() {
         selected_.clear();
@@ -91,6 +128,8 @@ class QueueManagerDialog final : public QDialog {
         start_->setTime(QTime(0, 0));
         end_->setTime(QTime(0, 0));
         zone_->setText("UTC");
+        daily_->setValue(0);
+        usage_->clear();
         status_->setText(tr("Create a queue for its own concurrency and bandwidth limits.",
                             "新建队列，可分别设置任务并发与带宽。"));
         busy(false);
@@ -144,6 +183,8 @@ class QueueManagerDialog final : public QDialog {
         draft.uploadLimit =
             enabled && previous ? previous->uploadLimit : static_cast<std::int64_t>(upload_->value()) * 1024;
         draft.enabled = enabled.value_or(enabled_->isChecked());
+        draft.dailyPayloadBudget =
+            enabled && previous ? previous->dailyPayloadBudget : static_cast<std::int64_t>(daily_->value());
         if (enabled && previous)
             draft.schedule = previous->schedule;
         else {
@@ -172,7 +213,7 @@ class QueueManagerDialog final : public QDialog {
         : QDialog(parent), service_(service), chinese_(chinese) {
         setObjectName("queueManagerDialog");
         setWindowTitle(tr("Download queues", "下载队列"));
-        resize(920, 720);
+        resize(960, 780);
         auto* outer = new QVBoxLayout(this);
         auto* note = new QLabel(
             tr("Queues share the global connection and bandwidth limits. Moving a task keeps its profile, "
@@ -191,7 +232,11 @@ class QueueManagerDialog final : public QDialog {
         editor_ = new QWidget;
         auto* form = new QFormLayout(editor_);
         form->setSpacing(14);
-        body->addWidget(editor_, 2);
+        auto* editorScroll = new QScrollArea;
+        editorScroll->setWidgetResizable(true);
+        editorScroll->setFrameShape(QFrame::NoFrame);
+        editorScroll->setWidget(editor_);
+        body->addWidget(editorScroll, 2);
         name_ = new QLineEdit;
         name_->setObjectName("queueName");
         name_->setMaxLength(64);
@@ -253,6 +298,28 @@ class QueueManagerDialog final : public QDialog {
                "仅待运行且未完成的任务会在窗口内继续。"));
         scheduleNote->setWordWrap(true);
         form->addRow(scheduleNote);
+        daily_ = new QDoubleSpinBox;
+        daily_->setObjectName("queueDailyPayloadBudget");
+        daily_->setDecimals(0);
+        daily_->setRange(0, static_cast<double>(maxDailyPayloadBudget));
+        daily_->setSingleStep(1024 * 1024);
+        daily_->setSpecialValueText(tr("Off", "关闭"));
+        daily_->setSuffix(" B");
+        form->addRow(tr("Native bytes / UTC day", "原生正文／UTC 日"), daily_);
+        auto* budgetNote = new QLabel(
+            tr("A positive allowance accepts HTTP/FTP only. It counts admitted body bytes, including "
+               "probes and retries, not network overhead or existing parts. Crash reservations remain "
+               "charged; confirmed usage may lag while running. Pause this queue's active tasks before "
+               "changing its allowance.",
+               "启用额度后仅接收 HTTP/FTP，计入获准接收的正文（含探测及重试），不计网络开销或已有分片。"
+               "崩溃后的预留额度保持扣减；运行中确认量可能稍有延迟。修改额度前请暂停该队列的活动任务。"));
+        budgetNote->setWordWrap(true);
+        form->addRow(budgetNote);
+        usage_ = new QLabel;
+        usage_->setObjectName("queueTrafficUsage");
+        usage_->setWordWrap(true);
+        usage_->setTextFormat(Qt::PlainText);
+        form->addRow(usage_);
         auto* media = new QLabel(
             tr("Pause running media downloads before reducing limits that their current rate cannot meet.",
                "降低限速时，若活动媒体任务的当前速度无法满足新限制，请先暂停这些任务。"));
@@ -303,6 +370,9 @@ class QueueManagerDialog final : public QDialog {
         });
         newQueue();
         load();
+        auto* usageTimer = new QTimer(this);
+        connect(usageTimer, &QTimer::timeout, this, [this] { refreshUsage(); });
+        usageTimer->start(1000);
     }
     void reject() override {
         if (!busy_)

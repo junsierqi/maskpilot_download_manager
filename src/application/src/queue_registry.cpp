@@ -129,8 +129,9 @@ DownloadQueue QueueRegistry::prepare(QueueConfiguration config) const {
         throw std::invalid_argument("Queue changed. Refresh and retry.");
     if (config.expectedRevision == std::numeric_limits<std::int64_t>::max())
         throw std::invalid_argument("Queue revision is exhausted.");
-    DownloadQueue q{config.id,        config.name,          config.expectedRevision + 1, config.enabled,
-                    config.maxActive, config.downloadLimit, config.uploadLimit,          config.schedule};
+    DownloadQueue q{config.id,          config.name,      config.expectedRevision + 1,
+                    config.enabled,     config.maxActive, config.downloadLimit,
+                    config.uploadLimit, config.schedule,  config.dailyPayloadBudget};
     if (auto error = validateDownloadQueue(q); !error.empty())
         throw std::invalid_argument(error);
     if (q.schedule.enabled) {

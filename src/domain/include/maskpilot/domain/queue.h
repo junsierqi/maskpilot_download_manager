@@ -7,6 +7,7 @@ namespace maskpilot {
 inline constexpr char defaultQueueId[] = "default";
 inline constexpr std::size_t maxDownloadQueues = 256;
 inline constexpr std::int64_t minimumQueueRate = 1024;
+inline constexpr std::int64_t maxDailyPayloadBudget = 1LL << 50;
 enum class RunIntent { Run, Paused };
 struct WeeklySchedule {
     bool enabled = false;
@@ -24,6 +25,7 @@ struct DownloadQueue {
     int maxActive = 8;
     std::int64_t downloadLimit = 0, uploadLimit = 0;
     WeeklySchedule schedule;
+    std::int64_t dailyPayloadBudget = 0;
 };
 bool isQueueId(const std::string&);
 std::string validateDownloadQueue(const DownloadQueue&);

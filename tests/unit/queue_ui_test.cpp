@@ -5,8 +5,10 @@
 #include <QComboBox>
 #include <QDateTime>
 #include <QDialog>
+#include <QDoubleSpinBox>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
 #include <QMessageBox>
@@ -103,7 +105,8 @@ struct Store {
         service = std::make_unique<DownloadService>(
             std::move(store.tasks), factory, root / L"parts",
             ContextDependencies{std::move(store.contexts), {}},
-            QueueDependencies{std::move(store.queues), clock ? clock : makeQueueCivilTime()});
+            QueueDependencies{
+                std::move(store.queues), clock ? clock : makeQueueCivilTime(), {}, std::move(store.traffic)});
     }
     Task task(const std::string& id) {
         for (const auto& value : service->snapshot())
@@ -172,6 +175,7 @@ TEST(QueueUi, ActualManagerAddFilterMoveAndReopenPreservePausedMembership) {
                 widget<QSpinBox>(dialog, "queueMaxActive")->setValue(2);
                 widget<QSpinBox>(dialog, "queueDownloadLimit")->setValue(64);
                 widget<QSpinBox>(dialog, "queueUploadLimit")->setValue(16);
+                widget<QDoubleSpinBox>(dialog, "queueDailyPayloadBudget")->setValue(1280 * 1024);
                 widget<QCheckBox>(dialog, "queueWeeklyEnabled")->setChecked(true);
                 widget<QTimeEdit>(dialog, "queueWindowStart")->setTime(QTime(22, 15));
                 widget<QTimeEdit>(dialog, "queueWindowEnd")->setTime(QTime(6, 30));
@@ -187,6 +191,7 @@ TEST(QueueUi, ActualManagerAddFilterMoveAndReopenPreservePausedMembership) {
                 EXPECT_EQ(widget<QTimeEdit>(dialog, "queueWindowEnd")->time(), QTime(6, 30));
                 EXPECT_EQ(widget<QLineEdit>(dialog, "queueTimeZone")->text(), "Asia/Shanghai");
                 EXPECT_FALSE(widget<QCheckBox>(dialog, "queueWeekday6")->isChecked());
+                EXPECT_EQ(widget<QDoubleSpinBox>(dialog, "queueDailyPayloadBudget")->value(), 1280 * 1024);
                 if (!screenshot.isEmpty())
                     EXPECT_TRUE(dialog->grab().save(screenshot));
                 stage = 2;
@@ -264,8 +269,112 @@ TEST(QueueUi, ActualManagerAddFilterMoveAndReopenPreservePausedMembership) {
         return q.id == queueId && q.maxActive == 2 && q.downloadLimit == 64 * 1024 &&
                q.uploadLimit == 16 * 1024 && q.schedule.enabled && q.schedule.weekdays == 63 &&
                q.schedule.startMinute == 22 * 60 + 15 && q.schedule.endMinute == 6 * 60 + 30 &&
-               q.schedule.timeZone == "Asia/Shanghai";
+               q.schedule.timeZone == "Asia/Shanghai" && q.dailyPayloadBudget == 1280 * 1024;
     }));
+}
+
+TEST(QueueUi, RealHttpBudgetShowsUsageAndReopensOnUtcDayWithoutResumingManualTasks) {
+    platform();
+    int argc = 1;
+    char program[] = "QueueBudgetNativeFlow";
+    char* argv[]{program, nullptr};
+    QApplication app(argc, argv);
+    QCoreApplication::setOrganizationName("MaskPilotTests");
+    QCoreApplication::setApplicationName(program);
+    struct Clock final : IQueueCivilTime {
+        std::atomic<std::int64_t> utc{
+            QDateTime::fromString("2026-11-16T09:00:00Z", Qt::ISODate).toSecsSinceEpoch()};
+        std::shared_ptr<IQueueCivilTime> actual = makeQueueCivilTime();
+        std::int64_t utcNow() const override { return utc.load(); }
+        std::optional<CivilMinute> at(const std::string& zone, std::int64_t value) const override {
+            return actual->at(zone, value);
+        }
+    };
+    auto clock = std::make_shared<Clock>();
+    Store store(true, {}, clock);
+    QSettings().setValue("language", "en");
+    LocalHttpServer origin;
+    QueueConfiguration draft;
+    draft.name = "Daily HTTP";
+    draft.maxActive = 1;
+    draft.dailyPayloadBudget = 1280 * 1024;
+    const auto queue = store.service->configureQueue(draft).get();
+    MainWindow window(*store.service);
+    window.show();
+    ModalBudget budget;
+    auto* filter = widget<QComboBox>(&window, "queueFilter");
+    ASSERT_TRUE(untilGui([&] { return filter->findData(QString::fromStdString(queue.id)) >= 0; }));
+    addPaused(window, store, origin.url("/budget"), queue.id, "budget.bin");
+    addPaused(window, store, origin.url("/budget-manual"), queue.id, "budget-manual.bin");
+    const auto running = findTask(store, origin.url("/budget"));
+    const auto manual = findTask(store, origin.url("/budget-manual"));
+    ASSERT_TRUE(untilGui([&] { return selectTask(window, running); }));
+    widget<QAction>(&window, "resumeTasksAction")->trigger();
+    ASSERT_TRUE(untilGui([&] {
+        const auto task = store.task(running);
+        return task.state == TaskState::PolicyWaiting && task.downloaded > 0;
+    }));
+    const auto first = store.service->queueTraffic(queue.id).get();
+    EXPECT_EQ(first.charged, queue.dailyPayloadBudget);
+    EXPECT_EQ(first.observed, first.charged);
+    EXPECT_LE(store.task(running).downloaded, first.observed);
+    EXPECT_EQ(store.task(running).runIntent, RunIntent::Run);
+    int stage = 0;
+    QTimer driver;
+    driver.setInterval(25);
+    QObject::connect(&driver, &QTimer::timeout, &window, [&] {
+        auto* dialog = QApplication::activeModalWidget();
+        if (!dialog || dialog->objectName() != "queueManagerDialog")
+            return;
+        if (stage == 0 && widget<QPushButton>(dialog, "queueSave")->isEnabled()) {
+            auto* list = widget<QTreeWidget>(dialog, "queueList");
+            if (list->topLevelItemCount() != 2)
+                return;
+            for (int n = 0; n < list->topLevelItemCount(); ++n)
+                if (list->topLevelItem(n)->data(0, Qt::UserRole).toString().toStdString() == queue.id)
+                    list->setCurrentItem(list->topLevelItem(n));
+            EXPECT_EQ(widget<QDoubleSpinBox>(dialog, "queueDailyPayloadBudget")->value(),
+                      queue.dailyPayloadBudget);
+            // Policy toggle must copy accepted allowance, not this unsaved edit.
+            widget<QDoubleSpinBox>(dialog, "queueDailyPayloadBudget")->setValue(0);
+            stage = 1;
+            widget<QPushButton>(dialog, "queuePause")->click();
+        } else if (stage == 1 && widget<QPushButton>(dialog, "queueEnable")->isEnabled()) {
+            EXPECT_EQ(widget<QDoubleSpinBox>(dialog, "queueDailyPayloadBudget")->value(),
+                      queue.dailyPayloadBudget);
+            stage = 2;
+            widget<QPushButton>(dialog, "queueEnable")->click();
+        } else if (stage == 2 && widget<QPushButton>(dialog, "queuePause")->isEnabled() &&
+                   widget<QLabel>(dialog, "queueTrafficUsage")
+                       ->text()
+                       .contains(QString::number(first.charged))) {
+            const auto capture = qEnvironmentVariable("MASKPILOT_TEST_TRAFFIC_SCREENSHOT");
+            if (!capture.isEmpty())
+                EXPECT_TRUE(dialog->grab().save(capture));
+            stage = 3;
+            widget<QPushButton>(dialog, "queueClose")->click();
+        }
+    });
+    driver.start();
+    QTimer::singleShot(0, &window, [&] { widget<QAction>(&window, "manageQueuesAction")->trigger(); });
+    ASSERT_TRUE(untilGui([&] { return stage == 3; }));
+    driver.stop();
+    EXPECT_EQ(store.task(running).state, TaskState::PolicyWaiting);
+    EXPECT_EQ(store.service->queueTraffic(queue.id).get().charged, first.charged);
+    clock->utc += 86400;
+    ASSERT_TRUE(untilGui([&] { return store.task(running).state == TaskState::Completed; }));
+    QFile output(QString::fromStdWString(store.task(running).spec.destination.wstring()));
+    ASSERT_TRUE(output.open(QIODevice::ReadOnly));
+    EXPECT_EQ(output.readAll(), origin.data());
+    const auto second = store.service->queueTraffic(queue.id).get();
+    EXPECT_EQ(second.period, first.period + 86400);
+    EXPECT_GT(second.observed, 0);
+    EXPECT_EQ(second.charged, second.observed);
+    EXPECT_LE(second.charged, queue.dailyPayloadBudget);
+    EXPECT_GE(origin.bodyRequests("/budget"), 2);
+    EXPECT_EQ(store.task(manual).state, TaskState::Paused);
+    EXPECT_EQ(origin.requests("/budget-manual"), 0);
+    window.requestQuit();
 }
 
 TEST(QueueUi, RealHttpWeeklyWindowPausesAndReopensWithoutResumingManualTasks) {

@@ -2,6 +2,7 @@ add_executable(maskpilot_tests unit/domain_test.cpp integration/engine_test.cpp 
 target_sources(maskpilot_tests PRIVATE unit/http_layout_test.cpp)
 target_sources(maskpilot_tests PRIVATE unit/queue_test.cpp integration/queue_store_test.cpp unit/queue_ui_test.cpp)
 target_sources(maskpilot_tests PRIVATE unit/queue_schedule_test.cpp)
+target_sources(maskpilot_tests PRIVATE unit/traffic_budget_test.cpp integration/traffic_store_test.cpp)
 target_link_libraries(maskpilot_tests PRIVATE Qt6::Network)
 target_link_libraries(maskpilot_tests PRIVATE maskpilot_application maskpilot_infrastructure GTest::gtest_main)
 include(GoogleTest)
@@ -11,3 +12,5 @@ add_test(NAME local_http_product_path COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURR
 set_tests_properties(local_http_product_path PROPERTIES TIMEOUT 120)
 add_test(NAME adaptive_http_product_path COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/integration/adaptive_http_test.py --exercise $<TARGET_FILE:maskpilot_cli>)
 set_tests_properties(adaptive_http_product_path PROPERTIES TIMEOUT 150)
+add_test(NAME native_payload_budget_product_path COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/integration/native_budget_test.py --exercise $<TARGET_FILE:maskpilot_cli>)
+set_tests_properties(native_payload_budget_product_path PROPERTIES TIMEOUT 150)

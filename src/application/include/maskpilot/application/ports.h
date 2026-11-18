@@ -29,11 +29,20 @@ struct TransferEvent {
     int peers = 0, seeds = 0;
     bool torrentPublished = false;
 };
+class INativePayloadBudget {
+  public:
+    virtual ~INativePayloadBudget() = default;
+    virtual std::size_t accept(std::size_t bytes) noexcept = 0;
+    virtual void finish() noexcept = 0;
+    virtual bool exhausted() const noexcept = 0;
+    virtual bool failed() const noexcept = 0;
+};
 struct TransferControl {
     std::atomic_bool pause{false}, cancel{false};
     std::atomic<std::int64_t> speedLimit{0};
     std::atomic<std::int64_t> uploadLimit{0};
     std::atomic_bool finish{false};
+    std::shared_ptr<INativePayloadBudget> payloadBudget;
 };
 class ITransferTransport {
   public:

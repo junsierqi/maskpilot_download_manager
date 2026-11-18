@@ -162,7 +162,7 @@ int runClient(int argc, char** argv) {
             maskpilot::makeUnifiedTransferFactory(maskpilot::makeTorrentTransferFactory(torrentRuntime)),
             data / "parts", {},
             maskpilot::QueueDependencies{std::move(store.queues), maskpilot::makeQueueCivilTime(),
-                                         maskpilot::InitialQueueLimits{}});
+                                         maskpilot::InitialQueueLimits{}, std::move(store.traffic)});
         std::string id;
         if (std::string(argv[1]) == "--resume" || std::string(argv[1]) == "--change-url") {
             id = argv[2];
@@ -230,6 +230,10 @@ int runClient(int argc, char** argv) {
         }
         std::cout << "TASK_ID " << id << std::endl;
         for (int i = 0; i < 1800; ++i) {
+            if (const auto message = service.lastError(); !message.empty()) {
+                std::cerr << message << '\n';
+                return 1;
+            }
             for (const auto& task : service.snapshot())
                 if (task.id == id) {
                     if (task.state == maskpilot::TaskState::AwaitingSelection) {
@@ -244,6 +248,10 @@ int runClient(int argc, char** argv) {
                     if (task.state == maskpilot::TaskState::Completed) {
                         std::cout << "Completed " << task.downloaded << " bytes\n";
                         return 0;
+                    }
+                    if (task.state == maskpilot::TaskState::PolicyWaiting) {
+                        std::cout << "Waiting for queue policy or daily native payload allowance.\n";
+                        return 4;
                     }
                     if (task.state == maskpilot::TaskState::Failed ||
                         task.state == maskpilot::TaskState::NeedsAttention) {

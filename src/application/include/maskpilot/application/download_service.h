@@ -19,6 +19,7 @@ class DownloadService {
                                  std::string queueId = defaultQueueId);
     // Trusted local queue administration; never accept these fields through scoped drafts.
     std::future<std::vector<DownloadQueue>> queues();
+    std::future<TrafficUsage> queueTraffic(std::string queueId);
     std::future<DownloadQueue> configureQueue(QueueConfiguration);
     std::future<void> moveToQueue(std::vector<std::string> taskIds, std::string queueId);
     std::future<void> removeQueue(std::string queueId, std::int64_t expectedRevision);

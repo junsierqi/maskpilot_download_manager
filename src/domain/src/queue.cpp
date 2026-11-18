@@ -31,6 +31,8 @@ std::string validateDownloadQueue(const DownloadQueue& queue) {
         if (rate != 0 && rate < minimumQueueRate)
             return "Queue rates must be unlimited or at least 1024 bytes per second.";
     const auto& schedule = queue.schedule;
+    if (queue.dailyPayloadBudget < 0 || queue.dailyPayloadBudget > maxDailyPayloadBudget)
+        return "Daily native payload budget must be between zero and one PiB.";
     if (schedule.weekdays < 1 || schedule.weekdays > 127 || schedule.startMinute < 0 ||
         schedule.startMinute >= 1440 || schedule.endMinute < 0 || schedule.endMinute >= 1440)
         return "Weekly queue days and times are invalid.";

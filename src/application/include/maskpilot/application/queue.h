@@ -1,4 +1,5 @@
 #pragma once
+#include <maskpilot/application/traffic.h>
 #include <maskpilot/domain/queue.h>
 #include <memory>
 #include <optional>
@@ -12,6 +13,7 @@ struct QueueConfiguration {
     int maxActive = 8;
     std::int64_t downloadLimit = 0, uploadLimit = 0;
     WeeklySchedule schedule;
+    std::int64_t dailyPayloadBudget = 0;
 };
 struct QueueMove {
     std::string taskId, expectedQueueId;
@@ -43,5 +45,6 @@ struct QueueDependencies {
     std::unique_ptr<IQueueRepository> repository;
     std::shared_ptr<IQueueCivilTime> clock;
     std::optional<InitialQueueLimits> initialLimits;
+    std::shared_ptr<IQueueTrafficRepository> traffic;
 };
 } // namespace maskpilot

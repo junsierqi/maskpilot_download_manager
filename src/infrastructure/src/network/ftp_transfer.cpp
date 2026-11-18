@@ -245,7 +245,8 @@ Result transfer(const Task& task, const std::filesystem::path& work, TransferCon
             FILE* file;
             std::int64_t bytes, limit;
             bool failed = false;
-        } sink{output.value, offset, remote.size};
+            TransferControl* control;
+        } sink{output.value, offset, remote.size, false, &control};
         Easy easy;
         configure(easy.value, task.spec, control);
         option(
@@ -256,7 +257,15 @@ Result transfer(const Task& task, const std::filesystem::path& work, TransferCon
                     out.failed = true;
                     return 0;
                 }
-                const auto bytes = size * count;
+                auto bytes = size * count;
+                if (out.control->payloadBudget) {
+                    auto accepted = out.control->payloadBudget->accept(bytes);
+                    if (accepted < bytes)
+                        out.control->pause = true;
+                    bytes = accepted;
+                    if (!bytes)
+                        return 0;
+                }
                 if (bytes >
                         static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max() - out.bytes) ||
                     (out.limit >= 0 && bytes > static_cast<std::uint64_t>(out.limit - out.bytes))) {
