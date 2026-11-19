@@ -311,6 +311,13 @@ class MediaTransfer final : public ITransferTransport {
             }
             if (stopped())
                 return;
+            if (control.scanBeforePublish) {
+                const auto scan = control.scanBeforePublish(stage);
+                if (scan.outcome != TransferOutcome::Complete) {
+                    finish(scan.outcome, scan.error);
+                    return;
+                }
+            }
             event.phase = TaskState::Finalizing;
             callback(event);
             if (stopped())

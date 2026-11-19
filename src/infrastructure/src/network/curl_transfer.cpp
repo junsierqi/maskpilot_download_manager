@@ -946,6 +946,13 @@ class CurlTransfer final : public ITransferTransport {
                     return;
                 }
             }
+            if (control.scanBeforePublish) {
+                const auto scan = control.scanBeforePublish(stage);
+                if (scan.outcome != TransferOutcome::Complete) {
+                    emit(scan.outcome, scan.error);
+                    return;
+                }
+            }
             event.phase = TaskState::Finalizing;
             deliver();
             if (std::filesystem::exists(task.spec.destination)) {
@@ -981,7 +988,8 @@ class CurlTransfer final : public ITransferTransport {
 };
 } // namespace
 std::unique_ptr<ITransferTransport> makeCurlTransfer() { return std::make_unique<CurlTransfer>(); }
-std::string sha256File(const std::filesystem::path& path, const TransferControl* control) {
+std::string sha256File(const std::filesystem::path& path, const TransferControl* control,
+                       const std::function<bool()>& shouldStop) {
 #ifdef _WIN32
     BCRYPT_ALG_HANDLE algorithm = nullptr;
     BCRYPT_HASH_HANDLE hash = nullptr;
@@ -1010,7 +1018,7 @@ std::string sha256File(const std::filesystem::path& path, const TransferControl*
         throw std::runtime_error("Cannot read file for checksum.");
     std::array<char, 128 * 1024> buffer{};
     while (input) {
-        if (control && (control->pause || control->cancel))
+        if ((control && (control->pause || control->cancel)) || (shouldStop && shouldStop()))
             throw std::runtime_error("Checksum cancelled.");
         input.read(buffer.data(), buffer.size());
         const auto count = input.gcount();

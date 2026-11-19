@@ -242,12 +242,12 @@ class Backend {
             int schemaVersion = 0;
             {
                 Statement version(db_, "PRAGMA user_version");
-                if (sqlite3_step(version.value) != SQLITE_ROW || sqlite3_column_int(version.value, 0) > 14 ||
+                if (sqlite3_step(version.value) != SQLITE_ROW || sqlite3_column_int(version.value, 0) > 15 ||
                     sqlite3_column_int(version.value, 0) < 0)
                     throw std::runtime_error("Database was created by a newer version.");
                 schemaVersion = sqlite3_column_int(version.value, 0);
             }
-            if (schemaVersion > 0 && schemaVersion < 14) {
+            if (schemaVersion > 0 && schemaVersion < 15) {
                 auto backupPath = path;
                 backupPath += L".before-v" + std::to_wstring(schemaVersion + 1) + L"-" +
                               std::filesystem::path(newTaskId()).wstring() + L".db";
@@ -401,6 +401,13 @@ DROP TABLE queue_traffic_usage_v13;
 CREATE INDEX traffic_runs_queue_close ON queue_traffic_runs(queue_id,status,closed_utc);
 PRAGMA user_version=14;
 COMMIT;)sql");
+            if (schemaVersion < 15)
+                execute(R"sql(BEGIN IMMEDIATE;
+ALTER TABLE tasks ADD COLUMN scan_required INTEGER NOT NULL DEFAULT 0 CHECK(scan_required IN(0,1));
+ALTER TABLE tasks ADD COLUMN scan_state INTEGER NOT NULL DEFAULT 0 CHECK(scan_state BETWEEN 0 AND 6);
+ALTER TABLE tasks ADD COLUMN scan_at INTEGER NOT NULL DEFAULT 0 CHECK(scan_at BETWEEN 0 AND 253402300799);
+PRAGMA user_version=15;
+COMMIT;)sql");
             Statement installation(
                 db_, "INSERT OR IGNORE INTO store_metadata(key,value) VALUES('installation_id',?)");
             installation.text(1, newTaskId());
@@ -524,6 +531,17 @@ COMMIT;)sql");
                 throw std::runtime_error("Saved project association has invalid types.");
             t.projectId = text(55);
             t.projectRevision = sqlite3_column_int64(q.value, 56);
+            if (sqlite3_column_type(q.value, 57) != SQLITE_INTEGER || sqlite3_column_int64(q.value, 57) < 0 ||
+                sqlite3_column_int64(q.value, 57) > 1 || sqlite3_column_type(q.value, 58) != SQLITE_INTEGER ||
+                sqlite3_column_int64(q.value, 58) < 0 ||
+                sqlite3_column_int64(q.value, 58) >= static_cast<int>(ScanState::Count) ||
+                sqlite3_column_type(q.value, 59) != SQLITE_INTEGER)
+                throw std::runtime_error("Saved completion scan fields have invalid types.");
+            t.scanRequired = sqlite3_column_int(q.value, 57) != 0;
+            t.scanState = static_cast<ScanState>(sqlite3_column_int(q.value, 58));
+            t.scanAt = sqlite3_column_int64(q.value, 59);
+            if (const auto message = validateCompletionScanRecord(t); !message.empty())
+                throw std::runtime_error(message);
             validateTransferConstraints(t);
             if (!validateMediaSelection(t.spec.mediaSelection, t.spec.audioOnly).empty())
                 throw std::runtime_error("Saved media selection is invalid.");
@@ -544,6 +562,8 @@ COMMIT;)sql");
         std::lock_guard lock(mutex_);
         validateTaskContext(t);
         validateTransferConstraints(t);
+        if (const auto message = validateCompletionScanRecord(t); !message.empty())
+            throw std::invalid_argument(message);
         if (!validateMediaSelection(t.spec.mediaSelection, t.spec.audioOnly).empty())
             throw std::invalid_argument("Invalid persistent media selection.");
         if (!queueExists(t.queueId))
@@ -554,8 +574,8 @@ speed_limit,scheduled_at,stop_at,state,downloaded,total,created_at,updated_at,re
 media,audio_only,media_format,media_downloader,media_muxer,ftp_tls,ftp_active,ftp_ca,kind,bt_all,bt_selection,
 bt_seed,bt_upload_limit,bt_metadata,bt_published,bt_uploaded,proxy_auth_required,owner_id,request_id,
 context_revision,proxy_credential_ref,origin_auth_required,request_name,queue_id,run_intent,
-media_selection_mode,media_primary_format,media_audio_format,media_container,max_stored_bytes,same_origin_redirect_only,response_url,response_content_type,project_id,project_revision)
-VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+media_selection_mode,media_primary_format,media_audio_format,media_container,max_stored_bytes,same_origin_redirect_only,response_url,response_content_type,project_id,project_revision,scan_required,scan_state,scan_at)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(id) DO UPDATE SET
 url=excluded.url,destination=excluded.destination,category=excluded.category,referrer=excluded.referrer,
 user_agent=excluded.user_agent,proxy=excluded.proxy,expected_sha256=excluded.expected_sha256,
@@ -574,7 +594,8 @@ origin_auth_required=excluded.origin_auth_required,request_name=excluded.request
 queue_id=excluded.queue_id,run_intent=excluded.run_intent,media_selection_mode=excluded.media_selection_mode,
 media_primary_format=excluded.media_primary_format,media_audio_format=excluded.media_audio_format,media_container=excluded.media_container,
 max_stored_bytes=excluded.max_stored_bytes,same_origin_redirect_only=excluded.same_origin_redirect_only,response_url=excluded.response_url,
-response_content_type=excluded.response_content_type
+response_content_type=excluded.response_content_type,scan_required=excluded.scan_required,
+scan_state=excluded.scan_state,scan_at=excluded.scan_at
 WHERE tasks.owner_id=excluded.owner_id AND tasks.project_id=excluded.project_id AND tasks.project_revision=excluded.project_revision)sql");
         q.text(1, t.id);
         q.text(2, t.spec.url);
@@ -640,6 +661,9 @@ WHERE tasks.owner_id=excluded.owner_id AND tasks.project_id=excluded.project_id 
         q.text(55, t.responseContentType);
         q.text(56, t.projectId);
         q.number(57, t.projectRevision);
+        q.number(58, t.scanRequired);
+        q.number(59, static_cast<int>(t.scanState));
+        q.number(60, t.scanAt);
         if (sqlite3_step(q.value) != SQLITE_DONE || sqlite3_changes(db_) != 1)
             throw std::runtime_error("Cannot save task ownership or request identity.");
     }

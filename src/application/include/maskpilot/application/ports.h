@@ -15,6 +15,11 @@ class ITaskRepository {
     virtual void erase(const std::string& id) = 0;
 };
 enum class TransferOutcome { Progress, Complete, Paused, Cancelled, Failed, Attention, SelectionRequired };
+struct CompletionScanResult {
+    TransferOutcome outcome = TransferOutcome::Complete;
+    ScanState state = ScanState::Passed;
+    std::string error;
+};
 struct TransferEvent {
     TransferOutcome outcome = TransferOutcome::Progress;
     TaskState phase = TaskState::Downloading;
@@ -30,6 +35,7 @@ struct TransferEvent {
     bool torrentPublished = false;
     std::string responseUrl;
     std::string responseContentType;
+    ScanState scanState = ScanState::NotRequested;
 };
 class INativePayloadBudget {
   public:
@@ -45,6 +51,8 @@ struct TransferControl {
     std::atomic<std::int64_t> uploadLimit{0};
     std::atomic_bool finish{false};
     std::shared_ptr<INativePayloadBudget> payloadBudget;
+    // Synchronous verified-stage gate. Rejection/stop is returned; transport emits its sole terminal event.
+    std::function<CompletionScanResult(const std::filesystem::path&)> scanBeforePublish;
 };
 class ITransferTransport {
   public:

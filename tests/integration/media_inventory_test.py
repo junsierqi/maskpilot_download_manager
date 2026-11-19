@@ -2,11 +2,13 @@
 import argparse
 import contextlib
 import functools
+import hashlib
 import http.server
 import json
 import os
 from pathlib import Path
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -110,10 +112,10 @@ def assets(muxer, directory):
 
 
 def request(client, parser, muxer, root, url, *options, inspect=False, environment=None, expected=0,
-            filename='selected.mkv'):
+            filename='selected.mkv', runtime_options=()):
     root.mkdir(parents=True, exist_ok=True)
     destination = root / (filename if not inspect else 'inspection.mkv')
-    command = [client, url, destination, root / 'data', '--media', '--media-parser', parser,
+    command = [client, *runtime_options, url, destination, root / 'data', '--media', '--media-parser', parser,
                '--media-muxer', muxer, *options]
     if inspect:
         command.append('--inspect-media')
@@ -415,12 +417,38 @@ def local_guard_component(client, muxer, root, origin):
     print('PASS actual guard components accept local containers and deny disguised playlists/out-of-work inputs')
 
 
+def completion_scan_case(client, parser, muxer, scanner, root, origin):
+    inventory = json.loads(request(client, parser, muxer, root / 'scan-inventory',
+                                   origin.url('combined.mp4'), inspect=True).stdout)
+    chosen = next(item for item in inventory['formats'] if item['hasVideo'] and item['hasAudio'])
+    for mode in ('pass', 'reject'):
+        case = root / ('media-scan-' + mode); case.mkdir()
+        record, target = case / 'scan.json', case / 'scan.mkv'
+        values = ['--mode', mode, '--record', str(record), '--final', str(target), '{file}']
+        prefix = ['--scan-program', str(scanner), *[part for value in values for part in ('--scan-arg', value)]]
+        request(client, parser, muxer, case, origin.url('combined.mp4'), '--media-mode', 'muxed',
+                '--media-format-id', chosen['id'], '--media-container', 'mkv', filename='scan.mkv', runtime_options=prefix,
+                expected=0 if mode == 'pass' else 1)
+        observed = json.loads(record.read_text(encoding='utf-8'))
+        assert not observed['finalExists'] and Path(observed['path']) != target
+        with contextlib.closing(sqlite3.connect(case / 'data' / 'tasks.db')) as db:
+            state, required, result = db.execute('SELECT state,scan_required,scan_state FROM tasks').fetchone()
+        assert required == 1
+        if mode == 'pass':
+            assert state == 9 and result == 3
+            assert hashlib.sha256(target.read_bytes()).hexdigest() == observed['files'][0]['sha256']
+        else:
+            assert state == 13 and result == 4 and not target.exists()
+    print('PASS actual media output passes scanner before publication; rejected media remains unpublished')
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--exercise', type=Path, required=True)
     parser.add_argument('--parser', type=Path, required=True)
     parser.add_argument('--muxer', type=Path, required=True)
     parser.add_argument('--ui', type=Path, required=True)
+    parser.add_argument('--scan-probe', type=Path)
     args = parser.parse_args()
     client, tool, muxer, ui = [path.resolve(strict=True) for path in (args.exercise, args.parser, args.muxer, args.ui)]
     with tempfile.TemporaryDirectory(prefix='maskpilot-media-inventory-') as temporary, contextlib.ExitStack() as stack:
@@ -432,6 +460,8 @@ def main():
         inventory = inspect_case(client, tool, muxer, direct, origin)
         print('PASS actual DASH inventory has two real video resolutions and selected audio/video output')
         extra_formats(client, tool, muxer, direct, origin, inventory)
+        if args.scan_probe:
+            completion_scan_case(client, tool, muxer, args.scan_probe.resolve(strict=True), root, origin)
         fallback_guard(client, tool, muxer, root, origin)
         exact_id_component(tool, muxer, root, origin)
         disguised_local_input_guard(client, tool, muxer, root, origin)

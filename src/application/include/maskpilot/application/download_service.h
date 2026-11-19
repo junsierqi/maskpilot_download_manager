@@ -1,6 +1,7 @@
 #pragma once
 #include <future>
 #include <maskpilot/application/browser_recovery.h>
+#include <maskpilot/application/completion_scan.h>
 #include <maskpilot/application/download_context.h>
 #include <maskpilot/application/media.h>
 #include <maskpilot/application/ports.h>
@@ -12,7 +13,7 @@ class DownloadService {
   public:
     DownloadService(std::unique_ptr<ITaskRepository> repository, TransportFactory factory,
                     std::filesystem::path workDirectory, ContextDependencies contexts = {},
-                    QueueDependencies queues = {});
+                    QueueDependencies queues = {}, CompletionScanDependencies scanning = {});
     ~DownloadService();
     DownloadService(const DownloadService&) = delete;
     DownloadService& operator=(const DownloadService&) = delete;
@@ -25,6 +26,10 @@ class DownloadService {
     // Trusted local queue administration; never accept these fields through scoped drafts.
     std::future<std::vector<DownloadQueue>> queues();
     std::future<TrafficUsage> queueTraffic(std::string queueId);
+    std::future<CompletionScanOptions> completionScanOptions();
+    std::future<std::string> completionScanIssue();
+    std::future<void> configureCompletionScan(CompletionScanOptions);
+    std::future<void> setCompletionScanRequired(std::string taskId, bool required);
     // Trusted local inspection only; returns ephemeral resolved material, never a wire response.
     std::future<DownloadSpec> resolveMediaInspection(MediaInspectionRequest);
     std::future<DownloadQueue> configureQueue(QueueConfiguration);

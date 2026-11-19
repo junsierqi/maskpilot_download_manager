@@ -2,6 +2,11 @@ add_executable(maskpilot_tests unit/domain_test.cpp integration/engine_test.cpp 
 target_sources(maskpilot_tests PRIVATE unit/http_layout_test.cpp)
 target_sources(maskpilot_tests PRIVATE unit/browser_recovery_test.cpp)
 target_sources(maskpilot_tests PRIVATE unit/browser_recovery_ui_test.cpp)
+target_sources(maskpilot_tests PRIVATE unit/completion_scan_test.cpp)
+add_executable(maskpilot_scan_probe support/scan_probe.cpp)
+target_link_libraries(maskpilot_scan_probe PRIVATE Qt6::Core maskpilot_options)
+add_dependencies(maskpilot_tests maskpilot_scan_probe)
+target_compile_definitions(maskpilot_tests PRIVATE MASKPILOT_TEST_SCAN_PROBE="$<TARGET_FILE:maskpilot_scan_probe>")
 target_sources(maskpilot_tests PRIVATE unit/queue_test.cpp integration/queue_store_test.cpp unit/queue_ui_test.cpp)
 target_sources(maskpilot_tests PRIVATE unit/queue_schedule_test.cpp)
 target_sources(maskpilot_tests PRIVATE unit/traffic_budget_test.cpp integration/traffic_store_test.cpp)
@@ -31,6 +36,10 @@ add_test(NAME adaptive_http_product_path COMMAND ${Python3_EXECUTABLE} ${CMAKE_C
 set_tests_properties(adaptive_http_product_path PROPERTIES TIMEOUT 150)
 add_test(NAME native_payload_budget_product_path COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/integration/native_budget_test.py --exercise $<TARGET_FILE:maskpilot_cli>)
 set_tests_properties(native_payload_budget_product_path PROPERTIES TIMEOUT 150)
+add_test(NAME completion_scan_product_path COMMAND ${Python3_EXECUTABLE}
+  ${CMAKE_CURRENT_SOURCE_DIR}/integration/completion_scan_test.py
+  --exercise $<TARGET_FILE:maskpilot_cli> --scanner $<TARGET_FILE:maskpilot_scan_probe>)
+set_tests_properties(completion_scan_product_path PROPERTIES TIMEOUT 180)
 add_test(NAME bounded_http_product_path COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/integration/transfer_constraints_test.py --exercise $<TARGET_FILE:maskpilot_cli>)
 set_tests_properties(bounded_http_product_path PROPERTIES TIMEOUT 180)
 add_test(NAME http_response_metadata_product_path COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/integration/response_metadata_test.py --exercise $<TARGET_FILE:maskpilot_cli>)

@@ -14,6 +14,8 @@ add_library(maskpilot_infrastructure
     src/bridge/download_bridge.cpp
     src/media/media_tools.cpp
     src/media/media_process.cpp
+    src/process/owned_process.cpp
+    src/security/completion_scanner.cpp
     src/media/media_inventory.cpp
     src/torrent/torrent_engine.cpp
     src/torrent/torrent_metadata.cpp)

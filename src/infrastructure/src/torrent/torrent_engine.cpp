@@ -835,6 +835,11 @@ class TorrentTransfer final : public ITransferTransport {
             callback(event);
             event.description.reset();
             event.torrentMetadata.reset();
+            if (storage->published && control.scanBeforePublish) {
+                throw std::runtime_error(
+                    "This output was already published. Verify it separately or explicitly waive the "
+                    "unfinished task's scan requirement; user files were preserved.");
+            }
             if (stopped(control)) {
                 outcome = control.cancel ? TransferOutcome::Cancelled : TransferOutcome::Paused;
             } else if (parsed.description.files && !hasSelection(parsed.description, task.spec.torrent)) {
@@ -969,6 +974,14 @@ class TorrentTransfer final : public ITransferTransport {
                             break;
                         }
                         verifyPublishedFiles(*storage, parsed.description, task.spec.torrent, true);
+                        if (control.scanBeforePublish) {
+                            const auto scan = control.scanBeforePublish(storage->stage);
+                            if (scan.outcome != TransferOutcome::Complete) {
+                                outcome = scan.outcome;
+                                error = scan.error;
+                                break;
+                            }
+                        }
                         event.phase = TaskState::Finalizing;
                         callback(event);
                         if (stopped(control)) {

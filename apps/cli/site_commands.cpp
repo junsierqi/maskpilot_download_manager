@@ -157,7 +157,7 @@ void respond(const QJsonObject& o) {
     std::cout << std::endl;
 }
 } // namespace
-int runSiteProjectCommand(int argc, char** argv) {
+int runSiteProjectCommand(int argc, char** argv, CompletionScanDependencies scanning) {
     try {
         if (argc != 4 || std::string(argv[1]) != "--project")
             throw std::invalid_argument("Usage: maskpilot_cli --project REQUEST_JSON DATA_DIRECTORY");
@@ -218,7 +218,7 @@ int runSiteProjectCommand(int argc, char** argv) {
         auto store = makeSqliteStore(directory / L"tasks.db");
         QueueDependencies dependencies{std::move(store.queues), makeQueueCivilTime(), {}, store.traffic};
         DownloadService downloads(std::move(store.tasks), makeUnifiedTransferFactory(), directory / L"parts",
-                                  {}, std::move(dependencies));
+                                  {}, std::move(dependencies), std::move(scanning));
         SiteProjectService projects(downloads, makeSiteProjectRepository(directory / L"site-projects"),
                                     makeSiteContentProcessor(), makeSiteProjectPublisher());
         if (!projects.startupError().empty())

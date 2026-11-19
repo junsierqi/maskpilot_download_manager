@@ -109,6 +109,8 @@ struct DownloadService::Impl {
     std::atomic_bool stopping{false};
     bool healthy = true;
     BrowserRecoveryRegistry browserRecovery;
+    CompletionScanDependencies scanning;
+    std::string scanIssue;
     int concurrentTasks = 3;
     std::int64_t globalLimit = 0, globalUploadLimit = 0;
 
@@ -515,6 +517,16 @@ struct DownloadService::Impl {
         task.peers = event.peers;
         task.seeds = event.seeds;
         const bool newlyPublished = !task.torrentPublished && event.torrentPublished;
+        const bool scanChanged =
+            event.scanState != ScanState::NotRequested && event.scanState != task.scanState;
+        if (event.scanState != ScanState::NotRequested) {
+            if (!task.scanRequired || event.scanState == ScanState::Waived ||
+                event.scanState >= ScanState::Count)
+                throw std::runtime_error("Invalid completion scanner state.");
+            task.scanState = event.scanState;
+            if (scanChanged)
+                task.scanAt = queueRegistry->now();
+        }
         task.torrentPublished = task.torrentPublished || event.torrentPublished;
         if (event.description)
             task.torrent = *event.description;
@@ -527,12 +539,17 @@ struct DownloadService::Impl {
         if (event.outcome == TransferOutcome::Progress) {
             if (task.state != TaskState::Pausing && task.state != TaskState::Cancelling)
                 task.state = event.phase;
-            if (newlyPublished)
+            if (newlyPublished || scanChanged)
                 save(task); // Seeding can continue indefinitely; publication must survive a crash now.
             // Transfer metadata, not progress counters, determines resumable bytes after a crash.
             return;
         }
         auto budget = jobs.at(id)->control->payloadBudget;
+        if (event.outcome == TransferOutcome::Complete && task.scanRequired &&
+            task.scanState != ScanState::Passed) {
+            event.outcome = TransferOutcome::Attention;
+            event.error = "The required completion scan was not approved. Check the scanner and retry.";
+        }
         const bool policyPause = jobs.at(id)->policyPause || (budget && budget->exhausted());
         jobs.erase(id); // The worker has enqueued its terminal event and no longer uses service state.
         if (budget) {
@@ -683,6 +700,28 @@ struct DownloadService::Impl {
             auto* task = next->second;
             lastQueue = next->first;
             attempted.insert(task->id);
+            const bool publishedTorrent =
+                task->spec.kind == TransferKind::BitTorrent && task->torrentPublished;
+            const bool approvedPublishedTorrent =
+                publishedTorrent && task->scanRequired && task->scanState == ScanState::Passed;
+            const bool enrollScan =
+                scanning.options.enabled && !publishedTorrent && task->scanState != ScanState::Waived;
+            if (((task->scanRequired && !approvedPublishedTorrent) || enrollScan) && !scanIssue.empty()) {
+                task->scanRequired = true;
+                task->scanState = ScanState::Pending;
+                task->scanAt = 0;
+                task->state = TaskState::NeedsAttention;
+                task->error = scanIssue;
+                save(*task);
+                continue;
+            }
+            if (task->scanRequired && !approvedPublishedTorrent && !scanning.options.enabled) {
+                task->state = TaskState::NeedsAttention;
+                task->error = "This task requires completion scanning. Configure a scanner or explicitly "
+                              "waive its requirement.";
+                save(*task);
+                continue;
+            }
             if (!task->responseUrl.empty() || !task->responseContentType.empty()) {
                 task->responseUrl.clear();
                 task->responseContentType.clear();
@@ -789,25 +828,44 @@ struct DownloadService::Impl {
             }
             task->state = TaskState::Probing;
             task->error.clear();
+            if (scanning.options.enabled && !publishedTorrent && task->scanState != ScanState::Waived)
+                task->scanRequired = true;
+            if (task->scanRequired && !approvedPublishedTorrent) {
+                task->scanState = ScanState::Pending;
+                task->scanAt = 0;
+            }
             ++task->generation;
             save(*task);
             auto copy = *task;
             copy.spec = std::move(resolved);
             auto path = workDirectory / task->id;
             auto transport = factory();
-            job->thread =
-                std::jthread([this, copy, path, control, transport = std::move(transport)]() mutable {
-                    auto callback = [this, id = copy.id, generation = copy.generation](TransferEvent event) {
-                        post([this, id, generation, event = std::move(event)]() mutable {
-                            processEvent(id, generation, std::move(event));
-                        });
-                    };
+            auto scanDependencies = scanning;
+            job->thread = std::jthread(
+                [this, copy, path, control, transport = std::move(transport), scanDependencies]() mutable {
+                    std::function<void(TransferEvent)> callback =
+                        [this, id = copy.id, generation = copy.generation](TransferEvent event) {
+                            post([this, id, generation, event = std::move(event)]() mutable {
+                                processEvent(id, generation, std::move(event));
+                            });
+                        };
                     try {
+                        if (copy.scanRequired &&
+                            !(copy.spec.kind == TransferKind::BitTorrent && copy.torrentPublished &&
+                              copy.scanState == ScanState::Passed)) {
+                            callback = attachCompletionScanner(*control, scanDependencies, callback);
+                        }
                         transport->run(copy, path, *control, callback);
                     } catch (const std::exception&) {
                         TransferEvent e;
                         e.outcome = TransferOutcome::Failed;
                         e.error = "Transfer failed unexpectedly. Inspect destination access and retry.";
+                        if (copy.scanRequired) {
+                            e.outcome = TransferOutcome::Attention;
+                            e.scanState = ScanState::Error;
+                            e.error = "Transfer or completion scanner could not start. Check the configured "
+                                      "scanner and destination.";
+                        }
                         callback(std::move(e));
                     }
                 });
@@ -828,6 +886,10 @@ struct DownloadService::Impl {
             if (traffic)
                 traffic->abandonOpenRunsAt(queueRegistry->now());
             for (auto task : repository->load()) {
+                if (task.scanState == ScanState::Scanning) {
+                    task.scanState = ScanState::Pending;
+                    save(task);
+                }
                 if (!task.projectId.empty() && !isTerminal(task.state)) {
                     task.runIntent = RunIntent::Paused;
                     task.state = TaskState::Paused;
@@ -919,11 +981,22 @@ struct DownloadService::Impl {
 
 DownloadService::DownloadService(std::unique_ptr<ITaskRepository> repository, TransportFactory factory,
                                  std::filesystem::path workDirectory, ContextDependencies contexts,
-                                 QueueDependencies queues)
+                                 QueueDependencies queues, CompletionScanDependencies scanning)
     : impl_(std::make_unique<Impl>()) {
     impl_->repository = std::move(repository);
     impl_->factory = std::move(factory);
     impl_->workDirectory = std::move(workDirectory);
+    impl_->scanIssue = validateCompletionScanOptions(scanning.options);
+    if (impl_->scanIssue.empty() && scanning.options.enabled) {
+        try {
+            if (!scanning.factory || !scanning.factory(scanning.options))
+                impl_->scanIssue = "Completion scanner is unavailable in this runtime.";
+        } catch (const std::exception&) {
+            impl_->scanIssue = "Configured completion scanner is unavailable. Repair its settings before "
+                               "downloading or explicitly waive this task's requirement.";
+        }
+    }
+    impl_->scanning = std::move(scanning);
     impl_->contexts = std::make_unique<ContextRegistry>(std::move(contexts));
     const auto initialLimits = queues.initialLimits;
     impl_->traffic = queues.traffic;
@@ -962,6 +1035,46 @@ std::future<std::string> DownloadService::add(DownloadSpec spec, std::string req
         task.queueId = std::move(queueId);
         task.spec = std::move(spec);
         return p->addPrepared(std::move(task), std::move(requestId), true, rememberProxy);
+    });
+}
+std::future<CompletionScanOptions> DownloadService::completionScanOptions() {
+    return impl_->request([p = impl_.get()] { return p->scanning.options; });
+}
+std::future<std::string> DownloadService::completionScanIssue() {
+    return impl_->request([p = impl_.get()] { return p->scanIssue; });
+}
+std::future<void> DownloadService::configureCompletionScan(CompletionScanOptions options) {
+    return impl_->request([p = impl_.get(), options = std::move(options)]() mutable {
+        if (!p->healthy || !p->jobs.empty())
+            throw std::invalid_argument("Pause active tasks before changing completion scanning.");
+        if (const auto message = validateCompletionScanOptions(options); !message.empty())
+            throw std::invalid_argument(message);
+        if (options.enabled && (!p->scanning.factory || !p->scanning.factory(options)))
+            throw std::invalid_argument("A completion scanner is unavailable in this runtime.");
+        p->scanning.options = std::move(options);
+        p->scanIssue.clear();
+    });
+}
+std::future<void> DownloadService::setCompletionScanRequired(std::string taskId, bool required) {
+    return impl_->request([p = impl_.get(), taskId = std::move(taskId), required] {
+        const auto found = p->tasks.find(taskId);
+        if (!p->healthy || found == p->tasks.end() || p->jobs.contains(taskId) ||
+            isActive(found->second.state) || isTerminal(found->second.state))
+            throw std::invalid_argument("Change scanning requirements only for a stopped unfinished task.");
+        if (required && found->second.spec.kind == TransferKind::BitTorrent && found->second.torrentPublished)
+            throw std::invalid_argument(
+                "Published torrent files cannot be returned to private staging for a new scan requirement.");
+        auto changed = found->second;
+        changed.scanRequired = required;
+        changed.scanState = required ? ScanState::Pending : ScanState::Waived;
+        changed.scanAt = p->queueRegistry->now();
+        changed.runIntent = RunIntent::Paused;
+        changed.state = TaskState::Paused;
+        changed.error = required ? "Completion scan required. Configure a scanner before resuming."
+                                 : "Completion scanning explicitly waived for this task. Resume when ready.";
+        p->save(changed);
+        found->second = std::move(changed);
+        p->publish();
     });
 }
 std::future<std::string> DownloadService::addProjectChild(DownloadSpec spec, std::string projectId,

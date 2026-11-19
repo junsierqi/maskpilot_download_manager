@@ -71,6 +71,7 @@ struct DownloadSpec {
     std::int64_t maxStoredBytes = 0;
     bool sameOriginRedirectOnly = false;
 };
+enum class ScanState { NotRequested, Pending, Scanning, Passed, Rejected, Error, Waived, Count };
 struct Task {
     std::string id;
     // Trusted server metadata; never accepted from a browser DownloadSpec.
@@ -107,6 +108,9 @@ struct Task {
     // Immutable trusted project association. Recovered unfinished children always require explicit resume.
     std::string projectId;
     std::int64_t projectRevision = 0;
+    bool scanRequired = false;
+    ScanState scanState = ScanState::NotRequested;
+    std::int64_t scanAt = 0;
 };
 struct Segment {
     std::int64_t begin = 0, end = 0;

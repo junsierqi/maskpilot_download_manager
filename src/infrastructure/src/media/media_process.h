@@ -1,4 +1,5 @@
 #pragma once
+#include "../process/owned_process.h"
 #include <QByteArray>
 #include <QProcess>
 #include <QStringList>
@@ -7,19 +8,7 @@
 #include <maskpilot/domain/task.h>
 #include <memory>
 namespace maskpilot::media_process {
-class ProcessTree {
-  public:
-    ProcessTree();
-    ~ProcessTree();
-    ProcessTree(const ProcessTree&) = delete;
-    ProcessTree& operator=(const ProcessTree&) = delete;
-    void prepare(QProcess&);
-    void stop(QProcess&);
-
-  private:
-    struct Impl;
-    std::unique_ptr<Impl> impl_;
-};
+using ProcessTree = process::OwnedProcessGroup;
 QString pathString(const std::filesystem::path&);
 QStringList commonArguments();
 void validateRequest(const DownloadSpec&);

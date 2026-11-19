@@ -1,4 +1,5 @@
 #pragma once
+#include <maskpilot/application/completion_scan.h>
 #include <maskpilot/application/download_context.h>
 #include <maskpilot/application/ports.h>
 #include <maskpilot/application/queue.h>
@@ -13,6 +14,7 @@ struct SqliteStore {
     std::shared_ptr<IQueueTrafficRepository> traffic;
 };
 SqliteStore makeSqliteStore(const std::filesystem::path& path);
+std::shared_ptr<ICompletionScanner> makeCompletionScanner(const CompletionScanOptions&);
 std::unique_ptr<ISiteContentProcessor> makeSiteContentProcessor();
 std::unique_ptr<ISiteProjectRepository> makeSiteProjectRepository(const std::filesystem::path& dataRoot);
 std::unique_ptr<ISiteProjectPublisher> makeSiteProjectPublisher();
@@ -23,5 +25,6 @@ std::unique_ptr<ITransferTransport> makeFtpTransfer();
 std::unique_ptr<ITransferTransport> makeUnifiedTransfer();
 // Keep one factory per service so all BT workers share its lazily created session.
 TransportFactory makeUnifiedTransferFactory(TransportFactory torrent = {});
-std::string sha256File(const std::filesystem::path& path, const TransferControl* control = nullptr);
+std::string sha256File(const std::filesystem::path& path, const TransferControl* control = nullptr,
+                       const std::function<bool()>& shouldStop = {});
 } // namespace maskpilot

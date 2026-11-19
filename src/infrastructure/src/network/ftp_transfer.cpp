@@ -378,6 +378,11 @@ Result transfer(const Task& task, const std::filesystem::path& work, TransferCon
         if (sha256File(stage, &control) != expected)
             return {TransferOutcome::Attention, "FTP SHA-256 verification failed. Output was not published."};
     }
+    if (control.scanBeforePublish) {
+        const auto scan = control.scanBeforePublish(stage);
+        if (scan.outcome != TransferOutcome::Complete)
+            return {scan.outcome, scan.error};
+    }
     event.phase = TaskState::Finalizing;
     callback(event);
     if (isStopped(control))

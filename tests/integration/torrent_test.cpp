@@ -1,4 +1,5 @@
 #include "../../src/infrastructure/src/torrent/torrent_internal.h"
+#include <QCoreApplication>
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -818,6 +819,92 @@ TEST(TorrentEngine, LocalTorrentTransfersVerifiedFilesWithoutPublicDiscovery) {
     maskpilot::TransferControl control;
     const auto result = run(localFactory(), task, fixture.temporary.path / "work" / task.id, control);
     expectComplete(result);
+    fixture.expectPayload(task.spec.destination);
+}
+TEST(TorrentEngine, ActualCompletionScannerApprovesPrivateDirectoryBeforePublicationAndRejectsWithoutFinal) {
+    int argc = 1;
+    char name[] = "TorrentCompletionScanner";
+    char* argv[]{name, nullptr};
+    QCoreApplication app(argc, argv);
+    TorrentFixture fixture;
+    for (const auto* mode : {"pass", "reject"}) {
+        auto task = fixture.task(fixture.temporary.path / (std::string("scan-") + mode));
+        maskpilot::CompletionScanOptions options;
+        options.enabled = true;
+        options.program = std::filesystem::path(MASKPILOT_TEST_SCAN_PROBE);
+        options.arguments = {"--mode", mode, "{file}"};
+        auto scanner = maskpilot::makeCompletionScanner(options);
+        maskpilot::TransferControl control;
+        bool inspected = false;
+        control.scanBeforePublish = [&](const auto& stage) {
+            inspected = true;
+            EXPECT_TRUE(std::filesystem::is_directory(stage));
+            EXPECT_FALSE(std::filesystem::exists(task.spec.destination));
+            fixture.expectPayload(stage);
+            return scanner->scan(stage, control);
+        };
+        const auto result = run(localFactory(), task, fixture.temporary.path / "work" / task.id, control);
+        EXPECT_TRUE(inspected);
+        EXPECT_EQ(result.terminals, 1);
+        if (std::string(mode) == "pass") {
+            expectComplete(result);
+            fixture.expectPayload(task.spec.destination);
+        } else {
+            EXPECT_EQ(result.terminal.outcome, maskpilot::TransferOutcome::Attention);
+            EXPECT_FALSE(std::filesystem::exists(task.spec.destination));
+        }
+    }
+}
+TEST(TorrentEngine, PublishedFilesStayOutsideScannerAndApprovedResumeKeepsItsDurableResult) {
+    int argc = 1;
+    char name[] = "PublishedTorrentScanner";
+    char* argv[]{name, nullptr};
+    QCoreApplication app(argc, argv);
+    TorrentFixture fixture;
+    auto task = fixture.task(fixture.temporary.path / "published-scan");
+    const auto work = fixture.temporary.path / "work" / task.id;
+    maskpilot::TransferControl initial;
+    maskpilot::CompletionScanOptions scan;
+    scan.enabled = true;
+    scan.program = std::filesystem::path(MASKPILOT_TEST_SCAN_PROBE);
+    auto scanner = maskpilot::makeCompletionScanner(scan);
+    initial.scanBeforePublish = [&](const auto& stage) { return scanner->scan(stage, initial); };
+    expectComplete(run(localFactory(), task, work, initial));
+    fixture.expectPayload(task.spec.destination);
+    task.torrentPublished = true;
+    maskpilot::TransferControl unsafe;
+    bool exposed = false;
+    unsafe.scanBeforePublish = [&](const auto&) {
+        exposed = true;
+        return maskpilot::CompletionScanResult{};
+    };
+    const auto held = run(localFactory(), task, work, unsafe);
+    EXPECT_EQ(held.terminal.outcome, maskpilot::TransferOutcome::Attention);
+    EXPECT_FALSE(exposed);
+    fixture.expectPayload(task.spec.destination);
+    task.scanRequired = true;
+    task.scanState = maskpilot::ScanState::Passed;
+    task.scanAt = 1;
+    task.state = maskpilot::TaskState::Paused;
+    task.runIntent = maskpilot::RunIntent::Paused;
+    const auto database = fixture.temporary.path / "scan-state.db";
+    auto repository = maskpilot::makeSqliteRepository(database);
+    repository->save(task);
+    maskpilot::CompletionScanDependencies unavailable;
+    unavailable.factory = [](const auto&) -> std::shared_ptr<maskpilot::ICompletionScanner> {
+        throw std::runtime_error("Approved published bytes must not start another scanner.");
+    };
+    {
+        maskpilot::DownloadService service(std::move(repository), localFactory(),
+                                           fixture.temporary.path / "work", {}, {}, unavailable);
+        EXPECT_THROW(service.setCompletionScanRequired(task.id, true).get(), std::invalid_argument);
+        service.resume(task.id);
+        ASSERT_TRUE(waitUntil([&] {
+            const auto saved = service.snapshot();
+            return !saved.empty() && saved.front().state == maskpilot::TaskState::Completed;
+        }));
+        EXPECT_EQ(service.snapshot().front().scanState, maskpilot::ScanState::Passed);
+    }
     fixture.expectPayload(task.spec.destination);
 }
 TEST(TorrentEngine, RequiredOriginAuthenticationIsRejectedBeforeSessionOrSourceContact) {

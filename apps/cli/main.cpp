@@ -203,14 +203,53 @@ void inspectMedia(maskpilot::DownloadService& service, maskpilot::DownloadSpec s
 }
 } // namespace
 int runClient(int argc, char** argv) {
-    if (argc > 1 && std::string(argv[1]) == "--project")
-        return maskpilot::runSiteProjectCommand(argc, argv);
     maskpilot::TorrentRuntimeOptions torrentRuntime;
+    maskpilot::CompletionScanOptions scanOptions;
+    bool customScanArguments = false, scanTimeoutSet = false, waiveScan = false;
     // Runtime options precede the command, so strings used as task option values are never reinterpreted.
-    if (argc > 1 && std::string(argv[1]) == "--bt-no-discovery") {
-        torrentRuntime.enableDiscovery = false;
-        --argc;
-        ++argv;
+    try {
+        while (argc > 1) {
+            const std::string option = argv[1];
+            int consumed = 1;
+            if (option == "--bt-no-discovery")
+                torrentRuntime.enableDiscovery = false;
+            else if (option == "--waive-scan")
+                waiveScan = true;
+            else if (option == "--scan-program" || option == "--scan-arg" || option == "--scan-timeout") {
+                if (argc < 3)
+                    throw std::invalid_argument("Missing scanner option value.");
+                consumed = 2;
+                const std::string value = argv[2];
+                if (option == "--scan-program") {
+                    scanOptions.enabled = true;
+                    scanOptions.program = std::filesystem::path(std::u8string(value.begin(), value.end()));
+                } else if (option == "--scan-arg") {
+                    if (!customScanArguments)
+                        scanOptions.arguments.clear();
+                    customScanArguments = true;
+                    scanOptions.arguments.push_back(value);
+                } else {
+                    const auto seconds = integerValue(value);
+                    if (seconds < 1 || seconds > 3600)
+                        throw std::invalid_argument("Scan timeout must be 1..3600 seconds.");
+                    scanOptions.timeoutSeconds = static_cast<int>(seconds);
+                    scanTimeoutSet = true;
+                }
+            } else
+                break;
+            argc -= consumed;
+            argv += consumed;
+        }
+        if ((customScanArguments || scanTimeoutSet) && !scanOptions.enabled)
+            throw std::invalid_argument("Specify --scan-program with scanner arguments or timeout.");
+        if (waiveScan && (argc < 2 || std::string(argv[1]) != "--resume"))
+            throw std::invalid_argument("--waive-scan applies only to an explicit --resume task.");
+        if (argc > 1 && std::string(argv[1]) == "--project")
+            return maskpilot::runSiteProjectCommand(argc, argv,
+                                                    {scanOptions, maskpilot::makeCompletionScanner});
+    } catch (const std::exception& error) {
+        std::cerr << error.what() << '\n';
+        return 2;
     }
     if (argc < 4) {
         std::cout
@@ -231,6 +270,10 @@ int runClient(int argc, char** argv) {
                      "explicit trackers and peers remain enabled.\n"
                      "This verification client pauses unfinished transfers after 180 seconds.\n";
         std::cout << "HTTP: --max-stored-bytes N (0 unlimited) --same-origin-redirects\n";
+        std::cout
+            << "Trusted prefix options before URL/--resume/--project: --scan-program EXE\n"
+               "  --scan-arg VALUE (repeat, including one literal {file}) --scan-timeout SECONDS\n"
+               "  --waive-scan --resume TASK_ID DATA explicitly waives that stopped task's requirement.\n";
         std::cout << "Media: --media --inspect-media --media-parser EXE --media-muxer EXE\n"
                      "       --media-mode auto|muxed|video-audio|audio|video --media-format-id ID\n"
                      "       --media-audio-id ID --media-container auto|mkv|mp4|webm|m4a|mp3|opus|flac\n";
@@ -254,7 +297,8 @@ int runClient(int argc, char** argv) {
             maskpilot::makeUnifiedTransferFactory(maskpilot::makeTorrentTransferFactory(torrentRuntime)),
             data / "parts", {},
             maskpilot::QueueDependencies{std::move(store.queues), maskpilot::makeQueueCivilTime(),
-                                         maskpilot::InitialQueueLimits{}, std::move(store.traffic)});
+                                         maskpilot::InitialQueueLimits{}, std::move(store.traffic)},
+            maskpilot::CompletionScanDependencies{scanOptions, maskpilot::makeCompletionScanner});
         std::string id;
         if (std::string(argv[1]) == "--resume" || std::string(argv[1]) == "--change-url") {
             id = argv[2];
@@ -294,6 +338,8 @@ int runClient(int argc, char** argv) {
             const bool keepStored = !existing->proxyCredentialRef.empty() &&
                                     spec.proxy == existing->spec.proxy && spec.proxyUsername.empty() &&
                                     spec.proxyPassword.empty();
+            if (waiveScan)
+                service.setCompletionScanRequired(id, false).get();
             service.updateRequestWithCredentials(id, std::move(spec), keepStored).get();
             service.resume(id);
         } else {
