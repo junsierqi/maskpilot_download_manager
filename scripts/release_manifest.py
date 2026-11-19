@@ -2,6 +2,7 @@
 import argparse
 import ctypes
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -16,8 +17,10 @@ MAX_FILES = 20000
 MAX_FILE = 2 * 1024 * 1024 * 1024
 REQUIRED_RUNTIME = ('maskpilot.exe', 'maskpilot_cli.exe', 'maskpilot_native_host.exe',
                     'media_guard/ffmpeg.exe', 'media_guard/ffprobe.exe')
-SOURCE_ROOTS = {'src', 'apps', 'resources', 'database'}
-SOURCE_FILES = {'CMakeLists.txt', 'vcpkg.json', 'vcpkg-configuration.json'}
+SOURCE_ROOTS = {'src', 'apps', 'resources', 'database', 'cmake'}
+SOURCE_FILES = {'CMakeLists.txt', 'CMakePresets.json', 'vcpkg.json', 'vcpkg-configuration.json',
+                'scripts/audit_release_paths.py', 'scripts/probe_portable_compiler.ps1',
+                'scripts/release_manifest.py', 'scripts/build.ps1', 'scripts/package.ps1'}
 RUNTIME_TREES = ('plugins', 'translations', 'platforms', 'styles', 'imageformats', 'iconengines',
                  'networkinformation', 'tls', 'generic')
 
@@ -195,7 +198,8 @@ def _cache(repo, build, version):
             _fail('instrumented compiler flags are not qualified')
     keys = ('CMAKE_BUILD_TYPE', 'MASKPILOT_ENABLE_ASAN', 'CMAKE_PROJECT_VERSION', 'CMAKE_GENERATOR',
             'CMAKE_CXX_COMPILER', 'CMAKE_CXX_COMPILER_VERSION', 'CMAKE_MAKE_PROGRAM', 'CMAKE_TOOLCHAIN_FILE',
-            'VCPKG_TARGET_TRIPLET', 'Qt6_DIR')
+            'CMAKE_CXX_FLAGS', 'CMAKE_CXX_FLAGS_RELEASE', 'CMAKE_EXE_LINKER_FLAGS',
+            'CMAKE_EXE_LINKER_FLAGS_RELEASE', 'VCPKG_TARGET_TRIPLET', 'VCPKG_INSTALLED_DIR', 'Qt6_DIR')
     return {name: result[name] for name in keys if name in result}
 
 
@@ -230,13 +234,41 @@ def _environment(repo, build, version):
     if any(value != version + '.0' for value in versions.values()):
         _fail('actual application/guard version disagrees with configured sources')
     return {'python': platform.python_version(), 'platform': platform.platform(), 'machine': platform.machine(),
-            'processor': platform.processor(), 'cache': _cache(repo, build, version), 'binaryVersions': versions}
+            'processor': platform.processor(), 'cache': _cache(repo, build, version), 'binaryVersions': versions,
+            'portablePolicySha256': _record(repo / 'scripts/audit_release_paths.py')['sha256']}
+
+
+def _audit(repo, build):
+    """Use the same actual artifact gate as packaging, including signed supplier copies."""
+    cache = _cache(repo, build, _version(repo))
+    if cache.get('VCPKG_TARGET_TRIPLET') != 'x64-windows-portable':
+        _fail('portable Release dependency triplet is required')
+    qt_directory = cache.get('Qt6_DIR', '')
+    compiler_path = cache.get('CMAKE_CXX_COMPILER', '')
+    if not qt_directory or not compiler_path:
+        _fail('configured Qt and compiler supplier roots are required')
+    qt_directory, compiler = _safe(Path(qt_directory)), _safe(Path(compiler_path))
+    if len(qt_directory.parents) < 3 or len(compiler.parents) < 7:
+        _fail('configured supplier paths have an unsupported layout')
+    qt = qt_directory.parents[2]
+    # Compiler is <VS>/VC/Tools/MSVC/<version>/bin/Hostx64/x64/cl.exe.
+    redist = compiler.parents[6] / 'Redist/MSVC'
+    candidates = sorted((p for p in redist.iterdir() if re.fullmatch(r'\d+\.\d+\.\d+', p.name)),
+                        key=lambda p: tuple(map(int, p.name.split('.'))), reverse=True)
+    if not candidates:
+        _fail('matching local MSVC redistributable source is unavailable')
+    crt = candidates[0] / 'x64/Microsoft.VC143.CRT'
+    spec = importlib.util.spec_from_file_location('maskpilot_release_paths', repo / 'scripts/audit_release_paths.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.audit_runtime(repo, build, qt, crt)
 
 
 def capture(repo: Path, build: Path, external: dict[str, Path] = {}) -> dict:
     repo, build = _base(repo), _base(build)
     version = _version(repo)
     environment = _environment(repo, build, version)
+    _audit(repo, build)
     tools = {}
     if not isinstance(external, dict) or len(external) > 128:
         _fail('invalid external tool inventory')
@@ -298,6 +330,7 @@ def verify(manifest: dict, repo: Path, build: Path) -> None:
     repo, build = _base(repo), _base(build)
     _git(repo, 'cat-file', '-e', manifest['sourceCommit'] + '^{commit}')
     version = _version(repo)
+    _audit(repo, build)
     if manifest['version'] != version or manifest['environment'] != _environment(repo, build, version):
         _fail('version or qualification environment drifted')
     if sources != _sources(repo) or manifest['runtime'] != _runtime(build):

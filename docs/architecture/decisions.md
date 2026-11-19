@@ -177,3 +177,17 @@ Queue configuration uses revision checks. Moving an inactive selection validates
 The actor admits work in queue turns, preserving priority within a queue and intersecting global and queue active limits. Persistent manual intent distinguishes a user pause from queue policy waiting. Disabling a queue cooperatively pauses its running work; enabling it reopens only eligible policy-held Run tasks, preserving retry and one-shot gates. Completed, failed, revoked and manually paused work does not start through queue enable. Startup retains safe recovery semantics.
 
 Rates are allocated across global, queue and task caps with unused-cap redistribution. Media helpers retain their actual launch reservation until exit; incompatible reductions return an ordinary pause-first error. Settings await that result before updating saved preferences. Finite exhausted allocations must never become the existing zero/unlimited control value. HTTP reduces live handles when a tiny positive allocation cannot fund one byte per handle; the durable extents remain pending. These are bandwidth controls, separate from the later traffic ledger and payload allowances. Completion notification and power countdown also check unfinished work, including tasks that have never been active.
+
+## Portable Release build policy
+
+Release dependencies use a separate `x64-windows-portable` triplet and install
+tree. A shared CMake policy supplies empirically checked MSVC prefix mapping and
+basename-only PDB references to both the application and dependencies. Debug and
+AddressSanitizer remain diagnostic builds. Relative source locations retain their
+filenames and lines; native tests run from the source root.
+
+Pinned overlay patches change only libxml2's implicit portable catalog default
+and OpenSSL's public build-information rendering. Existing per-context resource
+denial remains in force. Signed supplier libraries are preserved byte-for-byte;
+their SDK hashes and expected valid publisher signatures define narrowly reported
+provenance exceptions. Private host paths remain forbidden in all runtime files.

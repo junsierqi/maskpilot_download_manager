@@ -24,6 +24,8 @@ class BaselineTest(unittest.TestCase):
         self.build = self.root / 'build'
         self.repo.mkdir()
         self.build.mkdir()
+        for name in manifest.SOURCE_FILES:
+            self.write(self.repo / name, '{}\n')
         self.write(self.repo / 'CMakeLists.txt', 'project(MaskPilot VERSION 0.3.0 LANGUAGES CXX)\n')
         self.write(self.repo / 'vcpkg.json', json.dumps({'version-string': '0.3.0'}))
         self.write(self.repo / 'vcpkg-configuration.json', '{}')
@@ -58,6 +60,10 @@ class BaselineTest(unittest.TestCase):
         self.version_patch = patch.object(manifest, '_binary_version', return_value='0.3.0.0')
         self.version_patch.start()
         self.addCleanup(self.version_patch.stop)
+        # Synthetic PE placeholders cannot exercise the real artifact auditor.
+        self.audit_patch = patch.object(manifest, '_audit', return_value={'fixtureOnly': True})
+        self.audit_patch.start()
+        self.addCleanup(self.audit_patch.stop)
         self.baseline = manifest.capture(self.repo, self.build, {'parser': self.tool})
 
     @staticmethod
@@ -114,6 +120,23 @@ class BaselineTest(unittest.TestCase):
         extra.unlink()
         (self.build / 'media_guard/ffprobe.exe').unlink()
         with self.assertRaises(ValueError): self.verify()
+
+    def test_portable_build_inputs_and_audit_policy_are_frozen(self):
+        for relative in ('CMakePresets.json', 'scripts/audit_release_paths.py', 'scripts/build.ps1'):
+            path = self.repo / relative
+            original = path.read_bytes()
+            path.write_bytes(b'changed portable build policy')
+            with self.assertRaises(ValueError): self.verify()
+            path.write_bytes(original)
+        self.write(self.repo / 'cmake/ports/owned.patch', 'new dependency source patch')
+        with self.assertRaises(ValueError): self.verify()
+
+    def test_actual_audit_rejection_blocks_creation_and_verification(self):
+        with patch.object(manifest, '_audit', side_effect=ValueError('artifact path rejection')):
+            with self.assertRaisesRegex(ValueError, 'artifact path rejection'):
+                manifest.capture(self.repo, self.build)
+            with self.assertRaisesRegex(ValueError, 'artifact path rejection'):
+                self.verify()
 
     def test_test_executables_and_build_intermediates_are_not_runtime(self):
         self.write(self.build / 'tests/owned-test.exe', 'not a shipped process')

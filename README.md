@@ -142,7 +142,9 @@ npm.cmd --prefix browser_extension test
 ./scripts/smoke.ps1 -PackageDirectory out/package/MaskPilot-0.3.0-windows-x64
 ```
 
-已有独立 Release 构建时，可用 `./scripts/package.ps1 -SkipBuild -BuildDirectory out/build/windows-msvc-protocols` 明确选择产物。脚本检查项目版本、运行客户端、Qt 和编译器匹配，避免将旧二进制混入新包。
+已有独立 Release 构建时，可用 `./scripts/package.ps1 -SkipBuild -BuildDirectory out/build/windows-msvc-portable` 明确选择产物。Release 使用 `x64-windows-portable` 和独立的 `out/dependencies-portable/`；Debug 保留原有依赖目录。脚本检查项目版本、运行客户端、Qt、编译器及所选依赖配置。
+
+Release 编译前会实测编译器的相对源码路径映射，私有 PDB 留在构建目录。打包审计本机路径、PE 调试记录和文件清单；Qt／微软运行库还须与 SDK／工具链原件哈希一致且签名有效。供应商原有的构建诊断标识保留并单独记录，不修改签名二进制。依赖补丁及许可证随包提供。
 
 固定依赖由 vcpkg 清单获取；生成文件全部放在 `out/`。更换 Qt 版本时同步更新依赖源码清单和哈希，打包脚本会拒绝版本不一致。安装包包含所用 Qt 模块源码与许可证；原始工程代码采用 [MIT](LICENSE)，实际依赖见 [NOTICES](third_party/NOTICES.md)。
 

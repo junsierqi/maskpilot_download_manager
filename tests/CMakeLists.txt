@@ -17,7 +17,7 @@ target_link_libraries(maskpilot_media_system_tests PRIVATE maskpilot_ui maskpilo
 target_link_libraries(maskpilot_tests PRIVATE Qt6::Network)
 target_link_libraries(maskpilot_tests PRIVATE maskpilot_application maskpilot_infrastructure GTest::gtest_main)
 include(GoogleTest)
-gtest_discover_tests(maskpilot_tests DISCOVERY_MODE PRE_TEST)
+gtest_discover_tests(maskpilot_tests DISCOVERY_MODE PRE_TEST WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 add_test(NAME local_http_product_path COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/support/http_fixture.py --exercise $<TARGET_FILE:maskpilot_cli>)
 set_tests_properties(local_http_product_path PROPERTIES TIMEOUT 120)

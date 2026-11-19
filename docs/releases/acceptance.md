@@ -110,3 +110,41 @@ BT 实际元数据与分片经 HTTP CONNECT／SOCKS5 传输，验证直连／不
 GUI IPC 延迟表示主事件线程的响应能力，不等同于所有用户操作和可见绘制的延迟。浏览器自动化用测试实例的显式无沙箱选项，因此不证明生产沙箱兼容。
 
 外部未验证：干净 Windows 虚拟机、生产浏览器沙箱／商店签名包、发布签名、真实站点长期兼容性、在线更新服务。没有发布凭据不会阻止生成本地可运行候选包，但不能据此声称公开发布。
+
+## Current 0.3.0 qualification boundary
+
+The first 0.3.0 long-run attempt was deliberately stopped after 2,411.18 seconds
+when release inspection found local compilation paths in runtime binaries. Its
+7,400 verified files do not constitute eight-hour acceptance. The failed report
+is retained at `out/qa/stress-0.3-long.json`.
+
+Portable compilation, artifact audits and a new unchanged runtime baseline must
+pass before a fresh 28,800-second run. Earlier 0.2.0 results above apply only to
+that older frozen artifact. Current qualification must identify its own source
+commit, runtime hashes, package hash and complete observed duration.
+
+### Portable preflight evidence
+
+The corrected default, explicit and trailing-separator source roots passed six
+actual MSVC source/header/Boost diagnostic probes. The portable dependency graph
+and applications were rebuilt. Stage and ZIP audits verified 38 runtime files,
+basename-only local PDB references, unchanged authenticated supplier DLLs, and
+the complete pinned source/patch payload. The frozen preflight records 154
+source/policy inputs and three external media tools.
+
+The corrected runtime passed a 307.38-second workload: 800 file hashes, 24
+pause/resume operations, eight active transfers and real media processing.
+GUI IPC p95 was 27.14 ms and quarter memory drift was 2.65 MiB; process and
+fixture cleanup passed. Actual media inventory/container/proxy/Qt checks and
+offline HTML/CSS rendering with zero remote contacts also passed. These short
+runs do not qualify the required eight-hour release run.
+
+One loaded full-suite run timed out in
+`SiteProjectCompletion.PreviewAndCancellationCannotTriggerSuccessfulCompletionCountdown`;
+a later loaded repeat failed at another wait in the same test. The cause remains
+unconfirmed. Failure-only state diagnostics preserve the original assertions
+and five-second waits. Subsequent 30- and 40-run repetitions passed, including
+40 runs alongside real download load. The failures remain recorded; these
+repetitions do not prove a root cause or justify a guessed production change.
+The subsequent complete suite passed 269/269 tests in 626.40 seconds with the
+original waiting budgets and new failure diagnostics retained.

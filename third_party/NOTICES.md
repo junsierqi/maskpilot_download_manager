@@ -20,8 +20,14 @@ respective files. This document records actual dependencies, not design referenc
 Packages include the installed dependency copyright files under `licenses/`,
 Qt SBOMs and complete source archives under `dependency-sources/`. Qt is dynamically
 linked; compatible modified Qt libraries may replace the DLLs. Do not remove these
-materials when redistributing. Source builds use unmodified dependency sources
-selected by `vcpkg-configuration.json`; no proprietary Qt modules are used.
+materials when redistributing. Versions are selected by `vcpkg-configuration.json`;
+no proprietary Qt modules are used. The portable Release overlay makes two narrow
+source changes: libxml2 has an empty implicit default catalog (explicit catalog
+APIs remain available), and OpenSSL normalizes private compiler locations in its
+reported build information without changing actual compiler/security flags.
+Complete overlay files and patches are included under
+`dependency-sources/portable-ports/`, with the vcpkg MIT license. Qt and Microsoft
+runtime binaries retain their supplier bytes and signatures.
 The installed libtorrent copyright file includes its bundled helper notices;
 retain the complete file, along with notices for the deployed Boost and OpenSSL
 dependencies. Build-time Perl is not part of the application runtime.

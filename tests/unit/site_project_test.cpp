@@ -9,6 +9,7 @@
 #include <maskpilot/domain/task.h>
 #include <maskpilot/infrastructure/adapters.h>
 #include <maskpilot/ui/main_window.h>
+#include <sstream>
 #include <thread>
 
 using namespace maskpilot;
@@ -351,31 +352,54 @@ TEST(SiteProjectCompletion, PreviewAndCancellationCannotTriggerSuccessfulComplet
         auto* dialog = window.findChild<QDialog*>("completionCountdown");
         return dialog && dialog->isVisible() ? dialog : nullptr;
     };
+    const auto diagnostics = [&](const std::string& id) {
+        std::ostringstream detail;
+        detail << "calls=" << rig.calls.load() << " holdRoot=" << rig.holdRoot.load()
+               << " holdImage=" << rig.holdImage.load() << " pauses=" << rig.pauses.load()
+               << " downloadError=" << rig.downloads->lastError()
+               << " projectStartupError=" << rig.projects->startupError();
+        if (const auto project = rig.projects->inspect(id)) {
+            detail << " projectState=" << siteProjectStateName(project->state)
+                   << " pendingPublication=" << project->pendingPublication.has_value()
+                   << " published=" << project->published.has_value() << " projectError=" << project->error;
+            for (const auto& entry : project->entries)
+                detail << " entry=" << entry.id << ':' << siteProjectEntryStateName(entry.state)
+                       << " task=" << entry.taskId << " error=" << entry.error;
+        } else {
+            detail << " projectMissing";
+        }
+        for (const auto& task : rig.downloads->snapshot())
+            detail << " native=" << task.id << ':' << stateName(task.state)
+                   << " intent=" << static_cast<int>(task.runIntent) << " generation=" << task.generation
+                   << " error=" << task.error;
+        return detail.str();
+    };
     rig.holdRoot = true;
     const auto first = rig.create();
     rig.projects->preview(first, 1).get();
-    ASSERT_TRUE(pump([&] { return rig.calls.load() == 1; }));
+    ASSERT_TRUE(pump([&] { return rig.calls.load() == 1; })) << diagnostics(first);
     settle();
     rig.holdRoot = false;
-    ASSERT_TRUE(pump([&] { return rig.state(first, SiteProjectState::PreviewReady); }));
+    ASSERT_TRUE(pump([&] { return rig.state(first, SiteProjectState::PreviewReady); })) << diagnostics(first);
     settle();
     EXPECT_EQ(visibleCountdown(), nullptr);
     rig.projects->start(first, 1).get();
-    ASSERT_TRUE(pump([&] { return rig.state(first, SiteProjectState::Completed); }));
-    ASSERT_TRUE(pump([&] { return visibleCountdown() != nullptr; }));
+    ASSERT_TRUE(pump([&] { return rig.state(first, SiteProjectState::Completed); })) << diagnostics(first);
+    ASSERT_TRUE(pump([&] { return visibleCountdown() != nullptr; })) << diagnostics(first);
     visibleCountdown()->reject();
     settle();
     rig.holdRoot = true;
     const auto second = rig.create();
     rig.projects->preview(second, 1).get();
-    ASSERT_TRUE(pump([&] { return rig.calls.load() == 3; }));
+    ASSERT_TRUE(pump([&] { return rig.calls.load() == 3; })) << diagnostics(second);
     settle();
     rig.holdRoot = false;
-    ASSERT_TRUE(pump([&] { return rig.state(second, SiteProjectState::PreviewReady); }));
+    ASSERT_TRUE(pump([&] { return rig.state(second, SiteProjectState::PreviewReady); }))
+        << diagnostics(second);
     settle();
     EXPECT_EQ(visibleCountdown(), nullptr);
     rig.projects->cancel(second, 1).get();
-    ASSERT_TRUE(pump([&] { return rig.state(second, SiteProjectState::Cancelled); }));
+    ASSERT_TRUE(pump([&] { return rig.state(second, SiteProjectState::Cancelled); })) << diagnostics(second);
     settle();
     EXPECT_EQ(visibleCountdown(), nullptr);
     settings.setValue("completionAction", 0);

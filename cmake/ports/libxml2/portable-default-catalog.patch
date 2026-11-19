@@ -1,0 +1,38 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -26,6 +26,7 @@
+ 
+ option(BUILD_SHARED_LIBS "Build shared libraries" ON)
+ option(LIBXML2_WITH_CATALOG "Add the Catalog support" ON)
++option(LIBXML2_PORTABLE_DEFAULT_CATALOG "Disable implicit machine-specific catalog defaults" OFF)
+ option(LIBXML2_WITH_DEBUG "Add the debugging module" ON)
+ option(LIBXML2_WITH_DOCS "Build documentation" OFF)
+ option(LIBXML2_WITH_HTML "Add the HTML support" ON)
+@@ -451,7 +452,11 @@
+     endif()
+ endif()
+ 
+-set(XML_SYSCONFDIR "${CMAKE_INSTALL_FULL_SYSCONFDIR}")
++if(LIBXML2_PORTABLE_DEFAULT_CATALOG)
++    set(XML_SYSCONFDIR ".")
++else()
++    set(XML_SYSCONFDIR "${CMAKE_INSTALL_FULL_SYSCONFDIR}")
++endif()
+ 
+ install(FILES ${LIBXML2_HDRS} DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/libxml2/libxml COMPONENT development)
+ 
+--- a/config.h.cmake.in
++++ b/config.h.cmake.in
+@@ -31,5 +31,12 @@
+ /* System configuration directory (/etc) */
+ #cmakedefine XML_SYSCONFDIR "@XML_SYSCONFDIR@"
+ 
++/* Keep catalog APIs and explicit environment choices, without an implicit host path. */
++#cmakedefine01 LIBXML2_PORTABLE_DEFAULT_CATALOG
++#if LIBXML2_PORTABLE_DEFAULT_CATALOG
++#define XML_XML_DEFAULT_CATALOG ""
++#define XML_SGML_DEFAULT_CATALOG ""
++#endif
++
+ /* TLS specifier */
+ #cmakedefine XML_THREAD_LOCAL @XML_THREAD_LOCAL@

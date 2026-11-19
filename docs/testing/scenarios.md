@@ -92,3 +92,18 @@ python benchmarks/run.py --desktop out/package/MaskPilot-0.1.0-windows-x64/maskp
 `ctest --test-dir <build> -R 'ContextUi\.|TaskList|DesktopFlow\.|DownloadContexts\.' --output-on-failure --no-tests=error` 覆盖实际环境管理、筛选、新建／重新绑定、撤销／恢复／清理按钮，独立任务安全记住／忘记、重开编辑器保留认证需求，以及导入取消／中途保存失败／剩余重试。原生凭据用随机安装命名空间，结束时仅删除所属日志记录。控件测试默认 offscreen；设置 `MASKPILOT_TEST_NATIVE_UI=1` 使用真实 Windows 窗口，并可用 `MASKPILOT_TEST_CONTEXT_SCREENSHOT=<绝对路径.png>` 保存环境对话框截图。
 
 队列控件复测使用 `ctest --test-dir <build> -R '^Queue' --output-on-failure --no-tests=error`。原生截图设置 `MASKPILOT_TEST_NATIVE_UI=1`、`MASKPILOT_TEST_QUEUE_SCREENSHOT=<绝对路径.png>`，运行 `QueueUi.ActualManagerAddFilterMoveAndReopenPreservePausedMembership`。实际 HTTP 窗口测试验证队列启用不会启动手动暂停任务、保留已下载数据并完整落盘；设置失败测试只用受控媒体工作桩验证保存顺序，不替代实际媒体组件回归。测试不触发真正退出或关机动作。
+
+## Portable build verification
+
+Run `scripts/probe_portable_compiler.ps1` in the initialized MSVC environment.
+It compiles and runs actual source/header paths with spaces and both slash styles,
+using default, explicit and trailing-separator source roots,
+checks `__FILE__` and `std::source_location`, and exercises Boost diagnostics when
+headers are available. Ignored compiler options fail the probe.
+
+Run `python tests/system/release_paths_test.py` for deterministic PE/path/archive
+counterexamples and `python tests/system/release_manifest_test.py` for baseline
+drift checks. Synthetic binaries and mocked signature/version seams are fixture
+evidence only. Packaging independently audits actual runtime files and the final
+ZIP against the selected Qt SDK and Microsoft CRT source directory. Qualification
+hashes include CMake presets, overlay patches and audit/build policy inputs.

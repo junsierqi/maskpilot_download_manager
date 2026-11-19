@@ -18,7 +18,9 @@
       "name": "windows-msvc-release",
       "inherits": "windows-msvc-debug",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release"
+        "CMAKE_BUILD_TYPE": "Release",
+        "VCPKG_TARGET_TRIPLET": "x64-windows-portable",
+        "VCPKG_INSTALLED_DIR": "${sourceDir}/out/dependencies-portable"
       }
     }
   ],

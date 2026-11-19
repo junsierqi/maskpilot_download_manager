@@ -17,6 +17,13 @@ function Read-BuildCacheValue([string]$Name) {
 if ((Read-BuildCacheValue 'CMAKE_BUILD_TYPE') -ne 'Release' -or (Read-BuildCacheValue 'MASKPILOT_ENABLE_ASAN') -ne 'OFF') {
     throw 'Rebuild a non-instrumented Release before packaging.'
 }
+if ([IO.Path]::GetFullPath((Read-BuildCacheValue 'CMAKE_HOME_DIRECTORY')).TrimEnd('\','/') -ine $projectRoot.TrimEnd('\','/')) {
+    throw 'The build does not belong to this source checkout.'
+}
+if ((Read-BuildCacheValue 'VCPKG_TARGET_TRIPLET') -ne 'x64-windows-portable') { throw 'Packaging requires the portable Release dependency triplet.' }
+$dependencyRoot = Join-Path (Read-BuildCacheValue 'VCPKG_INSTALLED_DIR') (Read-BuildCacheValue 'VCPKG_TARGET_TRIPLET')
+MP-AssertNoReparse $dependencyRoot
+if (-not (Test-Path -LiteralPath "$dependencyRoot/bin")) { throw 'Configured portable dependency runtime is missing.' }
 if ([IO.Path]::GetFullPath((Read-BuildCacheValue 'Qt6_DIR')) -ine [IO.Path]::GetFullPath("$env:QT_ROOT_DIR/lib/cmake/Qt6") -or
     [IO.Path]::GetFullPath((Read-BuildCacheValue 'CMAKE_CXX_COMPILER')) -ine [IO.Path]::GetFullPath("$env:VCToolsInstallDir/bin/Hostx64/x64/cl.exe")) {
     throw 'The build uses a different Qt installation or MSVC toolset. Reconfigure with cmake --fresh and rebuild.'
@@ -47,7 +54,7 @@ New-Item -ItemType Directory -Path $stage | Out-Null
 foreach ($exe in @('maskpilot.exe','maskpilot_cli.exe','maskpilot_native_host.exe')) { Copy-Item -LiteralPath "$buildRoot/$exe" -Destination $stage }
 New-Item -ItemType Directory -Path "$stage/media_guard" -Force | Out-Null
 foreach ($exe in @('ffmpeg.exe','ffprobe.exe')) { Copy-Item -LiteralPath "$buildRoot/media_guard/$exe" -Destination "$stage/media_guard" }
-foreach ($dll in @('libcurl.dll','libz.dll','nghttp2.dll','sqlite3.dll','torrent-rasterbar.dll','libcrypto-3-x64.dll','libssl-3-x64.dll','libxml2.dll')) { Copy-Item -LiteralPath "$projectRoot/out/dependencies/x64-windows/bin/$dll" -Destination $stage }
+foreach ($dll in @('libcurl.dll','libz.dll','nghttp2.dll','sqlite3.dll','torrent-rasterbar.dll','libcrypto-3-x64.dll','libssl-3-x64.dll','libxml2.dll')) { Copy-Item -LiteralPath "$dependencyRoot/bin/$dll" -Destination $stage }
 # Keep the deployed modules identical to the independently qualified runtime.
 # Windows supplies its own system dependencies, including ICU.
 foreach ($dll in @('Qt6Core.dll','Qt6Gui.dll','Qt6Widgets.dll','Qt6Network.dll','Qt6Svg.dll')) {
@@ -92,6 +99,7 @@ Copy-Item -LiteralPath "$projectRoot/docs" -Destination "$stage/docs" -Recurse
 New-Item -ItemType Directory -Path "$stage/third_party" -Force | Out-Null
 Copy-Item -LiteralPath "$projectRoot/third_party/NOTICES.md","$projectRoot/third_party/sources.json" -Destination "$stage/third_party"
 Copy-Item -LiteralPath "$projectRoot/third_party/sources.json" -Destination "$stage/dependency-sources/sources.json"
+Copy-Item -LiteralPath "$projectRoot/cmake/ports" -Destination "$stage/dependency-sources/portable-ports" -Recurse
 $catalog = Get-Content "$projectRoot/third_party/sources.json" -Raw | ConvertFrom-Json
 $qtVersion = (& "$env:QT_ROOT_DIR/bin/qmake.exe" -query QT_VERSION).Trim()
 if ($qtVersion -ne $catalog.qtVersion) { throw 'Update the pinned source catalog before packaging a different Qt version.' }
@@ -122,10 +130,10 @@ foreach ($module in @('qtbase','qtsvg','qttranslations')) {
 }
 foreach ($dependency in @('curl','nghttp2','zlib','sqlite3','libtorrent','openssl','libxml2')) {
     New-Item -ItemType Directory -Path "$stage/licenses/$dependency" -Force | Out-Null
-    Copy-Item -LiteralPath "$projectRoot/out/dependencies/x64-windows/share/$dependency/copyright" -Destination "$stage/licenses/$dependency"
+    Copy-Item -LiteralPath "$dependencyRoot/share/$dependency/copyright" -Destination "$stage/licenses/$dependency"
 }
 # Versioned Boost CMake configuration folders are not installed library ports.
-foreach ($dependency in @(Get-ChildItem -LiteralPath "$projectRoot/out/dependencies/x64-windows/share" -Directory -Filter 'boost-*' | Where-Object { $_.Name -notin @('boost-uninstall','boost-cmake') -and $_.Name -notmatch '^boost-\d+(\.\d+)+$' })) {
+foreach ($dependency in @(Get-ChildItem -LiteralPath "$dependencyRoot/share" -Directory -Filter 'boost-*' | Where-Object { $_.Name -notin @('boost-uninstall','boost-cmake') -and $_.Name -notmatch '^boost-\d+(\.\d+)+$' })) {
     $copyright = Join-Path $dependency.FullName 'copyright'
     if (-not (Test-Path -LiteralPath $copyright)) { throw "Missing Boost dependency notice: $($dependency.Name)" }
     $noticeDirectory = Join-Path $stage ('licenses/' + $dependency.Name)
@@ -148,9 +156,14 @@ $hashes = Get-ChildItem -LiteralPath $stage -File -Recurse | Sort-Object FullNam
     '{0}  {1}' -f (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $_.FullName.Substring($stage.Length + 1).Replace('\','/')
 }
 [IO.File]::WriteAllText("$stage/SHA256SUMS.txt",(($hashes -join "`n") + "`n"),[Text.UTF8Encoding]::new($false))
+$crtRoot = Join-Path $runtimeRoot.FullName 'x64/Microsoft.VC143.CRT'
+& python "$PSScriptRoot/audit_release_paths.py" --root $projectRoot --directory $stage --qt-root $env:QT_ROOT_DIR --crt-root $crtRoot
+if ($LASTEXITCODE -ne 0) { throw 'Package stage path/provenance audit failed.' }
 $zipPending = Join-Path $packageBase ('.MaskPilot-' + $version + '-' + [Guid]::NewGuid().ToString('N') + '.zip')
 Compress-Archive -LiteralPath $stage -DestinationPath $zipPending -CompressionLevel Optimal
 [IO.File]::Move($zipPending,$zip)
+& python "$PSScriptRoot/audit_release_paths.py" --root $projectRoot --archive $zip --qt-root $env:QT_ROOT_DIR --crt-root $crtRoot
+if ($LASTEXITCODE -ne 0) { throw 'Package archive path/provenance audit failed.' }
 $digest = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
 $digestBytes = [Text.Encoding]::ASCII.GetBytes($digest + '  ' + [IO.Path]::GetFileName($zip) + "`n")
 $digestStream = [IO.File]::Open("$zip.sha256",[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)

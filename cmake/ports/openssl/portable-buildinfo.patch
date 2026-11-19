@@ -1,0 +1,32 @@
+--- a/util/mkbuildinf.pl
++++ b/util/mkbuildinf.pl
+@@ -11,6 +11,29 @@
+ 
+ my $platform = pop @ARGV;
+ my $cflags = join(' ', @ARGV);
++
++# This portable overlay normalizes reporting metadata only. Real compiler and
++# linker commands are unchanged, and useful flags and relative source locations
++# remain available through OPENSSL_CFLAGS.
++$cflags =~ s{\A\s*"?[A-Za-z]:[\\/][^\r\n]*?[\\/]([^\\/\s"]+\.exe)"?(?=\s|$)}{$1}i;
++my @prefixes;
++while ($cflags =~ /((?:[^\s"]+|"[^"]*")+)/g) {
++    my $argument = $1;
++    $argument =~ s/"//g;
++    if ($argument =~ m{\A[/-]pathmap:(.+)=([^=]+)\z}i) {
++        my ($from, $to) = ($1, $2);
++        next unless $from =~ m{\A[A-Za-z]:[\\/]};
++        next unless $to =~ m{\A(?:\.|[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*)\z};
++        next if $to =~ m{(?:\A|/)\.\.(?:/|\z)};
++        $from =~ s{[\\/]+\z}{};
++        push @prefixes, [$from, $to];
++    }
++}
++for my $prefix (sort { length($b->[0]) <=> length($a->[0]) } @prefixes) {
++    my ($from, $to) = @$prefix;
++    my $pattern = join('[\\\\/]', map { quotemeta($_) } split(m{[\\/]}, $from));
++    $cflags =~ s{$pattern(?=[\\/=\s"]|\z)}{$to}gi;
++}
+ $cflags =~ s(\\)(\\\\)g;
+ $cflags = "compiler: $cflags";
+ 

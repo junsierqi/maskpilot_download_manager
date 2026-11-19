@@ -1,0 +1,22 @@
+set(VCPKG_TARGET_ARCHITECTURE x64)
+set(VCPKG_CRT_LINKAGE dynamic)
+set(VCPKG_LIBRARY_LINKAGE dynamic)
+set(VCPKG_BUILD_TYPE release)
+
+get_filename_component(_maskpilot_root "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
+include("${_maskpilot_root}/cmake/PortableFlags.cmake")
+maskpilot_portable_options(_maskpilot_compile_options _maskpilot_link_options SOURCE_ROOT "${_maskpilot_root}")
+
+# vcpkg consumes shell-style strings; preserve each shared module option as one argument.
+foreach(_maskpilot_kind IN ITEMS compile link)
+    set(_maskpilot_quoted)
+    foreach(_maskpilot_option IN LISTS _maskpilot_${_maskpilot_kind}_options)
+        string(REPLACE "\"" "\\\"" _maskpilot_escaped "${_maskpilot_option}")
+        list(APPEND _maskpilot_quoted "\"${_maskpilot_escaped}\"")
+    endforeach()
+    string(JOIN " " _maskpilot_${_maskpilot_kind}_flags ${_maskpilot_quoted})
+endforeach()
+set(VCPKG_C_FLAGS_RELEASE "${_maskpilot_compile_flags}")
+set(VCPKG_CXX_FLAGS_RELEASE "${_maskpilot_compile_flags}")
+set(VCPKG_LINKER_FLAGS_RELEASE "${_maskpilot_link_flags}")
+set(VCPKG_HASH_ADDITIONAL_FILES "${_maskpilot_root}/cmake/PortableFlags.cmake")
