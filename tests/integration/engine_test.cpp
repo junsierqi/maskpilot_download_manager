@@ -472,11 +472,24 @@ TEST(Storage, MigratesPreviousSchemaWithoutChangingExistingProtocolsOrFiles) {
                                "response_url",
                                "response_content_type",
                                "project_id",
-                               "project_revision"}) {
+                               "project_revision",
+                               "scan_required",
+                               "scan_state",
+                               "scan_at"}) {
         const auto sql = std::string("ALTER TABLE tasks DROP COLUMN ") + column;
         ASSERT_EQ(sqlite3_exec(connection, sql.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
     }
     ASSERT_EQ(sqlite3_exec(connection, "PRAGMA user_version=3", nullptr, nullptr, nullptr), SQLITE_OK);
+    sqlite3_stmt* shape = nullptr;
+    ASSERT_EQ(sqlite3_prepare_v2(connection,
+                                 "SELECT count(*) FROM pragma_table_info('tasks') WHERE "
+                                 "name IN ('scan_required','scan_state','scan_at')",
+                                 -1, &shape, nullptr),
+              SQLITE_OK);
+    std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> finalizeShape(shape, sqlite3_finalize);
+    ASSERT_EQ(sqlite3_step(shape), SQLITE_ROW);
+    EXPECT_EQ(sqlite3_column_int(shape, 0), 0);
+    finalizeShape.reset();
     close.reset();
     auto repository = maskpilot::makeSqliteRepository(database);
     const auto migrated = repository->load();
@@ -491,6 +504,9 @@ TEST(Storage, MigratesPreviousSchemaWithoutChangingExistingProtocolsOrFiles) {
         EXPECT_EQ(migrated[i].downloaded, 123);
         EXPECT_FALSE(migrated[i].torrentPublished);
         EXPECT_EQ(migrated[i].spec.torrent.metadata, nullptr);
+        EXPECT_FALSE(migrated[i].scanRequired);
+        EXPECT_EQ(migrated[i].scanState, maskpilot::ScanState::NotRequested);
+        EXPECT_EQ(migrated[i].scanAt, 0);
     }
     EXPECT_TRUE(std::any_of(std::filesystem::directory_iterator(temporary.path),
                             std::filesystem::directory_iterator(), [](const auto& file) {
