@@ -2,6 +2,7 @@ import { newRequestId, isRecord, safeHttpUrl, validateRequest, withTimeout,
   type Command, type NativeRequest, type NativeTask } from './protocol.js';
 import {browserApi as api} from './browser_api.js';
 import type {PanelItem} from './panel_authority.js';
+import type {RecoveryDownload} from './browser_recovery.js';
 
 function element<T extends HTMLElement>(id: string): T {
   const result = document.getElementById(id);
@@ -13,6 +14,7 @@ const feedback = element<HTMLDivElement>('feedback');
 let candidates: PanelItem[] = [];
 let resourceToken = '', resourceTab = -1;
 let pageUrl = '';
+let recoveryExpired = false;
 function show(message: string, error = false): void {
   feedback.textContent = message;
   feedback.classList.toggle('error', error);
@@ -29,7 +31,7 @@ async function native(command: Command, fields: Partial<NativeRequest> = {}): Pr
 async function busy(button: HTMLButtonElement, action: () => Promise<void>): Promise<void> {
   button.disabled = true;
   try { await action(); } catch (error) { show(error instanceof Error ? error.message : '操作失败。', true); }
-  finally { button.disabled = false; }
+  finally { button.disabled = recoveryExpired && button.matches('#recovery-reload, #recovery-save-url, #recovery-continue'); }
 }
 async function checkConnection(): Promise<void> {
   const button = element<HTMLButtonElement>('connection');
@@ -55,16 +57,18 @@ send.addEventListener('click', () => { void busy(send, async () => {
   urlInput.value = '';
 }); });
 urlInput.addEventListener('keydown', event => { if (event.key === 'Enter' && !send.disabled) send.click(); });
-function setPanel(resources: boolean): void {
-  element('resources-panel').hidden = !resources;
-  element('tasks-panel').hidden = resources;
-  for (const [id, selected] of [['resources-tab', resources], ['tasks-tab', !resources]] as const) {
+function setPanel(panel: 'resources' | 'tasks' | 'recovery'): void {
+  for (const name of ['resources', 'tasks', 'recovery'] as const) {
+    element(name + '-panel').hidden = name !== panel;
+    const id = name + '-tab', selected = name === panel;
     element(id).classList.toggle('selected', selected);
     element(id).setAttribute('aria-selected', String(selected));
   }
 }
-element('resources-tab').addEventListener('click', () => setPanel(true));
-element('tasks-tab').addEventListener('click', () => { setPanel(false); void loadTasks(); });
+element('resources-tab').addEventListener('click', () => setPanel('resources'));
+element('tasks-tab').addEventListener('click', () => { setPanel('tasks'); void loadTasks(); });
+element('recovery-tab').addEventListener('click', () => { setPanel('recovery'); void loadRecovery(); });
+element('recovery-choose').addEventListener('click', () => { setPanel('tasks'); void loadTasks(); });
 function renderCandidates(): void {
   const root = element('resources'); root.replaceChildren();
   element('selection-row').hidden = candidates.length === 0;
@@ -123,7 +127,7 @@ async function loadTasks(): Promise<void> {
     if (!tasks.length) { const empty = document.createElement('div'); empty.className = 'empty'; empty.textContent = '桌面中暂无任务。'; root.append(empty); }
     for (const task of tasks) {
       if (!task || typeof task.id !== 'string' || !/^[a-fA-F0-9]{32}$/.test(task.id)) continue;
-      const row = document.createElement('div'); row.className = 'task';
+      const row = document.createElement('div'); row.className = 'task'; row.dataset.taskId = task.id;
       const top = document.createElement('div'); top.className = 'task-top';
       const name = document.createElement('span'); name.className = 'item-title'; name.textContent = task.name || task.id.slice(0, 8);
       const state = document.createElement('span'); state.className = 'task-state'; state.textContent = task.state || '';
@@ -134,11 +138,86 @@ async function loadTasks(): Promise<void> {
         button.addEventListener('click', () => { void busy(button, async () => { await native(action, {taskId: task.id}); await loadTasks(); }); });
         controls.append(button);
       }
+      if (task.canRecover === true) {
+        const button = document.createElement('button'); button.textContent = '恢复链接／登录';
+        button.dataset.action = 'recover'; button.title = '暂停原任务，在浏览器重新取得链接与登录信息';
+        button.addEventListener('click', () => { void busy(button, async () => {
+          await call({kind: 'recovery-begin', taskId: task.id});
+          setPanel('recovery'); await loadRecovery();
+          show('来源页已打开。登录后重新点击下载，再在这里明确选择该下载记录。');
+        }); });
+        controls.append(button);
+      }
       row.append(controls); root.append(row);
     }
   } catch (error) { root.textContent = '连接桌面程序后可查看任务。'; show(error instanceof Error ? error.message : '读取失败。', true); }
 }
 element('refresh-tasks').addEventListener('click', () => { void loadTasks(); });
+async function loadRecoveryDownloads(): Promise<void> {
+  const root = element('recovery-downloads'); root.textContent = '正在读取本次恢复的下载记录…';
+  try {
+    const response = await call({kind: 'recovery-downloads'});
+    root.replaceChildren();
+    const downloads = Array.isArray(response.downloads) ? response.downloads as RecoveryDownload[] : [];
+    if (!downloads.length) {
+      const empty = document.createElement('div'); empty.className = 'empty';
+      empty.textContent = '请在来源页登录并重新点击下载，然后刷新记录。只显示本次会话的新下载。'; root.append(empty);
+    }
+    for (const item of downloads.slice(0, 20)) {
+      if (!Number.isSafeInteger(item.id) || typeof item.name !== 'string') continue;
+      const row = document.createElement('div'); row.className = 'recovery-record'; row.dataset.downloadId = String(item.id);
+      const name = document.createElement('div'); name.className = 'item-title'; name.textContent = item.name;
+      const url = document.createElement('div'); url.className = 'item-url'; url.textContent = safeHttpUrl(item.url); url.title = item.url;
+      const button = document.createElement('button'); button.className = 'text-button';
+      button.textContent = item.paused ? '使用这条暂停记录恢复原任务' : '使用这条下载恢复原任务';
+      button.addEventListener('click', () => { void busy(button, async () => {
+        try {
+          const result = await call({kind: 'recovery-use', downloadId: item.id});
+          show(typeof result.message === 'string' ? result.message : '请检查原任务状态。');
+        } finally { await loadRecovery(); }
+      }); });
+      row.append(name, url, button); root.append(row);
+    }
+  } catch (error) { root.textContent = error instanceof Error ? error.message : '请重新查找下载记录。'; }
+}
+async function loadRecovery(activate = false): Promise<void> {
+  try {
+    const response = await call({kind: 'recovery-status'});
+    if (!isRecord(response.view) || typeof response.view.active !== 'boolean') throw new Error('恢复状态无效。');
+    const view = response.view;
+    const active = view.active === true;
+    element('recovery-empty').hidden = active;
+    element('recovery-current').hidden = !active;
+    recoveryExpired = view.expired === true;
+    element<HTMLButtonElement>('recovery-reload').disabled = recoveryExpired;
+    element<HTMLButtonElement>('recovery-save-url').disabled = recoveryExpired;
+    element<HTMLButtonElement>('recovery-continue').disabled = recoveryExpired;
+    if (!active) return;
+    if (activate) setPanel('recovery');
+    element('recovery-name').textContent = typeof view.name === 'string' ? view.name : '原任务';
+    const applied = view.phase === 'applied';
+    element('recovery-select').hidden = applied || recoveryExpired;
+    element('recovery-continue').hidden = !applied;
+    element('recovery-status').textContent = recoveryExpired ? '恢复会话已到期，请取消后重新开始。原任务不会自动启动。' :
+      applied ? '原任务已保存；如需继续，会先处理所选浏览器副本，再核对恢复令牌。' :
+        '登录来源页并重新点击下载，再选择下面一条记录。恢复会话有效十分钟，期间自动接管暂缓。';
+    if (!applied && !recoveryExpired) await loadRecoveryDownloads();
+  } catch (error) { show(error instanceof Error ? error.message : '无法读取恢复状态。', true); }
+}
+element<HTMLButtonElement>('recovery-reload').addEventListener('click', () => {
+  void busy(element('recovery-reload'), loadRecoveryDownloads);
+});
+for (const [id, kind] of [['recovery-cancel', 'recovery-cancel'], ['recovery-continue', 'recovery-continue'],
+  ['recovery-save-url', 'recovery-url']] as const) {
+  const button = element<HTMLButtonElement>(id);
+  button.addEventListener('click', () => { void busy(button, async () => {
+    try {
+      const result = await call({kind, ...(kind === 'recovery-url' ?
+        {url: safeHttpUrl(element<HTMLInputElement>('recovery-url').value.trim())} : {})});
+      show(typeof result.message === 'string' ? result.message : '恢复状态已更新。');
+    } finally { await loadRecovery(); }
+  }); });
+}
 const autoCapture = element<HTMLInputElement>('auto-capture');
 const includeCookies = element<HTMLInputElement>('include-cookies');
 const pagePanel = element<HTMLInputElement>('page-panel');
@@ -161,5 +240,5 @@ void (async () => {
   pagePanel.checked = saved.pagePanel === true;
   if (typeof saved.lastError === 'string' && saved.lastError) show(saved.lastError, true);
   try { const [tab] = await api.tabs.query({active: true, currentWindow: true}); if (tab?.url) pageUrl = safeHttpUrl(tab.url); } catch { /* Browser pages are not downloadable. */ }
-  await checkConnection();
+  await Promise.all([checkConnection(), loadRecovery(true)]);
 })();

@@ -581,6 +581,37 @@ MainWindow::MainWindow(DownloadService& service, QWidget* parent)
                        })
             ->setEnabled(task.ownerId == "standalone" && !isActive(task.state) && !isTerminal(task.state));
         if (task.ownerId == "standalone") {
+            if (task.spec.kind == TransferKind::Http && task.projectId.empty()) {
+                auto* recover = menu.addAction(
+                    p.t("Recover link / sign-in in browser…", "在浏览器恢复链接／登录…"), this,
+                    [this, &p, task] {
+                        cancelCompletionCountdown();
+                        p.service.pause(task.id);
+                        ui::watchFuture(
+                            p.service.beginBrowserRecovery(task.id), this,
+                            [&p](BrowserRecoverySession session) {
+                                if (!QDesktopServices::openUrl(
+                                        QUrl::fromEncoded(qs(session.pageUrl).toUtf8())))
+                                    p.notify(
+                                        "MaskPilot",
+                                        p.t("Open the source page, then choose this task in the browser "
+                                            "extension.",
+                                            "请打开来源页，再在浏览器扩展的“桌面任务”中选择此任务恢复。"));
+                                else
+                                    p.notify(
+                                        "MaskPilot",
+                                        p.t("Sign in on the source page, then choose this task in the "
+                                            "browser extension to recover it.",
+                                            "请在来源页登录，再在浏览器扩展的“桌面任务”中选择此任务恢复。"));
+                            },
+                            [&p](QString) {
+                                p.notify("MaskPilot", p.t("Pause this HTTP task before browser recovery.",
+                                                          "请先暂停此 HTTP 任务，再使用浏览器辅助恢复。"));
+                            });
+                    });
+                recover->setObjectName("browserRecoverySourceAction");
+                recover->setEnabled(!isActive(task.state) && !isTerminal(task.state));
+            }
             auto* forget = menu.addAction(
                 p.t("Forget saved proxy credentials", "清除已保存代理凭据"), this, [this, &p, task] {
                     ui::watchFuture(

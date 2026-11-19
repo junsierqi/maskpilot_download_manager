@@ -357,6 +357,69 @@ def exercise(build, extension, firefox, evidence_directory=None):
                                                          for entry in requests), requests
                     print('PASS Firefox standard/container cookie stores remain isolated with selected-URL credentials')
                     evidence['assertions'].append('Actual standard/container cookie stores isolated')
+                    for name, store in (('standard', 'firefox-default'), ('container', container['cookieStoreId'])):
+                        original = native('prepare', url=origin.url('manual?expired=' + name),
+                                          filename='recovered-original-' + name + '.bin',
+                                          referrer=origin.url('page?target=' + name), cookie='stale_recovery=expired')
+                        assert original['ok'], original
+                        baseline = {row['id'] for row in rows(data)}
+                        destination = next(row['destination'] for row in rows(data) if row['id'] == original['taskId'])
+                        previous_downloads = {item['id'] for item in driver.evaluate(
+                            'return await browser.downloads.search({url:arguments[0]});', [origin.url(name)])}
+                        if name == 'standard':
+                            trusted_click(driver.command('WebDriver:FindElement', {'using': 'css selector', 'value': '#tasks-tab'}))
+                            selector = '[data-task-id="' + original['taskId'] + '"] [data-action="recover"]'
+                            until(lambda: driver.script('return !!document.querySelector(arguments[0]);', [selector]),
+                                  'real popup original-task recovery action')
+                            previous_handles = set(driver.command('WebDriver:GetWindowHandles'))
+                            trusted_click(driver.command('WebDriver:FindElement', {'using': 'css selector', 'value': selector}))
+                            source_handle = until(lambda: next(iter(set(driver.command('WebDriver:GetWindowHandles')) - previous_handles), None),
+                                                  'actual recovery source tab')
+                        else:
+                            # A full-page addon test principal is itself a default-store tab. Keep that
+                            # principal for API calls while making the actual container source tab active,
+                            # matching the toolbar popup's real active-tab context without faking its store.
+                            source_handle = open_http(origin.url('page?target=' + name), store)
+                            driver.command('WebDriver:SwitchToWindow', {'handle': principal_handle})
+                            source_tab = driver.evaluate('return (await browser.tabs.query({})).find(t=>t.url===arguments[0]&&t.cookieStoreId===arguments[1]);',
+                                                         [origin.url('page?target=' + name), store])
+                            driver.evaluate('await browser.tabs.update(arguments[0],{active:true});', [source_tab['id']])
+                            answer = driver.evaluate('return await browser.runtime.sendMessage({kind:"recovery-begin",taskId:arguments[0]});',
+                                                     [original['taskId']])
+                            assert answer['ok'], answer
+                        flow = until(lambda: driver.evaluate(
+                            'const f=(await browser.storage.session.get("browserRecovery")).browserRecovery;'
+                            'return f&&f.tabId>=0?{taskId:f.taskId,storeId:f.storeId,phase:f.phase}:null;'),
+                            'trusted memory recovery state')
+                        assert flow == {'taskId': original['taskId'], 'storeId': store, 'phase': 'selecting'}, flow
+                        assert next(row['state'] for row in rows(data) if row['id'] == original['taskId']) == 5
+                        driver.command('WebDriver:SwitchToWindow', {'handle': source_handle})
+                        until(lambda: driver.script('return !!document.querySelector("#download");'), 'recovery source ready')
+                        trusted_click(driver.command('WebDriver:FindElement', {'using': 'css selector', 'value': '#download'}))
+                        driver.command('WebDriver:SwitchToWindow', {'handle': principal_handle})
+                        browser_item = until(lambda: next((item for item in driver.evaluate(
+                            'return await browser.downloads.search({url:arguments[0]});', [origin.url(name)])
+                            if item['id'] not in previous_downloads and item['state'] == 'in_progress'), None),
+                            'fresh actual browser recovery record')
+                        driver.evaluate('await browser.downloads.pause(arguments[0]);', [browser_item['id']])
+                        assert {row['id'] for row in rows(data)} == baseline, 'Recovery incorrectly auto-created a task'
+                        trusted_click(driver.command('WebDriver:FindElement', {'using': 'css selector', 'value': '#recovery-tab'}))
+                        selector = '#recovery-downloads [data-download-id="' + str(browser_item['id']) + '"] button'
+                        until(lambda: driver.script('return !!document.querySelector(arguments[0]);', [selector]),
+                              'real popup exact browser download selection')
+                        if evidence_directory:
+                            screenshot = driver.command('WebDriver:TakeScreenshot', {'full': False, 'scroll': False})
+                            (evidence_directory / ('recovery-popup-' + name + '.png')).write_bytes(base64.b64decode(screenshot, validate=True))
+                        trusted_click(driver.command('WebDriver:FindElement', {'using': 'css selector', 'value': selector}))
+                        completed(original['taskId'])
+                        recovered = next(row for row in rows(data) if row['id'] == original['taskId'])
+                        assert recovered['url'] == origin.url(name) and recovered['destination'] == destination
+                        assert {row['id'] for row in rows(data)} == baseline, 'Recovery duplicated the original task'
+                        cancelled = driver.evaluate('return (await browser.downloads.search({id:arguments[0]}))[0];', [browser_item['id']])
+                        assert cancelled['state'] == 'interrupted' and not cancelled['paused'], cancelled
+                        assert driver.evaluate('return !(await browser.storage.session.get("browserRecovery")).browserRecovery;')
+                        evidence['assertions'].append('Actual ' + name + ' browser-record recovery retains original ID/destination and exact payload')
+                        print('PASS actual Firefox ' + name + ' original-task recovery with selected Cookie store and exact hash')
                     # Private forwarding must reject even when the test addon is explicitly allowed in private windows.
                     driver.evaluate('await browser.storage.local.remove("lastError");')
                     private_id = browser_click('private', private=True)

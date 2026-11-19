@@ -57,6 +57,12 @@ BrowserRecoveryRegistry::Entry& BrowserRecoveryRegistry::current(const std::stri
 std::string BrowserRecoveryRegistry::taskId(const std::string& token, std::int64_t now) {
     return current(token, now).taskId;
 }
+std::string BrowserRecoveryRegistry::appliedTaskId(const std::string& token, std::int64_t now) {
+    const auto& entry = current(token, now);
+    if (!entry.applied)
+        denied();
+    return entry.taskId;
+}
 void BrowserRecoveryRegistry::apply(const std::string& token, const Task& task,
                                     BrowserRecoveryMaterial material, std::int64_t now,
                                     const std::function<void(Task&)>& commit) {

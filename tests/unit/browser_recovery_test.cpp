@@ -38,6 +38,7 @@ TEST(BrowserRecovery, PreservesTrustedFieldsAndAcknowledgesOnlyCommittedIdentica
     task.downloaded = 1024;
     task.resumable = true;
     const auto session = registry.begin(task, 1000);
+    EXPECT_THROW(registry.appliedTaskId(session.token, 1000), std::invalid_argument);
     EXPECT_EQ(session.pageUrl, task.spec.referrer);
     EXPECT_EQ(session.expiresAt, 1600);
     int commits = 0;
@@ -49,6 +50,7 @@ TEST(BrowserRecovery, PreservesTrustedFieldsAndAcknowledgesOnlyCommittedIdentica
     };
     registry.apply(session.token, task, fresh(), 1001, commit);
     EXPECT_EQ(commits, 1);
+    EXPECT_EQ(registry.appliedTaskId(session.token, 1001), task.id);
     EXPECT_EQ(task.id, session.taskId);
     EXPECT_EQ(task.spec.destination.filename(), "recovery-test.bin");
     EXPECT_EQ(task.queueId.size(), 32u);
@@ -71,6 +73,7 @@ TEST(BrowserRecovery, PreservesTrustedFieldsAndAcknowledgesOnlyCommittedIdentica
     changed.cookie = "different";
     EXPECT_THROW(registry.apply(session.token, task, changed, 1002, commit), std::invalid_argument);
     registry.invalidate(task.id);
+    EXPECT_THROW(registry.appliedTaskId(session.token, 1002), std::invalid_argument);
     EXPECT_THROW(registry.apply(session.token, task, fresh(), 1002, commit), std::invalid_argument);
 }
 TEST(BrowserRecovery, PersistenceFailureKeepsOriginalAndAllowsRetryWithoutCredentialDowngrade) {
@@ -192,4 +195,5 @@ TEST(BrowserRecovery, ActualServiceMutationAndQueueMoveInvalidatePendingCapabili
     EXPECT_EQ(tasks.front().state, TaskState::Paused);
     service.pause(id);
     EXPECT_THROW(service.applyBrowserRecovery(session.token, fresh()).get(), std::invalid_argument);
+    EXPECT_THROW(service.resumeBrowserRecovery(session.token).get(), std::invalid_argument);
 }

@@ -204,6 +204,7 @@ def exercise(desktop, host):
             assert not query("recovery.apply", recoveryToken=cancelled["recoveryToken"], **material)["ok"]
             session = query("recovery.begin", taskId=task_id)
             token = session["recoveryToken"]
+            assert not query("recovery.resume", recoveryToken=token)["ok"], "Unapplied session resumed a task"
             assert session["pageUrl"] == origin + "/page"
             assert not query("recovery.apply", version=2, sessionToken="0" * 32,
                              params={"recoveryToken": token, **material})["ok"]
@@ -229,6 +230,7 @@ def exercise(desktop, host):
             assert query("recovery.apply", recoveryToken=token, **material)["taskId"] == task_id
             assert not query("recovery.apply", recoveryToken=token, **{**material, "cookie": "changed"})["ok"]
             restart_session = query("recovery.begin", taskId=task_id)
+            assert not query("recovery.resume", recoveryToken=token)["ok"], "Replaced receipt resumed a task"
             stop()
             start()
             assert not query("recovery.apply", recoveryToken=restart_session["recoveryToken"], **material)["ok"]
@@ -240,7 +242,7 @@ def exercise(desktop, host):
             session = query("recovery.begin", taskId=task_id)
             assert session["ok"]
             assert query("recovery.apply", recoveryToken=session["recoveryToken"], **material)["taskId"] == task_id
-            assert query("resume", taskId=task_id)["ok"]
+            assert query("recovery.resume", recoveryToken=session["recoveryToken"])["taskId"] == task_id
             completed = wait(task_id, lambda row: row["state"] == 9, "Recovered HTTP task did not complete")
             output = Path(completed["destination"])
             assert hashlib.sha256(output.read_bytes()).digest() == hashlib.sha256(NEW).digest()

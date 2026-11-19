@@ -39,6 +39,7 @@ struct ScopedTaskSummary {
     std::string id, name;
     TaskState state = TaskState::Paused;
     std::int64_t downloaded = 0, total = -1;
+    bool browserRecoveryAvailable = false;
 };
 struct ScopedTaskPage {
     std::vector<ScopedTaskSummary> tasks;

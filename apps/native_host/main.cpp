@@ -43,7 +43,8 @@ bool hexadecimal(const QByteArray& value, qsizetype length) {
 bool ordinary(const QString& command) {
     return command == "ping" || command == "prepare" || command == "add" || command == "list" ||
            command == "resume" || command == "pause" || command == "cancel" || command == "remove" ||
-           command == "recovery.begin" || command == "recovery.apply" || command == "recovery.cancel";
+           command == "recovery.begin" || command == "recovery.apply" || command == "recovery.cancel" ||
+           command == "recovery.resume";
 }
 bool administrative(const QString& command) {
     return command == "context.configure" || command == "context.list" || command == "context.issue" ||

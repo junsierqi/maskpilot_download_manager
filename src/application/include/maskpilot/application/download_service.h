@@ -68,6 +68,7 @@ class DownloadService {
     // Narrow standalone browser recovery; no path, route or ownership changes.
     std::future<BrowserRecoverySession> beginBrowserRecovery(std::string taskId);
     std::future<std::string> applyBrowserRecovery(std::string token, BrowserRecoveryMaterial);
+    std::future<std::string> resumeBrowserRecovery(std::string token);
     std::future<void> cancelBrowserRecovery(std::string token);
     void restart(const std::string& id);
     void schedule(const std::string& id, std::int64_t startAt, std::int64_t stopAt);

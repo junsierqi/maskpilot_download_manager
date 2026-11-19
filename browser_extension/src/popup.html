@@ -6,9 +6,20 @@
   <main>
     <section class="composer"><label for="url">发送下载地址</label><div class="url-row"><input id="url" type="url" autocomplete="off" placeholder="https://example.com/file.zip" maxlength="32768"><button id="send" class="primary">发送</button></div><label class="media-choice"><input id="media-url" type="checkbox"> 按网页媒体解析此地址</label></section>
     <div id="feedback" class="feedback" role="status" aria-live="polite" hidden></div>
-    <nav aria-label="内容切换"><button class="tab selected" id="resources-tab" aria-selected="true">页面资源</button><button class="tab" id="tasks-tab" aria-selected="false">桌面任务</button></nav>
+    <nav aria-label="内容切换"><button class="tab selected" id="resources-tab" aria-selected="true">页面资源</button><button class="tab" id="tasks-tab" aria-selected="false">桌面任务</button><button class="tab" id="recovery-tab" aria-selected="false">恢复下载</button></nav>
     <section id="resources-panel"><div class="section-heading"><span id="resources-caption">仅在点击后读取当前页面</span><button id="discover" class="text-button">查找资源</button></div><div id="resources" class="items"><div class="empty"><span class="empty-icon">↧</span><strong>发现当前页面的下载</strong><p>查找公开的文件链接、音视频和播放清单。<br>受保护或临时媒体可能无法下载。</p></div></div><div class="selection-row" hidden id="selection-row"><label><input id="select-all" type="checkbox">全选</label><button id="send-selected" class="primary">发送所选</button></div></section>
     <section id="tasks-panel" hidden><div class="section-heading"><span>桌面程序中的最近任务</span><button id="refresh-tasks" class="text-button">刷新</button></div><div id="tasks" class="items"></div></section>
+    <section id="recovery-panel" hidden>
+      <div id="recovery-empty" class="empty"><strong>更新原任务的链接和登录信息</strong><p>在“桌面任务”中选择需要恢复的 HTTP 文件任务。<br>来源页打开后，登录并重新点击下载。</p><button id="recovery-choose" class="text-button">选择原任务</button></div>
+      <div id="recovery-current" hidden>
+        <div class="recovery-target"><small>正在恢复原任务</small><strong id="recovery-name"></strong><p id="recovery-status"></p></div>
+        <div id="recovery-select"><div class="section-heading"><span>只关联你明确选择的下载记录</span><button id="recovery-reload" class="text-button">刷新下载记录</button></div><div id="recovery-downloads" class="items"></div>
+          <details class="recovery-manual"><summary>手动提供新的直接文件链接</summary><label for="recovery-url">只更新原任务并保持暂停，不取消浏览器副本</label><input id="recovery-url" type="url" maxlength="32768" autocomplete="off" placeholder="https://example.com/new-link"><button id="recovery-save-url" class="text-button">更新原任务，保持暂停</button></details>
+        </div>
+        <button id="recovery-continue" class="primary" hidden>取消所选浏览器副本并继续原任务</button>
+      </div>
+      <button id="recovery-cancel" class="text-button recovery-cancel">取消／清除恢复会话</button>
+    </section>
     <section class="preferences"><label class="toggle-row"><span><strong>显示页面下载面板</strong><small>开启后，在网页中按需选择资源；默认关闭</small></span><input id="page-panel" type="checkbox" role="switch"></label><label class="toggle-row"><span><strong>自动接管下载</strong><small>确认桌面已保存后，才取消浏览器下载</small></span><input id="auto-capture" type="checkbox" role="switch"></label><label class="toggle-row"><span><strong>携带当前地址的登录信息</strong><small>仅针对你发送或已启用接管的地址读取 Cookie</small></span><input id="include-cookies" type="checkbox" role="switch"></label></section>
   </main><footer>本机处理 · 自动接管默认关闭 · 无遥测</footer><script type="module" src="popup.js"></script>
 </body></html>

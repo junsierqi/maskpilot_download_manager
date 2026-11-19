@@ -3,6 +3,18 @@ import assert from 'node:assert/strict';
 import { handoffDownload, safeHttpUrl, safeFilename, validateRequest, validateResponse,
   normalizeCandidates, withTimeout, newRequestId } from '../dist/protocol.js';
 const ID = '0123456789abcdef0123456789abcdef';
+test('recovery protocol permits only narrow source/token fields and checked resume', () => {
+  const base = {version: 1, requestId: ID};
+  assert.equal(validateRequest({...base, command: 'recovery.begin', taskId: ID}).taskId, ID);
+  assert.equal(validateRequest({...base, command: 'recovery.apply', recoveryToken: ID,
+    url: 'https://example.test/file#fragment', cookie: 'session=fixture'}).url, 'https://example.test/file');
+  assert.equal(validateRequest({...base, command: 'recovery.resume', recoveryToken: ID}).recoveryToken, ID);
+  for (const field of ['destination', 'proxy', 'ownerId', 'mediaDownloader', 'taskId'])
+    assert.throws(() => validateRequest({...base, command: 'recovery.apply', recoveryToken: ID,
+      url: 'https://example.test/file', [field]: 'untrusted'}));
+  assert.throws(() => validateRequest({...base, command: 'recovery.resume', taskId: ID}));
+  assert.throws(() => validateResponse({...base, ok: true, recoveryToken: 'broken'}, ID));
+});
 function dependencies(failure) {
   const order = [];
   const operation = name => async (...args) => {

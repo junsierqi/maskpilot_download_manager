@@ -99,14 +99,18 @@ QJsonObject safeContext(const DownloadContext& context) {
             {"enabled", context.enabled},
             {"hasStoredCredentials", !context.proxyCredentialRef.empty()}};
 }
-QJsonObject taskPage(const ScopedTaskPage& page) {
+QJsonObject taskPage(const ScopedTaskPage& page, bool includeRecovery = false) {
     QJsonArray tasks;
-    for (const auto& task : page.tasks)
-        tasks.append(QJsonObject{{"id", qs(task.id)},
-                                 {"name", qs(task.name)},
-                                 {"state", QString::fromLatin1(stateName(task.state))},
-                                 {"downloaded", static_cast<double>(task.downloaded)},
-                                 {"total", static_cast<double>(task.total)}});
+    for (const auto& task : page.tasks) {
+        QJsonObject value{{"id", qs(task.id)},
+                          {"name", qs(task.name)},
+                          {"state", QString::fromLatin1(stateName(task.state))},
+                          {"downloaded", static_cast<double>(task.downloaded)},
+                          {"total", static_cast<double>(task.total)}};
+        if (includeRecovery)
+            value.insert("canRecover", task.browserRecoveryAvailable);
+        tasks.append(value);
+    }
     return {{"tasks", tasks}, {"nextCursor", qs(page.nextCursor)}};
 }
 ScopedTaskCommand control(const QString& command) {
@@ -253,14 +257,16 @@ struct DownloadBridge::Impl {
                 [](const std::string& value) { return QJsonObject{{"taskId", qs(value)}}; }, true);
         } else if (command == "recovery.begin") {
             fields(request, {"version", "requestId", "command", "taskId"});
-            await(service.beginBrowserRecovery(id(request, "taskId")), std::move(answer),
-                  [](const BrowserRecoverySession& session) {
-                      return QJsonObject{{"taskId", qs(session.taskId)},
-                                         {"recoveryToken", qs(session.token)},
-                                         {"name", qs(session.name)},
-                                         {"pageUrl", qs(session.pageUrl)},
-                                         {"expiresAt", static_cast<double>(session.expiresAt)}};
-                  });
+            await(
+                service.beginBrowserRecovery(id(request, "taskId")), std::move(answer),
+                [](const BrowserRecoverySession& session) {
+                    return QJsonObject{{"taskId", qs(session.taskId)},
+                                       {"recoveryToken", qs(session.token)},
+                                       {"name", qs(session.name)},
+                                       {"pageUrl", qs(session.pageUrl)},
+                                       {"expiresAt", static_cast<double>(session.expiresAt)}};
+                },
+                true);
         } else if (command == "recovery.apply") {
             fields(request, {"version", "requestId", "command", "recoveryToken", "url", "cookie", "referrer",
                              "userAgent"});
@@ -270,6 +276,11 @@ struct DownloadBridge::Impl {
             await(
                 service.applyBrowserRecovery(id(request, "recoveryToken"), std::move(material)),
                 std::move(answer),
+                [](const std::string& value) { return QJsonObject{{"taskId", qs(value)}}; }, true);
+        } else if (command == "recovery.resume") {
+            fields(request, {"version", "requestId", "command", "recoveryToken"});
+            await(
+                service.resumeBrowserRecovery(id(request, "recoveryToken")), std::move(answer),
                 [](const std::string& value) { return QJsonObject{{"taskId", qs(value)}}; }, true);
         } else if (command == "recovery.cancel") {
             fields(request, {"version", "requestId", "command", "recoveryToken"});
@@ -282,7 +293,7 @@ struct DownloadBridge::Impl {
             fields(request, {"version", "requestId", "command"});
             withLegacyTicket(std::move(answer), [this](const auto& token, Answer result) {
                 await(service.listScoped(token), std::move(result),
-                      [](const auto& page) { return taskPage(page); });
+                      [](const auto& page) { return taskPage(page, true); });
             });
         } else {
             fields(request, {"version", "requestId", "command", "taskId"});

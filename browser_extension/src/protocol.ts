@@ -2,7 +2,8 @@ export const HOST_NAME = 'com.maskpilot.downloads';
 export const MAX_URL_LENGTH = 32_768;
 export const MAX_CANDIDATES = 200;
 export const REQUEST_TIMEOUT_MS = 12_000;
-export const COMMANDS = ['ping', 'prepare', 'add', 'resume', 'pause', 'cancel', 'remove', 'list'] as const;
+export const COMMANDS = ['ping', 'prepare', 'add', 'resume', 'pause', 'cancel', 'remove', 'list',
+  'recovery.begin', 'recovery.apply', 'recovery.resume', 'recovery.cancel'] as const;
 export type Command = typeof COMMANDS[number];
 export interface NativeRequest {
   version: 1;
@@ -15,6 +16,7 @@ export interface NativeRequest {
   cookie?: string;
   userAgent?: string;
   media?: boolean;
+  recoveryToken?: string;
 }
 export interface NativeTask {
   id: string;
@@ -22,6 +24,7 @@ export interface NativeTask {
   state?: string;
   downloaded?: number;
   total?: number;
+  canRecover?: boolean;
 }
 export interface NativeResponse {
   version: 1;
@@ -30,6 +33,10 @@ export interface NativeResponse {
   taskId?: string;
   error?: string;
   tasks?: NativeTask[];
+  recoveryToken?: string;
+  name?: string;
+  pageUrl?: string;
+  expiresAt?: number;
 }
 export interface Candidate { url: string; name: string; kind: 'file' | 'media'; }
 const identifier = /^[a-f0-9]{32}$/;
@@ -63,9 +70,20 @@ export function validateRequest(input: unknown): NativeRequest {
       || !COMMANDS.includes(input.command as Command)) throw new Error('原生协议请求无效。');
   const command = input.command as Command;
   const result: NativeRequest = { version: 1, requestId: input.requestId, command };
-  if (command === 'prepare' || command === 'add') result.url = safeHttpUrl(input.url);
+  if (command.startsWith('recovery.')) {
+    const allowed = command === 'recovery.begin' ? ['version', 'requestId', 'command', 'taskId'] :
+      command === 'recovery.apply' ? ['version', 'requestId', 'command', 'recoveryToken', 'url', 'cookie', 'referrer', 'userAgent'] :
+        ['version', 'requestId', 'command', 'recoveryToken'];
+    if (Object.keys(input).some(key => !allowed.includes(key))) throw new Error('恢复命令含有不允许的字段。');
+    if (command !== 'recovery.begin') {
+      if (typeof input.recoveryToken !== 'string' || !identifier.test(input.recoveryToken))
+        throw new Error('恢复会话无效，请重新开始。');
+      result.recoveryToken = input.recoveryToken;
+    }
+  }
+  if (command === 'prepare' || command === 'add' || command === 'recovery.apply') result.url = safeHttpUrl(input.url);
   if (input.url !== undefined && result.url === undefined) throw new Error('该命令不接受下载地址。');
-  if (['resume', 'pause', 'cancel', 'remove'].includes(command)) {
+  if (['resume', 'pause', 'cancel', 'remove', 'recovery.begin'].includes(command)) {
     if (typeof input.taskId !== 'string' || !identifier.test(input.taskId)) throw new Error('任务编号无效。');
     result.taskId = input.taskId;
   }
@@ -91,6 +109,10 @@ export function validateResponse(input: unknown, expectedId: string): NativeResp
     throw new Error('桌面响应包含无效任务编号。');
   if (input.error !== undefined && (typeof input.error !== 'string' || input.error.length > 4096)) throw new Error('桌面错误消息无效。');
   if (input.tasks !== undefined && (!Array.isArray(input.tasks) || input.tasks.length > 1000)) throw new Error('任务列表过大或无效。');
+  if (input.recoveryToken !== undefined && (typeof input.recoveryToken !== 'string' || !identifier.test(input.recoveryToken)))
+    throw new Error('桌面恢复会话无效。');
+  if (input.expiresAt !== undefined && (!Number.isSafeInteger(input.expiresAt) || (input.expiresAt as number) <= 0))
+    throw new Error('桌面恢复期限无效。');
   return input as unknown as NativeResponse;
 }
 export function normalizeCandidates(input: unknown): Candidate[] {

@@ -3,6 +3,7 @@ import {HOST_NAME, handoffDownload, isRecord, newRequestId, safeHttpUrl, validat
 import {browserApi as api, isFirefox} from './browser_api.js';
 import {cookieContext, cookieHeader, type CookieContext} from './browser_context.js';
 import {PanelAuthority, type PageContext, type PanelModel} from './panel_authority.js';
+import {BrowserRecoveryController} from './browser_recovery.js';
 
 const inFlight = new Set<number>();
 const authority = new PanelAuthority();
@@ -26,6 +27,8 @@ async function native(request: NativeRequest, authorize?: () => void): Promise<N
 async function command(command: Command, fields: Partial<NativeRequest> = {}): Promise<NativeResponse> {
   return native({...fields, version: 1, requestId: newRequestId(), command});
 }
+const recovery = new BrowserRecoveryController({api, firefox: isFirefox, send: command,
+  includeCookies: async () => (await preferences()).includeCookies, userAgent: () => navigator.userAgent});
 async function addFields(url: string, context: CookieContext, filename?: string, referrer?: string,
   media = false): Promise<Partial<NativeRequest>> {
   const selected = safeHttpUrl(url);
@@ -123,7 +126,7 @@ api.contextMenus.onClicked.addListener((info, tab) => {
 api.downloads.onCreated.addListener(item => {
   (async () => {
     if (inFlight.has(item.id) || item.byExtensionId === api.runtime.id || item.state !== 'in_progress') return;
-    if (!(await preferences()).autoCapture) return;
+    if (!(await preferences()).autoCapture || await recovery.hasPending()) return;
     const url = safeHttpUrl(item.finalUrl || item.url);
     inFlight.add(item.id);
     try {
@@ -182,6 +185,28 @@ api.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
           typeof message.token !== 'string') throw new Error('页面资源已失效，请刷新。');
       return {ok: true, ...(await submit(state, message.token, message.ids, true))};
     }
+    if (typeof message.kind === 'string' && message.kind.startsWith('recovery-')) {
+      const allowed: Record<string, string[]> = {
+        'recovery-status': ['kind'], 'recovery-begin': ['kind', 'taskId'],
+        'recovery-downloads': ['kind'], 'recovery-use': ['kind', 'downloadId'],
+        'recovery-url': ['kind', 'url'], 'recovery-continue': ['kind'], 'recovery-cancel': ['kind']
+      };
+      const keys = allowed[message.kind];
+      if (!keys || Object.keys(message).some(key => !keys.includes(key))) throw new Error('恢复界面消息无效。');
+      switch (message.kind) {
+        case 'recovery-status': return {ok: true, view: await recovery.status()};
+        case 'recovery-begin':
+          if (typeof message.taskId !== 'string') throw new Error('原任务编号无效。');
+          return {ok: true, view: await recovery.begin(message.taskId)};
+        case 'recovery-downloads': return {ok: true, downloads: await recovery.downloads()};
+        case 'recovery-use':
+          if (typeof message.downloadId !== 'number') throw new Error('下载记录编号无效。');
+          return {ok: true, ...(await recovery.useDownload(message.downloadId))};
+        case 'recovery-url': return {ok: true, ...(await recovery.useUrl(safeHttpUrl(message.url)))};
+        case 'recovery-continue': return {ok: true, ...(await recovery.continue())};
+        case 'recovery-cancel': return {ok: true, ...(await recovery.cancel())};
+      }
+    }
     if (message.kind === 'discover') {
       const [tab] = await api.tabs.query({active: true, currentWindow: true});
       if (tab?.id === undefined) throw new Error('请先打开一个网页。');
@@ -204,6 +229,7 @@ api.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
     }
     if (message.kind === 'native') {
       const request = validateRequest(message.request);
+      if (request.command.startsWith('recovery.')) throw new Error('请通过恢复界面关联原任务。');
       if (request.command === 'add' || request.command === 'prepare') {
         const [tab] = await api.tabs.query({active: true, currentWindow: true});
         const fields = await addFields(request.url!, cookieContext(tab, isFirefox), request.filename, request.referrer, request.media);

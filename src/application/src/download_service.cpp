@@ -1089,8 +1089,10 @@ std::future<ScopedTaskPage> DownloadService::listScoped(std::string token, std::
                 break;
             }
             const auto filename = task.spec.destination.filename().u8string();
-            page.tasks.push_back(
-                {id, std::string(filename.begin(), filename.end()), task.state, task.downloaded, task.total});
+            page.tasks.push_back({id, std::string(filename.begin(), filename.end()), task.state,
+                                  task.downloaded, task.total,
+                                  owner == "standalone" && task.projectId.empty() &&
+                                      task.spec.kind == TransferKind::Http && !isTerminal(task.state)});
         }
         return page;
     });
@@ -1466,6 +1468,15 @@ std::future<std::string> DownloadService::applyBrowserRecovery(std::string token
             });
             return taskId;
         });
+}
+std::future<std::string> DownloadService::resumeBrowserRecovery(std::string token) {
+    return impl_->request([p = impl_.get(), token = std::move(token)] {
+        const auto taskId = p->browserRecovery.appliedTaskId(token, p->queueRegistry->now());
+        if (!p->healthy || !p->control(taskId, ScopedTaskCommand::Resume))
+            throw std::invalid_argument("The recovered task cannot resume. Check its desktop state.");
+        p->publish();
+        return taskId;
+    });
 }
 std::future<void> DownloadService::cancelBrowserRecovery(std::string token) {
     return impl_->request([p = impl_.get(), token = std::move(token)] { p->browserRecovery.cancel(token); });

@@ -143,6 +143,57 @@ try {
     assert.equal(createHash('sha256').update(readFileSync(authenticated.destination)).digest('hex'),hash);
     const cancellation=await until(()=>evidence.events.find(event=>event.type==='final-progress'&&event.state==='canceled'&&event.persistedTasks?.some(row=>row.id===authenticated.id)),'authenticated handoff cancellation after durable persistence');
     assert(cancellation.persistedTasks.some(row=>row.id===authenticated.id));
+    const recoveryOriginal=await native('prepare',{url:`${base}/manual?expired=recovery`,filename:'recovered-original.bin',
+      referrer:`${base}/page?route=protected`,cookie:'stale-recovery-cookie=expired'});
+    assert(recoveryOriginal.ok);
+    const recoveryBaseline=new Set(rows().map(row=>row.id));
+    const recoveryDestination=rows().find(row=>row.id===recoveryOriginal.taskId).destination;
+    const recoveryPopup=await openPage(origin+'popup.html');
+    async function trustedRecoveryClick(cdp,selector){
+      await cdp.send('Page.bringToFront');
+      const point=await cdp.evaluate(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});if(!e||e.disabled)throw new Error('Recovery control unavailable');e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2};})()`);
+      await cdp.send('Input.dispatchMouseEvent',{type:'mousePressed',button:'left',clickCount:1,...point});
+      await cdp.send('Input.dispatchMouseEvent',{type:'mouseReleased',button:'left',clickCount:1,...point});
+    }
+    await until(()=>recoveryPopup.evaluate("document.getElementById('connection')?.textContent.includes('已连接')"),'recovery popup desktop connection');
+    await trustedRecoveryClick(recoveryPopup,'#tasks-tab');
+    const recoverySelector=`[data-task-id="${recoveryOriginal.taskId}"] [data-action="recover"]`;
+    await until(()=>recoveryPopup.evaluate(`!!document.querySelector(${JSON.stringify(recoverySelector)})`),'recover original task control');
+    const targetsBeforeRecovery=new Set((await(await fetch(`http://127.0.0.1:${port}/json/list`)).json()).map(value=>value.id));
+    await trustedRecoveryClick(recoveryPopup,recoverySelector);
+    const recoveryFlow=await until(()=>worker.evaluate("chrome.storage.session.get('browserRecovery').then(x=>x.browserRecovery?.tabId>=0?{taskId:x.browserRecovery.taskId,tabId:x.browserRecovery.tabId,phase:x.browserRecovery.phase}:null)"),'trusted memory recovery flow');
+    assert.equal(recoveryFlow.taskId,recoveryOriginal.taskId);assert.equal(recoveryFlow.phase,'selecting');
+    assert.equal(rows().find(row=>row.id===recoveryOriginal.taskId).state,5);
+    const recoverySourceInfo=await until(async()=>{
+      const targets=await(await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+      return targets.find(value=>value.url===`${base}/page?route=protected`&&!targetsBeforeRecovery.has(value.id));
+    },'recovery source page opened by actual controller');
+    const recoverySource=new CDP(recoverySourceInfo.webSocketDebuggerUrl);socketClients.push(recoverySource);await recoverySource.send('Page.enable');
+    await until(()=>recoverySource.evaluate("document.readyState==='complete'&&!!document.getElementById('download')"),'recovery source content');
+    const recoveryDenied=await worker.evaluate(`chrome.scripting.executeScript({target:{tabId:${recoveryFlow.tabId},frameIds:[0]},func:async()=>{let canRead=false;try{canRead=!!(await chrome.storage.session.get('browserRecovery')).browserRecovery;}catch{}const answer=await chrome.runtime.sendMessage({kind:'recovery-cancel'});return{canRead,accepted:answer?.ok===true};}}).then(values=>values[0].result)`);
+    assert.equal(recoveryDenied.canRead,false,'Page content read trusted memory recovery capability');
+    assert.equal(recoveryDenied.accepted,false,'Page content cancelled a trusted recovery session');
+    const browserRecoveryStart=Date.now();
+    await trustedRecoveryClick(recoverySource,'#download');
+    const recoveryBrowserItem=await until(()=>worker.evaluate(`chrome.downloads.search({url:${JSON.stringify(protectedUrl)},orderBy:['-startTime']}).then(items=>items.find(item=>Date.parse(item.startTime)>=${browserRecoveryStart}-1000&&item.state==='in_progress'&&item.byExtensionId!==chrome.runtime.id))`),'fresh browser record kept for explicit association');
+    await worker.evaluate(`chrome.downloads.pause(${recoveryBrowserItem.id}).then(()=>true)`);
+    assert.deepEqual(new Set(rows().map(row=>row.id)),recoveryBaseline,'Pending recovery unexpectedly auto-created another task');
+    await trustedRecoveryClick(recoveryPopup,'#recovery-reload');
+    const chosenRecoverySelector=`#recovery-downloads [data-download-id="${recoveryBrowserItem.id}"] button`;
+    await until(()=>recoveryPopup.evaluate(`!!document.querySelector(${JSON.stringify(chosenRecoverySelector)})`),'explicit recovery download selection');
+    const recoveryShot=await recoveryPopup.send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});
+    writeFileSync(path.join(root,'recovery-popup-real-chromium.png'),Buffer.from(recoveryShot.data,'base64'));
+    const recoveryEventsStart=evidence.events.length;
+    await trustedRecoveryClick(recoveryPopup,chosenRecoverySelector);
+    const recoveredOriginal=await until(()=>rows().find(row=>row.id===recoveryOriginal.taskId&&row.state===9),'same original task recovered with current source Cookie');
+    assert.equal(recoveredOriginal.url,protectedUrl);assert.equal(recoveredOriginal.destination,recoveryDestination);
+    assert.equal(createHash('sha256').update(readFileSync(recoveredOriginal.destination)).digest('hex'),hash);
+    assert.deepEqual(new Set(rows().map(row=>row.id)),recoveryBaseline,'Recovery created a duplicate native task');
+    const recoveryCancelled=await until(()=>evidence.events.slice(recoveryEventsStart).find(event=>event.type==='final-progress'&&event.state==='canceled'&&
+      event.persistedTasks?.some(row=>row.id===recoveryOriginal.taskId&&row.url===protectedUrl)),'recovery browser cancellation observes durably refreshed original row');
+    assert.equal(await worker.evaluate("chrome.storage.session.get('browserRecovery').then(x=>x.browserRecovery===undefined)"),true);
+    log('Trusted recovery popup associates exact fresh browser record and Cookie with original task after durable ACK',{
+      taskId:recoveryOriginal.taskId,browserGuid:recoveryCancelled.guid,sha256:hash,sameDestination:true,noDuplicate:true,trustedMemoryOnly:true,contentRecoveryRejected:true});
     const nativeRequests=evidence.httpRequests.filter(request=>request.url==='/protected'&&request.range);
     assert(nativeRequests.length>=2,'Expected an authenticated native probe and segmented file requests');
     for(const request of nativeRequests){

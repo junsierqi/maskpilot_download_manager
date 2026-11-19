@@ -10,6 +10,7 @@ class BrowserRecoveryRegistry {
   public:
     BrowserRecoverySession begin(const Task&, std::int64_t now);
     std::string taskId(const std::string& token, std::int64_t now);
+    std::string appliedTaskId(const std::string& token, std::int64_t now);
     void apply(const std::string& token, const Task&, BrowserRecoveryMaterial, std::int64_t now,
                const std::function<void(Task&)>& commit);
     void cancel(const std::string& token);

@@ -1,6 +1,7 @@
 add_executable(maskpilot_tests unit/domain_test.cpp integration/engine_test.cpp integration/credential_vault_test.cpp integration/context_test.cpp unit/context_ui_test.cpp unit/task_list_test.cpp)
 target_sources(maskpilot_tests PRIVATE unit/http_layout_test.cpp)
 target_sources(maskpilot_tests PRIVATE unit/browser_recovery_test.cpp)
+target_sources(maskpilot_tests PRIVATE unit/browser_recovery_ui_test.cpp)
 target_sources(maskpilot_tests PRIVATE unit/queue_test.cpp integration/queue_store_test.cpp unit/queue_ui_test.cpp)
 target_sources(maskpilot_tests PRIVATE unit/queue_schedule_test.cpp)
 target_sources(maskpilot_tests PRIVATE unit/traffic_budget_test.cpp integration/traffic_store_test.cpp)
