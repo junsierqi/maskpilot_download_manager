@@ -1,4 +1,5 @@
 #pragma once
+#include <functional>
 #include <future>
 #include <maskpilot/application/download_service.h>
 #include <maskpilot/application/site_content.h>
@@ -36,7 +37,8 @@ class ISiteProjectPublisher {
 class SiteProjectService {
   public:
     SiteProjectService(DownloadService&, std::unique_ptr<ISiteProjectRepository>,
-                       std::unique_ptr<ISiteContentProcessor>, std::unique_ptr<ISiteProjectPublisher>);
+                       std::unique_ptr<ISiteContentProcessor>, std::unique_ptr<ISiteProjectPublisher>,
+                       std::function<std::int64_t()> utcNow = {});
     ~SiteProjectService();
     SiteProjectService(const SiteProjectService&) = delete;
     SiteProjectService& operator=(const SiteProjectService&) = delete;
@@ -50,7 +52,9 @@ class SiteProjectService {
                              ProxyCredentials = {});
     std::future<void> removeHistory(std::string id, std::int64_t revision);
     std::future<std::filesystem::path> openPath(std::string id);
-    std::future<void> pauseAll();
+    std::future<void> setSynchronization(std::string id, std::int64_t revision, int intervalMinutes,
+                                         int runs = 10, ProxyCredentials = {});
+    std::future<void> pauseAll(bool disarmSynchronization = true);
     std::vector<SiteProjectSummary> snapshot() const;
     std::optional<SiteProject> inspect(const std::string& id) const;
     std::string startupError() const;

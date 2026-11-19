@@ -156,6 +156,7 @@ bool awaitProject(const std::function<bool()>& condition) {
 struct ProjectFaultRig {
     ProjectFaultTemp temporary;
     std::atomic_int calls = 0, pauses = 0;
+    std::atomic<std::int64_t> utc = 1000;
     std::atomic_bool holdImage = false, holdRoot = false;
     std::unique_ptr<DownloadService> downloads;
     FailingProjectRepository* repository;
@@ -167,8 +168,9 @@ struct ProjectFaultRig {
             temporary.path / "parts");
         auto store = std::make_unique<FailingProjectRepository>(temporary.path / "projects");
         repository = store.get();
-        projects = std::make_unique<SiteProjectService>(
-            *downloads, std::move(store), makeSiteContentProcessor(), makeSiteProjectPublisher());
+        projects =
+            std::make_unique<SiteProjectService>(*downloads, std::move(store), makeSiteContentProcessor(),
+                                                 makeSiteProjectPublisher(), [&] { return utc.load(); });
     }
     std::string create() {
         auto options = siteOptions();
@@ -180,8 +182,165 @@ struct ProjectFaultRig {
         const auto value = projects->inspect(id);
         return value && value->state == expected;
     }
+    std::string diagnostics(const std::string& id) {
+        std::ostringstream out;
+        out << "calls=" << calls.load() << " storage=" << projects->startupError();
+        if (const auto p = projects->inspect(id)) {
+            out << " rev=" << p->revision << " state=" << siteProjectStateName(p->state)
+                << " auto=" << p->automaticRevision << " remaining=" << p->syncRemainingRuns
+                << " error=" << p->error;
+            for (const auto& e : p->entries)
+                out << " entry=" << siteProjectEntryStateName(e.state) << ':' << e.error;
+        }
+        for (const auto& t : downloads->snapshot())
+            out << " task=" << t.projectRevision << ':' << stateName(t.state) << ':' << t.error;
+        return out.str();
+    }
 };
 } // namespace
+
+TEST(SiteProjectSynchronization, FiniteRunsCoalesceForwardJumpsAndDeferClockRollback) {
+    ProjectFaultRig rig;
+    const auto id = rig.create();
+    EXPECT_THROW(rig.projects->setSynchronization(id, 1, 5).get(), std::invalid_argument);
+    rig.projects->preview(id, 1).get();
+    ASSERT_TRUE(awaitProject([&] { return rig.state(id, SiteProjectState::PreviewReady); }));
+    rig.projects->start(id, 1).get();
+    ASSERT_TRUE(awaitProject([&] { return rig.state(id, SiteProjectState::Completed); }));
+    const auto original = rig.projects->openPath(id).get();
+    for (const auto interval : {1, 4, 10081, -1})
+        EXPECT_THROW(rig.projects->setSynchronization(id, 1, interval).get(), std::invalid_argument);
+    EXPECT_THROW(rig.projects->setSynchronization(id, 1, 5, 101).get(), std::invalid_argument);
+    rig.projects->setSynchronization(id, 1, 5, 2).get();
+    EXPECT_TRUE(rig.projects->hasUnfinished());
+    EXPECT_EQ(rig.projects->inspect(id)->syncNextAt, 1300);
+    rig.utc = 1299;
+    std::this_thread::sleep_for(std::chrono::milliseconds(220));
+    EXPECT_EQ(rig.projects->inspect(id)->revision, 1);
+    rig.utc = 10000;
+    ASSERT_TRUE(awaitProject([&] {
+        const auto p = rig.projects->inspect(id);
+        return p && p->revision == 2 && p->state == SiteProjectState::Completed;
+    })) << rig.diagnostics(id);
+    EXPECT_EQ(rig.projects->inspect(id)->syncRemainingRuns, 1);
+    EXPECT_EQ(rig.projects->inspect(id)->syncNextAt, 10300);
+    EXPECT_TRUE(std::filesystem::is_regular_file(original));
+    EXPECT_NE(rig.projects->openPath(id).get(), original);
+    std::this_thread::sleep_for(std::chrono::milliseconds(220));
+    EXPECT_EQ(rig.projects->inspect(id)->revision, 2);
+    rig.utc = 500;
+    ASSERT_TRUE(awaitProject([&] { return rig.projects->inspect(id)->syncNextAt == 800; }));
+    EXPECT_EQ(rig.projects->inspect(id)->revision, 2);
+    rig.utc = 800;
+    ASSERT_TRUE(awaitProject([&] {
+        const auto p = rig.projects->inspect(id);
+        return p && p->revision == 3 && p->state == SiteProjectState::Completed;
+    }));
+    EXPECT_EQ(rig.projects->inspect(id)->syncIntervalMinutes, 0);
+    EXPECT_FALSE(rig.projects->hasUnfinished());
+    rig.utc = 1000000;
+    std::this_thread::sleep_for(std::chrono::milliseconds(220));
+    EXPECT_EQ(rig.projects->inspect(id)->revision, 3);
+}
+
+TEST(SiteProjectSynchronization, CompletedScheduleSurvivesRestartButActiveRevisionRequiresExplicitResume) {
+    ProjectFaultRig rig;
+    const auto id = rig.create();
+    rig.projects->preview(id, 1).get();
+    ASSERT_TRUE(awaitProject([&] { return rig.state(id, SiteProjectState::PreviewReady); }));
+    rig.projects->start(id, 1).get();
+    ASSERT_TRUE(awaitProject([&] { return rig.state(id, SiteProjectState::Completed); }));
+    rig.projects->setSynchronization(id, 1, 5, 1).get();
+    auto restart = [&] {
+        rig.projects.reset();
+        rig.projects = std::make_unique<SiteProjectService>(
+            *rig.downloads, makeSiteProjectRepository(rig.temporary.path / "projects"),
+            makeSiteContentProcessor(), makeSiteProjectPublisher(), [&] { return rig.utc.load(); });
+        ASSERT_TRUE(rig.projects->startupError().empty());
+    };
+    rig.projects->pauseAll(false).get();
+    restart();
+    EXPECT_EQ(rig.projects->inspect(id)->syncNextAt, 1300);
+    rig.holdRoot = true;
+    rig.utc = 1300;
+    ASSERT_TRUE(awaitProject([&] { return rig.calls.load() == 3; }));
+    rig.projects->pauseAll(false).get();
+    ASSERT_TRUE(awaitProject([&] { return rig.state(id, SiteProjectState::Paused); }));
+    restart();
+    rig.utc = 1000000;
+    std::this_thread::sleep_for(std::chrono::milliseconds(220));
+    EXPECT_TRUE(rig.state(id, SiteProjectState::Paused));
+    EXPECT_EQ(rig.calls.load(), 3);
+    rig.holdRoot = false;
+    rig.projects->resume(id, 2).get();
+    ASSERT_TRUE(awaitProject([&] { return rig.state(id, SiteProjectState::Completed); }))
+        << rig.diagnostics(id);
+    EXPECT_EQ(rig.projects->inspect(id)->syncIntervalMinutes, 0);
+    rig.projects->setSynchronization(id, 2, 5, 1).get();
+    rig.projects->pauseAll().get();
+    EXPECT_EQ(rig.projects->inspect(id)->syncIntervalMinutes, 0);
+}
+
+TEST(SiteProjectSynchronization, ManualPauseRemovesAutomaticAssetConsentAndFailedDueSaveDispatchesNothing) {
+    for (const bool failSave : {false, true}) {
+        ProjectFaultRig rig;
+        const auto id = rig.create();
+        rig.projects->preview(id, 1).get();
+        ASSERT_TRUE(awaitProject([&] { return rig.state(id, SiteProjectState::PreviewReady); }));
+        rig.projects->start(id, 1).get();
+        ASSERT_TRUE(awaitProject([&] { return rig.state(id, SiteProjectState::Completed); }));
+        const auto oldPath = rig.projects->openPath(id).get();
+        rig.projects->setSynchronization(id, 1, 5, 2).get();
+        if (failSave)
+            rig.repository->failState = SiteProjectState::Previewing;
+        else
+            rig.holdRoot = true;
+        rig.utc = 1300;
+        if (failSave) {
+            ASSERT_TRUE(awaitProject([&] { return !rig.projects->startupError().empty(); }));
+            EXPECT_EQ(rig.calls.load(), 2);
+            EXPECT_EQ(rig.projects->openPath(id).get(), oldPath);
+        } else {
+            ASSERT_TRUE(awaitProject([&] { return rig.calls.load() == 3; }));
+            rig.projects->pause(id, 2).get();
+            ASSERT_TRUE(awaitProject([&] { return rig.state(id, SiteProjectState::Paused); }));
+            EXPECT_EQ(rig.projects->inspect(id)->syncIntervalMinutes, 0);
+            rig.utc = 1000000;
+            rig.holdRoot = false;
+            rig.projects->resume(id, 2).get();
+            ASSERT_TRUE(awaitProject([&] { return rig.state(id, SiteProjectState::PreviewReady); }));
+            EXPECT_FALSE(rig.projects->inspect(id)->automaticRevision);
+        }
+        EXPECT_TRUE(std::filesystem::is_regular_file(oldPath));
+    }
+}
+
+TEST(SiteProjectSynchronization, MissingProxyCredentialsAfterRestartDisarmsBeforeAnotherChild) {
+    ProjectFaultRig rig;
+    auto options = siteOptions();
+    options.rootUrl = "https://example.test/";
+    options.outputDirectory = rig.temporary.path / "exports";
+    options.proxy = "http://127.0.0.1:3180";
+    options.proxyAuthenticationRequired = true;
+    const auto id = rig.projects->create(options, {"fixture-user", "fixture-password"}).get();
+    rig.projects->preview(id, 1).get();
+    ASSERT_TRUE(awaitProject([&] { return rig.state(id, SiteProjectState::PreviewReady); }));
+    rig.projects->start(id, 1).get();
+    ASSERT_TRUE(awaitProject([&] { return rig.state(id, SiteProjectState::Completed); }));
+    const auto previous = rig.projects->openPath(id).get();
+    rig.projects->setSynchronization(id, 1, 5, 1).get();
+    rig.projects.reset();
+    rig.projects = std::make_unique<SiteProjectService>(
+        *rig.downloads, makeSiteProjectRepository(rig.temporary.path / "projects"),
+        makeSiteContentProcessor(), makeSiteProjectPublisher(), [&] { return rig.utc.load(); });
+    rig.utc = 1300;
+    ASSERT_TRUE(awaitProject([&] { return rig.state(id, SiteProjectState::NeedsAttention); }));
+    EXPECT_EQ(rig.calls.load(), 2);
+    EXPECT_EQ(rig.projects->inspect(id)->revision, 1);
+    EXPECT_EQ(rig.projects->inspect(id)->syncIntervalMinutes, 0);
+    EXPECT_EQ(rig.projects->openPath(id).get(), previous);
+    EXPECT_NE(rig.projects->inspect(id)->error.find("credentials"), std::string::npos);
+}
 
 TEST(SiteProjectFaults, RejectedPreviewManifestCannotLeaveRunnableIntent) {
     ProjectFaultRig rig;

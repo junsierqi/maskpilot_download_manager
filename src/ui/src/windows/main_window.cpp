@@ -811,7 +811,7 @@ void MainWindow::closeEvent(QCloseEvent* event) {
     }
     event->accept();
     if (impl_->projects)
-        impl_->projects->pauseAll();
+        impl_->projects->pauseAll(false);
     QApplication::quit();
 }
 void MainWindow::dragEnterEvent(QDragEnterEvent* event) {

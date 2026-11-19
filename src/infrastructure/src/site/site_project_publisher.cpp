@@ -103,6 +103,10 @@ void validate(const SiteProject& project, const SiteProjectPublication& publicat
         reject();
     auto inventory = project;
     inventory.state = SiteProjectState::Draft;
+    // This copy validates only publication inventory, independent of the live scheduling checkpoint.
+    inventory.syncIntervalMinutes = inventory.syncRemainingRuns = 0;
+    inventory.syncNextAt = inventory.syncLastAt = 0;
+    inventory.automaticRevision = false;
     inventory.pendingPublication.reset();
     inventory.published = publication;
     if (!validateSiteProject(inventory).empty())

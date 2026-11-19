@@ -1,5 +1,6 @@
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDateTime>
 #include <QDesktopServices>
 #include <QDialogButtonBox>
 #include <QFileDialog>
@@ -15,6 +16,7 @@
 #include <QSpinBox>
 #include <QSplitter>
 #include <QTableWidget>
+#include <QTimeZone>
 #include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -196,6 +198,8 @@ struct SiteProjectDialog::Impl {
     QTableWidget *projects, *plan;
     QLabel *status, *summary;
     Editor* editor;
+    QSpinBox *syncInterval, *syncRuns;
+    QPushButton *syncEnable, *syncDisable;
     QTimer* timer;
     std::string selected;
     std::vector<DownloadQueue> policies{DownloadQueue{}};
@@ -249,6 +253,39 @@ struct SiteProjectDialog::Impl {
         rightLayout->addWidget(plan);
         split->addWidget(right);
         layout->addWidget(split, 1);
+        auto* recurrence = new QHBoxLayout;
+        auto* consent = new QLabel(
+            t("Auto-sync full revisions (keeps older exports):", "自动同步完整版本（保留旧导出）："));
+        consent->setWordWrap(true);
+        recurrence->addWidget(consent);
+        syncInterval = new QSpinBox;
+        syncInterval->setObjectName("siteProjectSyncInterval");
+        syncInterval->setRange(5, 10080);
+        syncInterval->setValue(60);
+        syncInterval->setSuffix(t(" min", " 分钟"));
+        recurrence->addWidget(syncInterval);
+        syncRuns = new QSpinBox;
+        syncRuns->setObjectName("siteProjectSyncRuns");
+        syncRuns->setRange(1, 100);
+        syncRuns->setValue(10);
+        syncRuns->setSuffix(t(" runs", " 次"));
+        recurrence->addWidget(syncRuns);
+        syncEnable = new QPushButton(t("Enable sync", "启用同步"));
+        syncEnable->setObjectName("siteProjectSyncEnable");
+        syncEnable->setToolTip(t("After the first completed export, automatically fetch pages and assets "
+                                 "within the saved scope. Runs only while this app is open.",
+                                 "首次导出成功后，按已保存的范围自动下载页面与资源。仅程序运行时执行。"));
+        syncDisable = new QPushButton(t("Stop recurrence", "停止周期"));
+        syncDisable->setObjectName("siteProjectSyncDisable");
+        syncDisable->setToolTip(t("Keeps accepted work running; use Pause to stop it.",
+                                  "已接受的本次工作继续；要停止下载请使用暂停。"));
+        for (auto* button : {syncEnable, syncDisable}) {
+            recurrence->addWidget(button);
+            buttons.push_back(button);
+        }
+        QObject::connect(syncEnable, &QPushButton::clicked, window, [this] { command("sync"); });
+        QObject::connect(syncDisable, &QPushButton::clicked, window, [this] { command("unsync"); });
+        layout->addLayout(recurrence);
         status = new QLabel;
         status->setObjectName("siteProjectStatus");
         status->setTextFormat(Qt::PlainText);
@@ -319,6 +356,10 @@ struct SiteProjectDialog::Impl {
     void loadSelection() {
         if (auto value = service.inspect(selected)) {
             editor->set(value->options, true);
+            if (value->syncIntervalMinutes != 0) {
+                syncInterval->setValue(value->syncIntervalMinutes);
+                syncRuns->setValue(std::max(1, value->syncRemainingRuns));
+            }
         }
         refresh();
     }
@@ -396,6 +437,10 @@ struct SiteProjectDialog::Impl {
         try {
             const auto id = selected;
             const auto revision = detail->revision;
+            if (action == "unsync") {
+                await(service.setSynchronization(id, revision, 0), [] {});
+                return;
+            }
             if (action == "open") {
                 await(service.openPath(id), [this](const auto& path) { opener(path); });
                 return;
@@ -425,6 +470,10 @@ struct SiteProjectDialog::Impl {
                 await(service.start(id, revision, std::move(secret)), [] {});
             else if (action == "resume")
                 await(service.resume(id, revision, std::move(secret)), [] {});
+            else if (action == "sync")
+                await(service.setSynchronization(id, revision, syncInterval->value(), syncRuns->value(),
+                                                 std::move(secret)),
+                      [] {});
             else if (action == "update") {
                 auto options = editor->get();
                 options.rootUrl = detail->options.rootUrl;
@@ -474,6 +523,16 @@ struct SiteProjectDialog::Impl {
                                  .arg(detail->published ? detail->published->revision : 0)
                                  .arg(detail->entries.size())
                                  .arg(detail->excludedCount));
+            if (detail->syncIntervalMinutes != 0)
+                summary->setText(
+                    summary->text() +
+                    t(" · sync %1 min · %2 runs left · next %3", " · 同步间隔 %1 分钟 · 剩余 %2 次 · 下次 %3")
+                        .arg(detail->syncIntervalMinutes)
+                        .arg(detail->syncRemainingRuns)
+                        .arg(detail->syncNextAt
+                                 ? QDateTime::fromSecsSinceEpoch(detail->syncNextAt, QTimeZone::UTC)
+                                       .toString(Qt::ISODate)
+                                 : t("after this revision", "本版本完成后")));
             plan->setRowCount(static_cast<int>(detail->entries.size()));
             for (int i = 0; i < static_cast<int>(detail->entries.size()); ++i) {
                 auto& e = detail->entries[i];
@@ -492,6 +551,8 @@ struct SiteProjectDialog::Impl {
         }
         for (auto* button : buttons)
             button->setEnabled(!busy && (button->objectName() == "siteProjectNew" || detail.has_value()));
+        syncEnable->setEnabled(!busy && detail && detail->state == SiteProjectState::Completed);
+        syncDisable->setEnabled(!busy && detail && detail->syncIntervalMinutes != 0);
         if (!service.startupError().empty())
             status->setText(text(service.startupError()));
     }

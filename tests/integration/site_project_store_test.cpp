@@ -95,6 +95,39 @@ void junction(const std::filesystem::path& link, const std::filesystem::path& ta
 }
 } // namespace
 
+TEST(SiteProjectRepository, LegacyManifestDefaultsToNoScheduleAndCorruptRecurrenceFailsClosed) {
+    ProjectTemp temporary;
+    auto project = temporary.project();
+    const auto data = temporary.path / "projects";
+    auto repository = makeSiteProjectRepository(data);
+    repository->save(project);
+    const auto manifest = data / (project.id + ".json");
+    auto json = QJsonDocument::fromJson(QByteArray::fromStdString(read(manifest))).object();
+    EXPECT_EQ(json.value("version").toInt(), 2);
+    json.insert("version", 1);
+    for (const auto* key :
+         {"syncIntervalMinutes", "syncRemainingRuns", "syncNextAt", "syncLastAt", "automaticRevision"})
+        json.remove(key);
+    const auto legacy = QJsonDocument(json).toJson().toStdString();
+    write(manifest, legacy);
+    const auto loaded = repository->load();
+    ASSERT_EQ(loaded.size(), 1u);
+    EXPECT_EQ(loaded[0].syncIntervalMinutes, 0);
+    EXPECT_FALSE(loaded[0].automaticRevision);
+    EXPECT_EQ(read(manifest), legacy); // Reading alone does not rewrite the previous format.
+    repository->save(loaded[0]);
+    const auto current = read(manifest);
+    json = QJsonDocument::fromJson(QByteArray::fromStdString(current)).object();
+    for (const auto* key : {"syncIntervalMinutes", "syncRemainingRuns", "syncNextAt", "automaticRevision"}) {
+        auto corrupt = json;
+        corrupt.insert(key, key == std::string("automaticRevision") ? QJsonValue(true) : QJsonValue(1));
+        write(manifest, QJsonDocument(corrupt).toJson().toStdString());
+        EXPECT_THROW(repository->load(), std::exception) << key;
+    }
+    write(manifest, current);
+    EXPECT_EQ(repository->load().size(), 1u);
+}
+
 TEST(SiteProjectStorage, MigratesActualVersionTwelveWithOrdinaryDefaultsAndOriginalBackup) {
     ProjectTemp temporary;
     const auto path = temporary.path / "tasks.db";

@@ -24,6 +24,11 @@ bool accepted(SiteProjectEntryState state) {
 bool running(SiteProjectState state) {
     return state == SiteProjectState::Previewing || state == SiteProjectState::Running;
 }
+void disarmSynchronization(SiteProject& project) {
+    project.syncIntervalMinutes = project.syncRemainingRuns = 0;
+    project.syncNextAt = project.syncLastAt = 0;
+    project.automaticRevision = false;
+}
 std::string urlPath(const std::string& url) {
     const auto authority = url.find("://");
     const auto begin = authority == std::string::npos ? 0 : url.find('/', authority + 3);
@@ -121,12 +126,20 @@ struct SiteProjectService::Impl {
     std::string storageError;
     std::atomic_int pending = 0;
     std::atomic_bool unfinished = false;
+    std::function<std::int64_t()> utcNow;
     std::jthread thread;
 
     Impl(DownloadService& service, std::unique_ptr<ISiteProjectRepository> store,
-         std::unique_ptr<ISiteContentProcessor> content, std::unique_ptr<ISiteProjectPublisher> output)
+         std::unique_ptr<ISiteContentProcessor> content, std::unique_ptr<ISiteProjectPublisher> output,
+         std::function<std::int64_t()> now)
         : downloads(service), repository(std::move(store)), processor(std::move(content)),
-          publisher(std::move(output)) {
+          publisher(std::move(output)), utcNow(std::move(now)) {
+        if (!utcNow)
+            utcNow = [] {
+                return std::chrono::duration_cast<std::chrono::seconds>(
+                           std::chrono::system_clock::now().time_since_epoch())
+                    .count();
+            };
         if (!repository || !processor || !publisher)
             throw std::invalid_argument("Site project dependencies are required.");
         std::promise<void> ready;
@@ -169,7 +182,7 @@ struct SiteProjectService::Impl {
                 if (item.state == SiteProjectEntryState::Skipped)
                     ++value.skipped;
             }
-            any = any || !siteProjectTerminal(project.state);
+            any = any || !siteProjectTerminal(project.state) || project.syncIntervalMinutes != 0;
             output.push_back(std::move(value));
         }
         {
@@ -271,6 +284,7 @@ struct SiteProjectService::Impl {
         }
     }
     void fail(SiteProject& project, const std::string& message) {
+        disarmSynchronization(project);
         if (running(project.state))
             project.resumePhase = project.state;
         project.state = SiteProjectState::NeedsAttention;
@@ -311,6 +325,48 @@ struct SiteProjectService::Impl {
         item.url = project.options.rootUrl;
         item.destination = repository->prepareRevision(project.id, project.revision) / (item.id + ".body");
         project.entries.push_back(std::move(item));
+    }
+    std::int64_t nextSynchronization(int minutes) const {
+        const auto now = utcNow();
+        if (now < 0 || now > 253402300799LL - minutes * 60LL)
+            throw std::runtime_error("The synchronization clock is outside the supported range.");
+        return now + minutes * 60LL;
+    }
+    void newRevision(SiteProject& project, SiteProject replacement) {
+        if (project.revision >= 1000000)
+            throw std::runtime_error("Project revision limit reached; create a new project.");
+        ++replacement.revision;
+        replacement.entries.clear();
+        replacement.pendingPublication.reset();
+        replacement.excludedCount = 0;
+        replacement.error.clear();
+        replacement.state = replacement.resumePhase = SiteProjectState::Previewing;
+        checkQueue(replacement);
+        route(replacement, {});
+        root(replacement);
+        save(replacement); // Durable new intent and allowance consumption precede all child dispatch.
+        forgetTimers(project);
+        project = std::move(replacement);
+    }
+    void synchronize(SiteProject& project) {
+        if (project.state != SiteProjectState::Completed || project.syncIntervalMinutes == 0 ||
+            project.syncRemainingRuns == 0 || project.syncNextAt == 0)
+            return;
+        const auto now = utcNow();
+        if (now < project.syncLastAt) {
+            auto deferred = project;
+            deferred.syncNextAt = nextSynchronization(project.syncIntervalMinutes);
+            deferred.syncLastAt = now;
+            save(deferred);
+            project = std::move(deferred);
+        } else if (now >= project.syncNextAt) {
+            auto replacement = project;
+            --replacement.syncRemainingRuns;
+            replacement.syncNextAt = 0;
+            replacement.syncLastAt = now;
+            replacement.automaticRevision = true;
+            newRevision(project, std::move(replacement));
+        }
     }
     void discover(SiteProject& project, const std::vector<SiteContentReference>& references, int depth) {
         std::set<std::string> known;
@@ -490,6 +546,12 @@ struct SiteProjectService::Impl {
         completed.pendingPublication.reset();
         completed.state = SiteProjectState::Completed;
         completed.error.clear();
+        completed.automaticRevision = false;
+        if (completed.syncIntervalMinutes != 0 && completed.syncRemainingRuns > 0) {
+            completed.syncNextAt = nextSynchronization(completed.syncIntervalMinutes);
+            completed.syncLastAt = utcNow();
+        } else
+            disarmSynchronization(completed);
         save(completed);
         forgetTimers(project);
         project = std::move(completed);
@@ -559,6 +621,7 @@ struct SiteProjectService::Impl {
                     continue;
                 project.resumePhase = project.state;
                 project.state = SiteProjectState::Pausing;
+                disarmSynchronization(project);
                 save(project);
                 return;
             } else
@@ -582,7 +645,10 @@ struct SiteProjectService::Impl {
         });
         if (done) {
             if (project.state == SiteProjectState::Previewing) {
-                project.state = SiteProjectState::PreviewReady;
+                project.state =
+                    project.automaticRevision ? SiteProjectState::Running : SiteProjectState::PreviewReady;
+                project.resumePhase =
+                    project.state == SiteProjectState::Running ? project.state : SiteProjectState::Previewing;
                 project.error.clear();
                 save(project);
             } else
@@ -644,6 +710,16 @@ struct SiteProjectService::Impl {
                         project.error = error.what();
                     }
                 }
+                if (project.state == SiteProjectState::NeedsAttention)
+                    disarmSynchronization(project);
+                if (project.state == SiteProjectState::Completed && project.automaticRevision) {
+                    project.automaticRevision = false;
+                    if (project.syncIntervalMinutes != 0 && project.syncRemainingRuns > 0) {
+                        project.syncNextAt = nextSynchronization(project.syncIntervalMinutes);
+                        project.syncLastAt = utcNow();
+                    } else
+                        disarmSynchronization(project);
+                }
                 projects.emplace(project.id, std::move(project));
             }
             for (auto& [id, project] : projects)
@@ -671,6 +747,7 @@ struct SiteProjectService::Impl {
                     if (!storageError.empty())
                         break;
                     try {
+                        synchronize(project);
                         step(project, tasks);
                     } catch (const std::exception& error) {
                         try {
@@ -704,8 +781,10 @@ struct SiteProjectService::Impl {
 SiteProjectService::SiteProjectService(DownloadService& service,
                                        std::unique_ptr<ISiteProjectRepository> repository,
                                        std::unique_ptr<ISiteContentProcessor> content,
-                                       std::unique_ptr<ISiteProjectPublisher> output)
-    : impl_(std::make_unique<Impl>(service, std::move(repository), std::move(content), std::move(output))) {}
+                                       std::unique_ptr<ISiteProjectPublisher> output,
+                                       std::function<std::int64_t()> utcNow)
+    : impl_(std::make_unique<Impl>(service, std::move(repository), std::move(content), std::move(output),
+                                   std::move(utcNow))) {}
 SiteProjectService::~SiteProjectService() = default;
 std::future<std::string> SiteProjectService::create(SiteProjectOptions options,
                                                     ProxyCredentials credentials) {
@@ -774,10 +853,18 @@ std::future<void> SiteProjectService::start(std::string id, std::int64_t revisio
 std::future<void> SiteProjectService::pause(std::string id, std::int64_t revision) {
     return impl_->request([p = impl_.get(), id = std::move(id), revision] {
         auto& project = p->find(id, revision);
+        if (project.state == SiteProjectState::Completed && project.syncIntervalMinutes != 0) {
+            auto replacement = project;
+            disarmSynchronization(replacement);
+            p->save(replacement);
+            project = std::move(replacement);
+            return;
+        }
         if (!running(project.state))
             throw std::invalid_argument("Only a running preview or export can be paused.");
         project.resumePhase = project.state;
         project.state = SiteProjectState::Pausing;
+        disarmSynchronization(project);
         p->save(project);
         p->stopChildren(project, false);
     });
@@ -821,6 +908,7 @@ std::future<void> SiteProjectService::cancel(std::string id, std::int64_t revisi
         if (siteProjectTerminal(project.state))
             throw std::invalid_argument("This revision is already finished.");
         project.state = SiteProjectState::Cancelling;
+        disarmSynchronization(project);
         p->save(project);
         p->stopChildren(project, true);
     });
@@ -844,21 +932,12 @@ std::future<void> SiteProjectService::update(std::string id, std::int64_t revisi
             throw std::invalid_argument("The root URL is excluded by the path filters.");
         auto replacement = project;
         replacement.options = std::move(options);
-        ++replacement.revision;
-        replacement.entries.clear();
-        replacement.pendingPublication.reset();
-        replacement.excludedCount = 0;
-        replacement.error.clear();
-        replacement.state = replacement.resumePhase = SiteProjectState::Previewing;
+        disarmSynchronization(replacement);
         if (replacement.options.proxy != project.options.proxy ||
             replacement.options.proxyAuthenticationRequired != project.options.proxyAuthenticationRequired)
             p->credentials.erase(id);
         p->route(replacement, std::move(credentials));
-        p->checkQueue(replacement);
-        p->root(replacement);
-        p->save(replacement);
-        p->forgetTimers(project);
-        project = std::move(replacement);
+        p->newRevision(project, std::move(replacement));
     });
 }
 std::future<void> SiteProjectService::removeHistory(std::string id, std::int64_t revision) {
@@ -888,14 +967,47 @@ std::future<std::filesystem::path> SiteProjectService::openPath(std::string id) 
         return *path;
     });
 }
-std::future<void> SiteProjectService::pauseAll() {
-    return impl_->request([p = impl_.get()] {
+std::future<void> SiteProjectService::setSynchronization(std::string id, std::int64_t revision,
+                                                         int intervalMinutes, int runs,
+                                                         ProxyCredentials credentials) {
+    return impl_->request([p = impl_.get(), id = std::move(id), revision, intervalMinutes, runs,
+                           credentials = std::move(credentials)]() mutable {
+        auto& project = p->find(id, revision);
+        auto replacement = project;
+        if (intervalMinutes == 0) {
+            // Disarming recurrence does not stop already accepted work or revoke its asset consent.
+            const bool automatic = replacement.automaticRevision;
+            disarmSynchronization(replacement);
+            replacement.automaticRevision = automatic;
+        } else {
+            if (project.state != SiteProjectState::Completed || intervalMinutes < 5 ||
+                intervalMinutes > 10080 || runs < 1 || runs > 100)
+                throw std::invalid_argument(
+                    "Enable synchronization after a completed export: 5..10080 minutes, 1..100 runs.");
+            p->route(replacement, std::move(credentials));
+            p->checkQueue(replacement);
+            replacement.syncIntervalMinutes = intervalMinutes;
+            replacement.syncRemainingRuns = runs;
+            replacement.syncNextAt = p->nextSynchronization(intervalMinutes);
+            replacement.syncLastAt = p->utcNow();
+            replacement.automaticRevision = false;
+        }
+        p->save(replacement);
+        project = std::move(replacement);
+    });
+}
+std::future<void> SiteProjectService::pauseAll(bool disarm) {
+    return impl_->request([p = impl_.get(), disarm] {
         for (auto& [id, project] : p->projects) {
+            const bool hadSchedule = project.syncIntervalMinutes != 0 || project.automaticRevision;
+            if (disarm)
+                disarmSynchronization(project);
             if (running(project.state)) {
                 project.resumePhase = project.state;
                 project.state = SiteProjectState::Pausing;
                 p->save(project);
-            }
+            } else if (disarm && hadSchedule)
+                p->save(project);
             p->stopChildren(project, false);
         }
     });

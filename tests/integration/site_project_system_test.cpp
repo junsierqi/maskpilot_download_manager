@@ -10,6 +10,7 @@
 #include <QPixmap>
 #include <QPushButton>
 #include <QSettings>
+#include <QSpinBox>
 #include <QTableWidget>
 #include <QTcpServer>
 #include <QTcpSocket>
@@ -216,7 +217,8 @@ int main(int argc, char** argv) {
         limited.dailyPayloadBudget = 1;
         auto budget = finish(downloads.configureQueue(limited));
         SiteProjectService projects(downloads, makeSiteProjectRepository(root / L"site-projects"),
-                                    makeSiteContentProcessor(), makeSiteProjectPublisher());
+                                    makeSiteContentProcessor(), makeSiteProjectPublisher(),
+                                    [&] { return clock->utc.load(); });
         require(projects.startupError().empty(), "Project startup rejected owned repository");
         std::vector<std::filesystem::path> opened;
         auto opener = [&](const auto& path) { opened.push_back(path); };
@@ -301,6 +303,52 @@ int main(int argc, char** argv) {
         });
         std::cout
             << "PASS actual native daily-budget hold, pause/raise/resume and history-preserving UI removal\n";
+        // Advance only the clock; all UI commands, HTTP transfers, manifests and publication are real.
+        const auto currentPolicies = finish(downloads.queues());
+        const auto normalPolicy = std::find_if(currentPolicies.begin(), currentPolicies.end(),
+                                               [](const auto& queue) { return queue.id == defaultQueueId; });
+        require(normalPolicy != currentPolicies.end(), "Default queue disappeared during periodic fixture");
+        normal = *normalPolicy;
+        QueueConfiguration open;
+        open.id = normal.id;
+        open.name = normal.name;
+        open.expectedRevision = normal.revision;
+        finish(downloads.configureQueue(open));
+        const auto prior = finish(projects.openPath(id));
+        QFile priorFile(QString::fromStdWString(prior.wstring()));
+        require(priorFile.open(QIODevice::ReadOnly), "Cannot read prior project export");
+        const auto priorBytes = priorFile.readAll();
+        priorFile.close();
+        auto* interval = dialog.findChild<QSpinBox*>("siteProjectSyncInterval");
+        auto* runs = dialog.findChild<QSpinBox*>("siteProjectSyncRuns");
+        require(interval && runs, "Missing real periodic synchronization controls");
+        interval->setValue(5);
+        runs->setValue(1);
+        wait([&] { return button(dialog, "siteProjectSyncEnable")->isEnabled(); });
+        button(dialog, "siteProjectSyncEnable")->click();
+        wait([&] { return projects.inspect(id)->syncNextAt == 360; });
+        require(projects.hasUnfinished(), "Waiting schedule incorrectly permits completion action");
+        origin.version = 3;
+        clock->utc = 360;
+        wait([&] {
+            const auto p = projects.inspect(id);
+            return p && p->revision == 3 && p->state == SiteProjectState::Completed;
+        });
+        const auto current = finish(projects.openPath(id));
+        QFile currentFile(QString::fromStdWString(current.wstring()));
+        require(currentFile.open(QIODevice::ReadOnly) && currentFile.readAll().contains("Project UI v3"),
+                "Periodic revision did not contain actual changed HTTP document");
+        require(priorFile.open(QIODevice::ReadOnly) && priorFile.readAll() == priorBytes && current != prior,
+                "Periodic revision altered the old immutable export");
+        require(projects.inspect(id)->syncIntervalMinutes == 0 && !projects.hasUnfinished(),
+                "Finite synchronization allowance failed to disarm");
+        wait([&] { return button(dialog, "siteProjectSyncEnable")->isEnabled(); });
+        button(dialog, "siteProjectSyncEnable")->click();
+        wait([&] { return button(dialog, "siteProjectSyncDisable")->isEnabled(); });
+        button(dialog, "siteProjectSyncDisable")->click();
+        wait([&] { return projects.inspect(id)->syncIntervalMinutes == 0; });
+        std::cout << "PASS actual Qt bounded periodic synchronization and HTTP v3 immutable export; stop "
+                     "recurrence\n";
         if (argc == 3 && std::string(argv[1]) == "--screenshot") {
             QCoreApplication::processEvents();
             require(dialog.grab().save(QString::fromUtf8(argv[2])),

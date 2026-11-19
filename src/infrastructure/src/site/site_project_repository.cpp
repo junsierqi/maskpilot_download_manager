@@ -228,7 +228,7 @@ QByteArray encode(const SiteProject& project) {
     QJsonArray entries;
     for (const auto& entry : project.entries)
         entries.append(encodeEntry(entry));
-    return QJsonDocument(QJsonObject{{"version", 1},
+    return QJsonDocument(QJsonObject{{"version", 2},
                                      {"id", string(project.id)},
                                      {"options", encodeOptions(project.options)},
                                      {"revision", static_cast<double>(project.revision)},
@@ -238,6 +238,11 @@ QByteArray encode(const SiteProject& project) {
                                      {"published", encodePublication(project.published)},
                                      {"pendingPublication", encodePublication(project.pendingPublication)},
                                      {"excludedCount", static_cast<double>(project.excludedCount)},
+                                     {"syncIntervalMinutes", project.syncIntervalMinutes},
+                                     {"syncRemainingRuns", project.syncRemainingRuns},
+                                     {"syncNextAt", static_cast<double>(project.syncNextAt)},
+                                     {"syncLastAt", static_cast<double>(project.syncLastAt)},
+                                     {"automaticRevision", project.automaticRevision},
                                      {"error", string(project.error)}})
         .toJson(QJsonDocument::Compact);
 }
@@ -247,9 +252,15 @@ SiteProject decode(const QByteArray& bytes) {
     if (error.error != QJsonParseError::NoError || !document.isObject())
         invalid();
     const auto value = document.object();
-    keys(value, {"version", "id", "options", "revision", "state", "resumePhase", "entries", "published",
-                 "pendingPublication", "excludedCount", "error"});
-    if (number(value, "version") != 1)
+    const auto version = number(value, "version");
+    if (version == 1)
+        keys(value, {"version", "id", "options", "revision", "state", "resumePhase", "entries", "published",
+                     "pendingPublication", "excludedCount", "error"});
+    else if (version == 2)
+        keys(value, {"version", "id", "options", "revision", "state", "resumePhase", "entries", "published",
+                     "pendingPublication", "excludedCount", "error", "syncIntervalMinutes",
+                     "syncRemainingRuns", "syncNextAt", "syncLastAt", "automaticRevision"});
+    else
         invalid();
     SiteProject result;
     result.id = getString(value, "id");
@@ -263,6 +274,13 @@ SiteProject decode(const QByteArray& bytes) {
     result.pendingPublication = decodePublication(value.value("pendingPublication"));
     result.excludedCount = number(value, "excludedCount");
     result.error = getString(value, "error");
+    if (version == 2) {
+        result.syncIntervalMinutes = integer(value, "syncIntervalMinutes");
+        result.syncRemainingRuns = integer(value, "syncRemainingRuns");
+        result.syncNextAt = number(value, "syncNextAt");
+        result.syncLastAt = number(value, "syncLastAt");
+        result.automaticRevision = boolean(value, "automaticRevision");
+    }
     if (!validateSiteProject(result).empty())
         invalid();
     return result;

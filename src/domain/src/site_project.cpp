@@ -79,6 +79,23 @@ std::string validateSiteProject(const SiteProject& project) {
         project.entries.size() > static_cast<std::size_t>(project.options.maxResources) ||
         project.excludedCount < 0 || project.excludedCount > 20000000 || !plain(project.error, 4096, true))
         return "Invalid persistent site project state.";
+    if ((project.syncIntervalMinutes != 0 &&
+         (project.syncIntervalMinutes < 5 || project.syncIntervalMinutes > 10080)) ||
+        project.syncRemainingRuns < 0 || project.syncRemainingRuns > 100 || project.syncNextAt < 0 ||
+        project.syncNextAt > 253402300799LL || project.syncLastAt < 0 ||
+        project.syncLastAt > 253402300799LL ||
+        (project.syncIntervalMinutes == 0 && (project.syncRemainingRuns != 0 || project.syncNextAt != 0)) ||
+        (project.syncNextAt != 0 &&
+         (project.syncRemainingRuns == 0 || project.state != SiteProjectState::Completed ||
+          project.automaticRevision)) ||
+        (project.automaticRevision &&
+         (project.syncNextAt != 0 || project.state == SiteProjectState::Draft ||
+          project.state == SiteProjectState::PreviewReady || project.state == SiteProjectState::Cancelled ||
+          project.state == SiteProjectState::NeedsAttention)) ||
+        (project.syncIntervalMinutes != 0 && !project.automaticRevision &&
+         (project.state != SiteProjectState::Completed || project.syncNextAt <= project.syncLastAt ||
+          project.syncRemainingRuns == 0)))
+        return "Invalid periodic synchronization policy or checkpoint.";
     std::set<std::string> ids, requests, tasks, urls;
     std::int64_t stored = 0;
     std::size_t pages = 0;

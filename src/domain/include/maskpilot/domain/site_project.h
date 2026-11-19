@@ -60,6 +60,9 @@ struct SiteProject {
     std::vector<SiteProjectEntry> entries;
     std::optional<SiteProjectPublication> published, pendingPublication;
     std::int64_t excludedCount = 0;
+    int syncIntervalMinutes = 0, syncRemainingRuns = 0;
+    std::int64_t syncNextAt = 0, syncLastAt = 0;
+    bool automaticRevision = false;
     std::string error;
 };
 struct SiteProjectSummary {
