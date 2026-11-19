@@ -40,6 +40,12 @@ class Origin(http.server.ThreadingHTTPServer):
 class Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
 
+    def handle(self):
+        try:
+            super().handle()
+        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
+            pass  # Expected when an owned quota stop/forced-exit closes a keep-alive socket.
+
     def log_message(self, *args):
         pass
 
@@ -75,11 +81,12 @@ def call(client, *args, expected=None, timeout=35):
     return result
 
 
-def seed(client, data, budget):
+def seed(client, data, budget, rolling_hours=0):
     call(client, '--resume', uuid.uuid4().hex, data)
     assert (data / 'tasks.db').is_file(), 'CLI did not create its owned database'
     with contextlib.closing(sqlite3.connect(data / 'tasks.db')) as db:
         db.execute('UPDATE download_queues SET daily_payload_budget=? WHERE id=?', (budget, 'default'))
+        db.execute('UPDATE download_queues SET payload_window_hours=? WHERE id=?', (rolling_hours, 'default'))
         db.commit()
 
 
@@ -138,12 +145,13 @@ def http_case(client, root, connections):
         origin.close()
 
 
-def ftp_case(client, root):
+def ftp_case(client, root, rolling_hours=0):
     server = FtpServer()
     server.files['norest.bin'] = DATA
-    data, target = root / 'ftp', root / 'ftp.bin'
+    name = 'ftp-rolling' if rolling_hours else 'ftp'
+    data, target = root / name, root / (name + '.bin')
     cap = 257 * 1024 + 7
-    seed(client, data, cap)
+    seed(client, data, cap, rolling_hours)
     try:
         first = call(client, server.url('norest.bin'), target, data,
                      '--ftp-user', USER, '--ftp-password', PASSWORD, expected=4)
@@ -156,6 +164,10 @@ def ftp_case(client, root):
         charged, observed = usage(data)
         assert charged == observed == cap + len(DATA), (charged, observed, cap)
         print('PASS actual FTP REST denial: received retry bytes count again; correct digest')
+        if rolling_hours:
+            assert rows(data, 'SELECT payload_window_hours FROM download_queues WHERE id=?', ('default',))[0][0] == rolling_hours
+            assert all(value[0] > 0 for value in rows(data, 'SELECT closed_utc FROM queue_traffic_runs WHERE status<>0'))
+            print('PASS actual rolling FTP policy, settled timestamps, exact credits and full payload')
     finally:
         server.close()
 
@@ -221,6 +233,44 @@ def failures(client, root):
         origin.close()
 
 
+def migration_case(client, root):
+    data = root / 'migration-v13'
+    data.mkdir()
+    migrations = Path(__file__).resolve().parents[2] / 'database' / 'migrations'
+    run_id = uuid.uuid4().hex
+    with contextlib.closing(sqlite3.connect(data / 'tasks.db')) as db:
+        for migration in sorted(migrations.glob('*.sql')):
+            if int(migration.name.split('_')[0]) <= 13:
+                db.executescript(migration.read_text(encoding='utf-8'))
+        assert db.execute('PRAGMA user_version').fetchone()[0] == 13
+        db.execute('INSERT INTO queue_traffic_usage(queue_id,period,charged,observed) VALUES(?,?,?,?)',
+                   ('default', 86400, 90, 90))
+        db.execute('INSERT INTO queue_traffic_runs(id,task_id,queue_id,period,status,reserved,observed) VALUES(?,?,?,?,?,?,?)',
+                   (run_id, uuid.uuid4().hex, 'default', 86400, 1, 100, 90))
+        db.commit()
+    call(client, '--resume', uuid.uuid4().hex, data)
+    assert rows(data, 'PRAGMA user_version')[0][0] == 14
+    assert rows(data, 'SELECT payload_window_hours FROM download_queues')[0][0] == 0
+    assert rows(data, 'SELECT closed_utc FROM queue_traffic_runs WHERE id=?', (run_id,))[0][0] == 172800
+    assert rows(data, 'SELECT charged,observed FROM queue_traffic_usage WHERE period=86400')[0] == (90, 90)
+    backups = list(data.glob('tasks.db.before-v14-*.db'))
+    assert len(backups) == 1
+    with contextlib.closing(sqlite3.connect(backups[0])) as backup:
+        assert backup.execute('PRAGMA user_version').fetchone()[0] == 13
+        assert backup.execute('SELECT charged,observed FROM queue_traffic_usage').fetchone() == (90, 90)
+    print('PASS actual version13 migration retains traffic, defaults to UTC day and preserves original backup')
+    with contextlib.closing(sqlite3.connect(data / 'tasks.db')) as db:
+        db.execute('UPDATE download_queues SET payload_window_hours=1.25')
+        db.commit()
+    origin = Origin()
+    try:
+        result = call(client, origin.url(), root / 'corrupt-window.bin', data, timeout=15)
+        assert result.returncode != 0 and not origin.hits and not (root / 'corrupt-window.bin').exists()
+        print('PASS nonintegral persisted rolling policy rejects before origin contact')
+    finally:
+        origin.close()
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--exercise', type=Path, required=True)
@@ -231,8 +281,10 @@ def main():
         for connections in (1, 8):
             http_case(client, root, connections)
         ftp_case(client, root)
+        ftp_case(client, root, rolling_hours=1)
         crash_case(client, root)
         failures(client, root)
+        migration_case(client, root)
 
 
 if __name__ == '__main__':

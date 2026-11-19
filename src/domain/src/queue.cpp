@@ -33,6 +33,8 @@ std::string validateDownloadQueue(const DownloadQueue& queue) {
     const auto& schedule = queue.schedule;
     if (queue.dailyPayloadBudget < 0 || queue.dailyPayloadBudget > maxDailyPayloadBudget)
         return "Daily native payload budget must be between zero and one PiB.";
+    if (queue.payloadWindowHours < 0 || queue.payloadWindowHours > 168)
+        return "Native payload window must be zero (UTC day) or 1..168 rolling hours.";
     if (schedule.weekdays < 1 || schedule.weekdays > 127 || schedule.startMinute < 0 ||
         schedule.startMinute >= 1440 || schedule.endMinute < 0 || schedule.endMinute >= 1440)
         return "Weekly queue days and times are invalid.";

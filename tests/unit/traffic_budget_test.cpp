@@ -19,6 +19,7 @@ struct Ledger final : IQueueTrafficRepository {
     std::int64_t limit = 1000000, floor = 0;
     int reserves = 0, closes = 0;
     bool failReserve = false, failClose = false, failPeriod = false;
+    bool rolling = false;
     std::int64_t day(std::int64_t utc) {
         auto period = utc / 86400 * 86400;
         if (utc < 0 && utc % 86400)
@@ -31,7 +32,7 @@ struct Ledger final : IQueueTrafficRepository {
         auto id = std::to_string(runs.size() + 1);
         auto period = day(utc);
         runs[id].period = period;
-        return {id, period};
+        return {id, period, rolling};
     }
     TrafficGrant reserve(const std::string& id, std::int64_t observed, std::int64_t desired,
                          std::int64_t utc) override {
@@ -45,11 +46,11 @@ struct Ledger final : IQueueTrafficRepository {
         auto& r = runs.at(id);
         if (r.closed)
             throw std::runtime_error("closed");
-        if (r.period != period)
+        if (r.period != period && !rolling)
             return {r.reserved, period};
         if (observed > r.reserved)
             throw std::runtime_error("unreserved");
-        auto& u = periods[period];
+        auto& u = periods[r.period];
         u.observed += std::max<std::int64_t>(0, observed - r.observed);
         r.observed = std::max(r.observed, observed);
         auto extra = std::min(std::max<std::int64_t>(0, desired - r.reserved),
@@ -94,6 +95,21 @@ struct Ledger final : IQueueTrafficRepository {
     }
 };
 } // namespace
+TEST(PayloadBudget, RollingRunKeepsExistingCreditsAndCanReserveAcrossUtcMidnight) {
+    auto ledger = std::make_shared<Ledger>();
+    ledger->rolling = true;
+    std::atomic<std::int64_t> utc = 86390;
+    auto budget = makeNativePayloadBudget(ledger, "task", "default", [&] { return utc.load(); });
+    EXPECT_EQ(budget->accept(10), 10);
+    utc = 86410;
+    EXPECT_EQ(budget->accept(10), 10);
+    EXPECT_EQ(budget->accept(70000), 70000);
+    EXPECT_FALSE(budget->exhausted());
+    budget->finish();
+    EXPECT_FALSE(budget->failed());
+    EXPECT_EQ(ledger->periods[0].observed, 70020);
+}
+
 TEST(PayloadBudget, DurablePrechargePrecedesAcceptanceAndCleanFinishRefundsOnlyUnusedCredit) {
     auto ledger = std::make_shared<Ledger>();
     auto budget = makeNativePayloadBudget(ledger, "task", "default", [] { return 0; });

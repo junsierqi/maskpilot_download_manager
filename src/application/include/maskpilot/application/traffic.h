@@ -6,6 +6,7 @@ namespace maskpilot {
 struct TrafficRun {
     std::string id;
     std::int64_t period = 0; // UTC day start, epoch seconds; immutable for this run.
+    bool rolling = false;
 };
 struct TrafficGrant {
     std::int64_t reserved = 0; // Absolute run reservation highwater, not an additional credit amount.
@@ -23,8 +24,16 @@ class IQueueTrafficRepository {
     virtual TrafficGrant reserve(const std::string& runId, std::int64_t cumulativeObserved,
                                  std::int64_t desiredReservedTotal, std::int64_t utc) = 0;
     virtual void closeRun(const std::string& runId, std::int64_t finalObserved) = 0;
+    virtual void closeRunAt(const std::string& id, std::int64_t observed, std::int64_t utc) {
+        (void)utc;
+        closeRun(id, observed);
+    }
     virtual TrafficUsage usage(const std::string& queueId, std::int64_t utc) = 0;
     virtual std::int64_t currentPeriod(std::int64_t utc) = 0;
     virtual void abandonOpenRuns() = 0;
+    virtual void abandonOpenRunsAt(std::int64_t utc) {
+        (void)utc;
+        abandonOpenRuns();
+    }
 };
 } // namespace maskpilot

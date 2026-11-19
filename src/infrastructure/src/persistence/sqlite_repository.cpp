@@ -138,6 +138,59 @@ class Backend {
         }
         return period;
     }
+    std::int64_t trafficInstant(std::int64_t utc) {
+        if (utc < 0 || utc > 253402300799LL)
+            throw std::invalid_argument("Invalid traffic accounting instant.");
+        Statement query(db_, "SELECT utc_highwater FROM traffic_clock WHERE singleton=1");
+        if (sqlite3_step(query.value) != SQLITE_ROW || sqlite3_column_type(query.value, 0) != SQLITE_INTEGER)
+            throw std::runtime_error("Traffic accounting highwater is unavailable.");
+        const auto saved = sqlite3_column_int64(query.value, 0);
+        if (saved < 0 || saved > 253402300799LL)
+            throw std::runtime_error("Traffic accounting highwater is invalid.");
+        const auto now = std::max(saved, utc);
+        if (now != saved) {
+            Statement update(db_, "UPDATE traffic_clock SET utc_highwater=? WHERE singleton=1");
+            update.number(1, now);
+            if (sqlite3_step(update.value) != SQLITE_DONE || sqlite3_changes(db_) != 1)
+                throw std::runtime_error("Cannot advance traffic accounting highwater.");
+        }
+        return now;
+    }
+    int payloadWindow(const std::string& queue) {
+        Statement policy(db_, "SELECT payload_window_hours FROM download_queues WHERE id=?");
+        policy.text(1, queue);
+        const auto status = sqlite3_step(policy.value);
+        if (status == SQLITE_DONE)
+            return 0; // Removed queues retain their historical UTC-day ledger, as before.
+        if (status != SQLITE_ROW)
+            throw std::runtime_error("Traffic queue is unavailable.");
+        const auto hours = sqlite3_column_int64(policy.value, 0);
+        if (sqlite3_column_type(policy.value, 0) != SQLITE_INTEGER || hours < 0 || hours > 168)
+            throw std::runtime_error("Traffic window is invalid.");
+        return static_cast<int>(hours);
+    }
+    TrafficUsage rollingUsage(const std::string& queue, std::int64_t now, int hours) {
+        Statement query(db_, "SELECT COALESCE(SUM(charge),0),COALESCE(SUM(received),0) FROM ("
+                             "SELECT reserved AS charge,observed AS received FROM queue_traffic_runs "
+                             "WHERE queue_id=? AND status=0 UNION ALL "
+                             "SELECT observed,observed FROM queue_traffic_runs WHERE queue_id=? AND status=1 "
+                             "AND closed_utc>? UNION ALL "
+                             "SELECT reserved,observed FROM queue_traffic_runs WHERE queue_id=? AND status=2 "
+                             "AND closed_utc>?)");
+        query.text(1, queue);
+        query.text(2, queue);
+        query.number(3, now - hours * 3600LL);
+        query.text(4, queue);
+        query.number(5, now - hours * 3600LL);
+        if (sqlite3_step(query.value) != SQLITE_ROW ||
+            sqlite3_column_type(query.value, 0) != SQLITE_INTEGER ||
+            sqlite3_column_type(query.value, 1) != SQLITE_INTEGER)
+            throw std::runtime_error("Cannot inspect rolling traffic usage.");
+        TrafficUsage usage{now, sqlite3_column_int64(query.value, 0), sqlite3_column_int64(query.value, 1)};
+        if (usage.charged < 0 || usage.observed < 0 || usage.observed > usage.charged)
+            throw std::runtime_error("Rolling traffic usage is invalid.");
+        return usage;
+    }
     struct RunRow {
         std::string queue;
         std::int64_t period, reserved, observed;
@@ -169,8 +222,7 @@ class Backend {
         if (status != SQLITE_ROW)
             throw std::runtime_error("Cannot read traffic usage.");
         TrafficUsage usage{period, sqlite3_column_int64(q.value, 0), sqlite3_column_int64(q.value, 1)};
-        if (usage.charged < 0 || usage.charged > maxDailyPayloadBudget || usage.observed < 0 ||
-            usage.observed > usage.charged)
+        if (usage.charged < 0 || usage.observed < 0 || usage.observed > usage.charged)
             throw std::runtime_error("Traffic usage data is invalid.");
         return usage;
     }
@@ -190,12 +242,12 @@ class Backend {
             int schemaVersion = 0;
             {
                 Statement version(db_, "PRAGMA user_version");
-                if (sqlite3_step(version.value) != SQLITE_ROW || sqlite3_column_int(version.value, 0) > 13 ||
+                if (sqlite3_step(version.value) != SQLITE_ROW || sqlite3_column_int(version.value, 0) > 14 ||
                     sqlite3_column_int(version.value, 0) < 0)
                     throw std::runtime_error("Database was created by a newer version.");
                 schemaVersion = sqlite3_column_int(version.value, 0);
             }
-            if (schemaVersion > 0 && schemaVersion < 13) {
+            if (schemaVersion > 0 && schemaVersion < 14) {
                 auto backupPath = path;
                 backupPath += L".before-v" + std::to_wstring(schemaVersion + 1) + L"-" +
                               std::filesystem::path(newTaskId()).wstring() + L".db";
@@ -332,6 +384,22 @@ COMMIT;)sql");
 ALTER TABLE tasks ADD COLUMN project_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE tasks ADD COLUMN project_revision INTEGER NOT NULL DEFAULT 0;
 PRAGMA user_version=13;
+COMMIT;)sql");
+            if (schemaVersion < 14)
+                execute(R"sql(BEGIN IMMEDIATE;
+ALTER TABLE download_queues ADD COLUMN payload_window_hours INTEGER NOT NULL DEFAULT 0 CHECK(payload_window_hours BETWEEN 0 AND 168);
+ALTER TABLE queue_traffic_runs ADD COLUMN closed_utc INTEGER NOT NULL DEFAULT 0 CHECK(closed_utc>=0);
+UPDATE queue_traffic_runs SET closed_utc=period+86400 WHERE status<>0;
+ALTER TABLE traffic_clock ADD COLUMN utc_highwater INTEGER NOT NULL DEFAULT 0 CHECK(utc_highwater>=0);
+UPDATE traffic_clock SET utc_highwater=period;
+ALTER TABLE queue_traffic_usage RENAME TO queue_traffic_usage_v13;
+CREATE TABLE queue_traffic_usage(queue_id TEXT NOT NULL,period INTEGER NOT NULL CHECK(period>=0 AND period%86400=0),
+ charged INTEGER NOT NULL DEFAULT 0 CHECK(charged>=0),
+ observed INTEGER NOT NULL DEFAULT 0 CHECK(observed>=0 AND observed<=charged),PRIMARY KEY(queue_id,period));
+INSERT INTO queue_traffic_usage SELECT * FROM queue_traffic_usage_v13;
+DROP TABLE queue_traffic_usage_v13;
+CREATE INDEX traffic_runs_queue_close ON queue_traffic_runs(queue_id,status,closed_utc);
+PRAGMA user_version=14;
 COMMIT;)sql");
             Statement installation(
                 db_, "INSERT OR IGNORE INTO store_metadata(key,value) VALUES('installation_id',?)");
@@ -707,7 +775,7 @@ AND credential_records.ownership_nonce=excluded.ownership_nonce)sql");
         std::lock_guard lock(mutex_);
         Statement q(db_, "SELECT id,name,revision,enabled,max_active,download_limit,upload_limit,"
                          "schedule_enabled,schedule_weekdays,schedule_start,schedule_end,schedule_timezone,"
-                         "daily_payload_budget "
+                         "daily_payload_budget,payload_window_hours "
                          "FROM download_queues ORDER BY id");
         std::vector<DownloadQueue> queues;
         int status;
@@ -726,6 +794,10 @@ AND credential_records.ownership_nonce=excluded.ownership_nonce)sql");
             queue.schedule.endMinute = sqlite3_column_int(q.value, 10);
             queue.schedule.timeZone = columnText(q.value, 11);
             queue.dailyPayloadBudget = sqlite3_column_int64(q.value, 12);
+            queue.payloadWindowHours = sqlite3_column_int(q.value, 13);
+            if (sqlite3_column_type(q.value, 13) != SQLITE_INTEGER || sqlite3_column_int64(q.value, 13) < 0 ||
+                sqlite3_column_int64(q.value, 13) > 168)
+                throw std::runtime_error("Saved native payload window is invalid.");
             if (!validateDownloadQueue(queue).empty() || queues.size() >= maxDownloadQueues)
                 throw std::runtime_error("Saved download queue policy is invalid.");
             queues.push_back(std::move(queue));
@@ -747,16 +819,18 @@ AND credential_records.ownership_nonce=excluded.ownership_nonce)sql");
                 throw std::runtime_error("Download queue policy limit reached.");
         }
         Statement q(
-            db_, expectedRevision == 0
-                     ? "INSERT INTO "
-                       "download_queues(id,name,revision,enabled,max_active,"
-                       "download_limit,upload_limit,schedule_enabled,schedule_weekdays,"
-                       "schedule_start,schedule_end,schedule_timezone,daily_payload_budget) "
-                       "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)"
-                     : "UPDATE download_queues SET "
-                       "name=?,revision=?,enabled=?,max_active=?,download_limit=?,"
-                       "upload_limit=?,schedule_enabled=?,schedule_weekdays=?,schedule_start=?,"
-                       "schedule_end=?,schedule_timezone=?,daily_payload_budget=? WHERE id=? AND revision=?");
+            db_,
+            expectedRevision == 0
+                ? "INSERT INTO "
+                  "download_queues(id,name,revision,enabled,max_active,"
+                  "download_limit,upload_limit,schedule_enabled,schedule_weekdays,"
+                  "schedule_start,schedule_end,schedule_timezone,daily_payload_budget,payload_window_hours) "
+                  "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+                : "UPDATE download_queues SET "
+                  "name=?,revision=?,enabled=?,max_active=?,download_limit=?,"
+                  "upload_limit=?,schedule_enabled=?,schedule_weekdays=?,schedule_start=?,"
+                  "schedule_end=?,schedule_timezone=?,daily_payload_budget=?,payload_window_hours=? WHERE "
+                  "id=? AND revision=?");
         if (expectedRevision == 0) {
             q.text(1, queue.id);
             q.text(2, queue.name);
@@ -771,6 +845,7 @@ AND credential_records.ownership_nonce=excluded.ownership_nonce)sql");
             q.number(11, queue.schedule.endMinute);
             q.text(12, queue.schedule.timeZone);
             q.number(13, queue.dailyPayloadBudget);
+            q.number(14, queue.payloadWindowHours);
         } else {
             q.text(1, queue.name);
             q.number(2, queue.revision);
@@ -784,8 +859,9 @@ AND credential_records.ownership_nonce=excluded.ownership_nonce)sql");
             q.number(10, queue.schedule.endMinute);
             q.text(11, queue.schedule.timeZone);
             q.number(12, queue.dailyPayloadBudget);
-            q.text(13, queue.id);
-            q.number(14, expectedRevision);
+            q.number(13, queue.payloadWindowHours);
+            q.text(14, queue.id);
+            q.number(15, expectedRevision);
         }
         if (sqlite3_step(q.value) != SQLITE_DONE || sqlite3_changes(db_) != 1)
             throw std::runtime_error("Queue changed or its name is already used. Refresh before retrying.");
@@ -856,7 +932,8 @@ AND credential_records.ownership_nonce=excluded.ownership_nonce)sql");
             if (sqlite3_step(policy.value) != SQLITE_ROW || sqlite3_column_int64(policy.value, 0) <= 0 ||
                 sqlite3_column_int64(policy.value, 0) > maxDailyPayloadBudget)
                 throw std::invalid_argument("Task queue has no available native payload budget.");
-            TrafficRun run{newTaskId(), trafficPeriod(utc)};
+            const auto now = trafficInstant(utc);
+            TrafficRun run{newTaskId(), trafficPeriod(now), payloadWindow(queue) != 0};
             Statement usage(db_, "INSERT OR IGNORE INTO queue_traffic_usage(queue_id,period) VALUES(?,?)");
             usage.text(1, queue);
             usage.number(2, run.period);
@@ -882,11 +959,14 @@ AND credential_records.ownership_nonce=excluded.ownership_nonce)sql");
             const auto run = trafficRun(id);
             if (run.status != 0 || observed > run.reserved)
                 throw std::invalid_argument("Traffic run is closed or observation exceeds issued credits.");
-            const auto period = trafficPeriod(utc);
-            const auto usage = trafficUsage(run.queue, run.period);
+            const auto now = trafficInstant(utc);
+            const auto period = trafficPeriod(now);
+            const auto hours = payloadWindow(run.queue);
+            const auto usage =
+                hours ? rollingUsage(run.queue, now, hours) : trafficUsage(run.queue, run.period);
             const auto highwater = std::max(run.observed, observed);
             auto additional = std::int64_t{0};
-            if (period == run.period && desired > run.reserved) {
+            if ((hours || period == run.period) && desired > run.reserved) {
                 Statement policy(db_, "SELECT daily_payload_budget FROM download_queues WHERE id=?");
                 policy.text(1, run.queue);
                 if (sqlite3_step(policy.value) != SQLITE_ROW)
@@ -915,11 +995,12 @@ AND credential_records.ownership_nonce=excluded.ownership_nonce)sql");
             return TrafficGrant{run.reserved + additional, period};
         });
     }
-    void closeRun(const std::string& id, std::int64_t finalObserved) {
+    void closeRun(const std::string& id, std::int64_t finalObserved, std::int64_t utc = 0) {
         std::lock_guard lock(mutex_);
         if (finalObserved < 0)
             throw std::invalid_argument("Invalid final traffic observation.");
         trafficTransaction([&] {
+            const auto now = trafficInstant(utc);
             const auto run = trafficRun(id);
             if (finalObserved > run.reserved || run.status == 2)
                 throw std::invalid_argument("Traffic run cannot be reconciled.");
@@ -937,9 +1018,12 @@ AND credential_records.ownership_nonce=excluded.ownership_nonce)sql");
             usage.number(4, run.period);
             if (sqlite3_step(usage.value) != SQLITE_DONE || sqlite3_changes(db_) != 1)
                 throw std::runtime_error("Cannot reconcile traffic usage.");
-            Statement close(db_, "UPDATE queue_traffic_runs SET observed=?,status=1 WHERE id=? AND status=0");
+            Statement close(
+                db_,
+                "UPDATE queue_traffic_runs SET observed=?,status=1,closed_utc=? WHERE id=? AND status=0");
             close.number(1, highwater);
-            close.text(2, id);
+            close.number(2, now);
+            close.text(3, id);
             if (sqlite3_step(close.value) != SQLITE_DONE || sqlite3_changes(db_) != 1)
                 throw std::runtime_error("Cannot close traffic run.");
             return 0;
@@ -949,16 +1033,25 @@ AND credential_records.ownership_nonce=excluded.ownership_nonce)sql");
         std::lock_guard lock(mutex_);
         if (!isQueueId(queue))
             throw std::invalid_argument("Invalid traffic queue identity.");
-        return trafficTransaction([&] { return trafficUsage(queue, trafficPeriod(utc)); });
+        return trafficTransaction([&] {
+            const auto now = trafficInstant(utc);
+            const auto period = trafficPeriod(now);
+            const auto hours = payloadWindow(queue);
+            return hours ? rollingUsage(queue, now, hours) : trafficUsage(queue, period);
+        });
     }
     std::int64_t currentPeriod(std::int64_t utc) {
         std::lock_guard lock(mutex_);
-        return trafficTransaction([&] { return trafficPeriod(utc); });
+        return trafficTransaction([&] { return trafficPeriod(trafficInstant(utc)); });
     }
-    void abandonOpenRuns() {
+    void abandonOpenRuns(std::int64_t utc = 0) {
         std::lock_guard lock(mutex_);
         trafficTransaction([&] {
-            execute("UPDATE queue_traffic_runs SET status=2 WHERE status=0");
+            const auto now = trafficInstant(utc);
+            Statement abandon(db_, "UPDATE queue_traffic_runs SET status=2,closed_utc=? WHERE status=0");
+            abandon.number(1, now);
+            if (sqlite3_step(abandon.value) != SQLITE_DONE)
+                throw std::runtime_error("Cannot preserve abandoned traffic reservations.");
             return 0;
         });
     }
@@ -1022,11 +1115,15 @@ class TrafficRepository final : public IQueueTrafficRepository {
     void closeRun(const std::string& run, std::int64_t observed) override {
         backend_->closeRun(run, observed);
     }
+    void closeRunAt(const std::string& run, std::int64_t observed, std::int64_t utc) override {
+        backend_->closeRun(run, observed, utc);
+    }
     TrafficUsage usage(const std::string& queue, std::int64_t utc) override {
         return backend_->usage(queue, utc);
     }
     std::int64_t currentPeriod(std::int64_t utc) override { return backend_->currentPeriod(utc); }
     void abandonOpenRuns() override { backend_->abandonOpenRuns(); }
+    void abandonOpenRunsAt(std::int64_t utc) override { backend_->abandonOpenRuns(utc); }
 };
 } // namespace
 SqliteStore makeSqliteStore(const std::filesystem::path& path) {

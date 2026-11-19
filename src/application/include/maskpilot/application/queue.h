@@ -14,6 +14,7 @@ struct QueueConfiguration {
     std::int64_t downloadLimit = 0, uploadLimit = 0;
     WeeklySchedule schedule;
     std::int64_t dailyPayloadBudget = 0;
+    int payloadWindowHours = 0;
 };
 struct QueueMove {
     std::string taskId, expectedQueueId;

@@ -216,7 +216,7 @@ struct DownloadService::Impl {
             task.state = TaskState::AwaitingSelection;
         if (unsupportedBudget) {
             task.state = TaskState::NeedsAttention;
-            task.error = "Daily payload budgets support native HTTP/FTP tasks only. Move this task to an "
+            task.error = "Native payload budgets support native HTTP/FTP tasks only. Move this task to an "
                          "unbudgeted queue.";
         }
         if (rememberProxy)
@@ -539,7 +539,7 @@ struct DownloadService::Impl {
             budget->finish();
             if (budget->failed()) {
                 event.outcome = TransferOutcome::Attention;
-                event.error = "Payload accounting failed. Downloads paused to protect the daily allowance.";
+                event.error = "Payload accounting failed. Downloads paused to protect the native allowance.";
                 healthy = false;
                 std::lock_guard lock(mutex);
                 error = event.error;
@@ -585,8 +585,8 @@ struct DownloadService::Impl {
             break;
         }
         if (budget && budget->exhausted() && task.state == TaskState::PolicyWaiting)
-            task.error =
-                "Daily payload allowance exhausted or UTC period changed. Waiting for available allowance.";
+            task.error = "Native payload allowance exhausted or accounting period changed. Waiting for "
+                         "available allowance.";
         save(task);
         if (isTerminal(task.state))
             clearOwnedParts(task);
@@ -698,7 +698,7 @@ struct DownloadService::Impl {
             if (policy.dailyPayloadBudget > 0) {
                 if (task->spec.kind == TransferKind::BitTorrent || task->spec.kind == TransferKind::Media) {
                     task->state = TaskState::NeedsAttention;
-                    task->error = "Daily payload budgets support native HTTP/FTP tasks only. Move this task "
+                    task->error = "Native payload budgets support native HTTP/FTP tasks only. Move this task "
                                   "to an unbudgeted queue.";
                     save(*task);
                     continue;
@@ -711,7 +711,7 @@ struct DownloadService::Impl {
                 } catch (const std::exception&) {
                     task->state = TaskState::NeedsAttention;
                     task->error =
-                        "Payload accounting failed. Downloads paused to protect the daily allowance.";
+                        "Payload accounting failed. Downloads paused to protect the native allowance.";
                     save(*task);
                     healthy = false;
                     {
@@ -724,8 +724,9 @@ struct DownloadService::Impl {
                     exhaustedQueues.insert_or_assign(task->queueId, usage);
                     if (task->state != TaskState::PolicyWaiting) {
                         task->state = TaskState::PolicyWaiting;
-                        task->error = "Daily payload allowance exhausted. Waiting for the next UTC day or a "
-                                      "policy change.";
+                        task->error =
+                            "Native payload allowance exhausted. Waiting for its accounting window or a "
+                            "policy change.";
                         save(*task);
                     }
                     continue;
@@ -776,7 +777,7 @@ struct DownloadService::Impl {
                 } catch (const std::exception&) {
                     task->state = TaskState::NeedsAttention;
                     task->error =
-                        "Payload accounting failed. Downloads paused to protect the daily allowance.";
+                        "Payload accounting failed. Downloads paused to protect the native allowance.";
                     save(*task);
                     healthy = false;
                     {
@@ -825,7 +826,7 @@ struct DownloadService::Impl {
     void loop(std::promise<void> ready) {
         try {
             if (traffic)
-                traffic->abandonOpenRuns();
+                traffic->abandonOpenRunsAt(queueRegistry->now());
             for (auto task : repository->load()) {
                 if (!task.projectId.empty() && !isTerminal(task.state)) {
                     task.runIntent = RunIntent::Paused;
@@ -839,7 +840,7 @@ struct DownloadService::Impl {
                     (task.spec.kind == TransferKind::BitTorrent || task.spec.kind == TransferKind::Media);
                 if (unsupportedBudget && !isTerminal(task.state)) {
                     task.state = TaskState::NeedsAttention;
-                    task.error = "Daily payload budgets support native HTTP/FTP tasks only. Move this task "
+                    task.error = "Native payload budgets support native HTTP/FTP tasks only. Move this task "
                                  "to an unbudgeted queue.";
                     save(task);
                 }
@@ -1165,15 +1166,16 @@ std::future<DownloadQueue> DownloadService::configureQueue(QueueConfiguration co
     return impl_->request([p = impl_.get(), config = std::move(config)]() mutable {
         auto candidate = p->queueRegistry->prepare(config);
         if (candidate.dailyPayloadBudget > 0 && !p->traffic)
-            throw std::invalid_argument("Daily payload budgets require persistent accounting.");
+            throw std::invalid_argument("Native payload budgets require persistent accounting.");
         const auto existing = p->queueRegistry->list();
         auto old = std::find_if(existing.begin(), existing.end(),
                                 [&](const auto& q) { return q.id == candidate.id; });
-        if (old != existing.end() && old->dailyPayloadBudget != candidate.dailyPayloadBudget)
+        if (old != existing.end() && (old->dailyPayloadBudget != candidate.dailyPayloadBudget ||
+                                      old->payloadWindowHours != candidate.payloadWindowHours))
             for (const auto& [id, job] : p->jobs)
                 if (p->tasks.at(id).queueId == candidate.id)
                     throw std::invalid_argument(
-                        "Pause every task in this queue before changing its daily payload budget.");
+                        "Pause every task in this queue before changing its native payload budget/window.");
         auto policies = p->queueRegistry->list();
         auto it = std::find_if(policies.begin(), policies.end(),
                                [&](const auto& q) { return q.id == candidate.id; });

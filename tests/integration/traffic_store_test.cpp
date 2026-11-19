@@ -41,6 +41,63 @@ struct Fixture {
 };
 } // namespace
 
+TEST(TrafficStorage, RollingCreditsStayHeldUntilCloseThenExpireAtExactWindowAndNeverRefillOnRollback) {
+    Fixture fixture;
+    auto policy = fixture.store.queues->loadQueues()[0];
+    policy.payloadWindowHours = 1;
+    ++policy.revision;
+    fixture.store.queues->saveQueue(policy, 2);
+    auto task = fixture.add();
+    const auto start = 2 * day - 10;
+    const auto run = fixture.store.traffic->openRun(task.id, task.queueId, start);
+    EXPECT_TRUE(run.rolling);
+    EXPECT_EQ(fixture.store.traffic->reserve(run.id, 0, 100, start).reserved, 100);
+    EXPECT_EQ(fixture.store.traffic->usage(task.queueId, 2 * day + 1).charged, 100);
+    EXPECT_EQ(fixture.store.traffic->usage(task.queueId, start + 10000).charged, 100);
+    fixture.store.traffic->closeRunAt(run.id, 70, start + 10000);
+    EXPECT_EQ(fixture.store.traffic->usage(task.queueId, start + 13599).charged, 70);
+    EXPECT_EQ(fixture.store.traffic->usage(task.queueId, start + 13600).charged, 0);
+    auto second = fixture.store.traffic->openRun(task.id, task.queueId, start + 13600);
+    EXPECT_EQ(fixture.store.traffic->reserve(second.id, 0, 100, start + 13600).reserved, 100);
+    fixture.store.traffic->closeRunAt(second.id, 90, start + 13600);
+    EXPECT_EQ(fixture.store.traffic->usage(task.queueId, start).charged, 90);
+    fixture.store.tasks->erase(task.id);
+    EXPECT_EQ(fixture.store.traffic->usage(task.queueId, start).charged, 90);
+    EXPECT_THROW(fixture.store.traffic->usage(task.queueId, -1), std::invalid_argument);
+    EXPECT_THROW(fixture.store.traffic->usage(task.queueId, 253402300800LL), std::invalid_argument);
+}
+
+TEST(TrafficStorage, RollingConcurrentReservationsAndCrashRecoveryKeepUncertainCreditsForFullWindow) {
+    Fixture fixture;
+    auto policy = fixture.store.queues->loadQueues()[0];
+    policy.payloadWindowHours = 1;
+    ++policy.revision;
+    fixture.store.queues->saveQueue(policy, 2);
+    auto task = fixture.add();
+    std::vector<maskpilot::TrafficRun> runs;
+    for (int n = 0; n < 8; ++n)
+        runs.push_back(fixture.store.traffic->openRun(task.id, task.queueId, day));
+    std::vector<std::future<std::int64_t>> grants;
+    for (const auto& run : runs)
+        grants.push_back(std::async(std::launch::async, [&, run] {
+            return fixture.store.traffic->reserve(run.id, 0, 100, day).reserved;
+        }));
+    std::int64_t total = 0;
+    for (auto& grant : grants)
+        total += grant.get();
+    EXPECT_EQ(total, 100);
+    // Reopening uses the real SQLite database; recovery begins a conservative new uncertainty window.
+    fixture.store = maskpilot::makeSqliteStore(fixture.temporary.path / "tasks.db");
+    fixture.store.traffic->abandonOpenRunsAt(day + 5000);
+    EXPECT_EQ(fixture.store.traffic->usage(task.queueId, day + 8599).charged, 100);
+    EXPECT_EQ(fixture.store.traffic->usage(task.queueId, day + 8600).charged, 0);
+    for (const auto& run : runs)
+        EXPECT_THROW(fixture.store.traffic->reserve(run.id, 0, 100, day + 8600), std::invalid_argument);
+    ++policy.revision;
+    policy.payloadWindowHours = 169;
+    EXPECT_THROW(fixture.store.queues->saveQueue(policy, 3), std::invalid_argument);
+}
+
 TEST(TrafficStorage, MigratesRealVersionEightWithBackupAndBudgetCASDefaults) {
     Temp temporary;
     const auto path = temporary.path / "tasks.db";

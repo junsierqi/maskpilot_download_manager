@@ -26,6 +26,7 @@ struct DownloadQueue {
     std::int64_t downloadLimit = 0, uploadLimit = 0;
     WeeklySchedule schedule;
     std::int64_t dailyPayloadBudget = 0;
+    int payloadWindowHours = 0; // Zero: UTC day; 1..168: conservative rolling hours.
 };
 bool isQueueId(const std::string&);
 std::string validateDownloadQueue(const DownloadQueue&);

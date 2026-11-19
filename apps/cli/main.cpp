@@ -348,7 +348,7 @@ int runClient(int argc, char** argv) {
                         return 0;
                     }
                     if (task.state == maskpilot::TaskState::PolicyWaiting) {
-                        std::cout << "Waiting for queue policy or daily native payload allowance.\n";
+                        std::cout << "Waiting for queue policy or native payload allowance.\n";
                         return 4;
                     }
                     if (task.state == maskpilot::TaskState::Failed ||

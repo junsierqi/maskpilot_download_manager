@@ -29,7 +29,7 @@ class NativePayloadBudget final : public INativePayloadBudget {
             return 0;
         try {
             const auto utc = now_();
-            if (repository_->currentPeriod(utc) != run_.period) {
+            if (repository_->currentPeriod(utc) != run_.period && !run_.rolling) {
                 exhausted_ = true;
                 return 0;
             }
@@ -43,7 +43,7 @@ class NativePayloadBudget final : public INativePayloadBudget {
                     run_.id, cumulative_,
                     std::min(maxDailyPayloadBudget, std::max(reserved_ + 65536, cumulative_ + requested)),
                     utc);
-                if (grant.period != run_.period) {
+                if (grant.period != run_.period && !run_.rolling) {
                     exhausted_ = true;
                     return 0;
                 }
@@ -67,7 +67,7 @@ class NativePayloadBudget final : public INativePayloadBudget {
             return;
         finished_ = true;
         try {
-            repository_->closeRun(run_.id, cumulative_);
+            repository_->closeRunAt(run_.id, cumulative_, now_());
         } catch (...) {
             failed_ = true;
         }

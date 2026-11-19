@@ -176,6 +176,7 @@ TEST(QueueUi, ActualManagerAddFilterMoveAndReopenPreservePausedMembership) {
                 widget<QSpinBox>(dialog, "queueDownloadLimit")->setValue(64);
                 widget<QSpinBox>(dialog, "queueUploadLimit")->setValue(16);
                 widget<QDoubleSpinBox>(dialog, "queueDailyPayloadBudget")->setValue(1280 * 1024);
+                widget<QSpinBox>(dialog, "queuePayloadWindowHours")->setValue(1);
                 widget<QCheckBox>(dialog, "queueWeeklyEnabled")->setChecked(true);
                 widget<QTimeEdit>(dialog, "queueWindowStart")->setTime(QTime(22, 15));
                 widget<QTimeEdit>(dialog, "queueWindowEnd")->setTime(QTime(6, 30));
@@ -192,6 +193,7 @@ TEST(QueueUi, ActualManagerAddFilterMoveAndReopenPreservePausedMembership) {
                 EXPECT_EQ(widget<QLineEdit>(dialog, "queueTimeZone")->text(), "Asia/Shanghai");
                 EXPECT_FALSE(widget<QCheckBox>(dialog, "queueWeekday6")->isChecked());
                 EXPECT_EQ(widget<QDoubleSpinBox>(dialog, "queueDailyPayloadBudget")->value(), 1280 * 1024);
+                EXPECT_EQ(widget<QSpinBox>(dialog, "queuePayloadWindowHours")->value(), 1);
                 if (!screenshot.isEmpty())
                     EXPECT_TRUE(dialog->grab().save(screenshot));
                 stage = 2;
@@ -269,7 +271,8 @@ TEST(QueueUi, ActualManagerAddFilterMoveAndReopenPreservePausedMembership) {
         return q.id == queueId && q.maxActive == 2 && q.downloadLimit == 64 * 1024 &&
                q.uploadLimit == 16 * 1024 && q.schedule.enabled && q.schedule.weekdays == 63 &&
                q.schedule.startMinute == 22 * 60 + 15 && q.schedule.endMinute == 6 * 60 + 30 &&
-               q.schedule.timeZone == "Asia/Shanghai" && q.dailyPayloadBudget == 1280 * 1024;
+               q.schedule.timeZone == "Asia/Shanghai" && q.dailyPayloadBudget == 1280 * 1024 &&
+               q.payloadWindowHours == 1;
     }));
 }
 
@@ -374,6 +377,66 @@ TEST(QueueUi, RealHttpBudgetShowsUsageAndReopensOnUtcDayWithoutResumingManualTas
     EXPECT_GE(origin.bodyRequests("/budget"), 2);
     EXPECT_EQ(store.task(manual).state, TaskState::Paused);
     EXPECT_EQ(origin.requests("/budget-manual"), 0);
+    window.requestQuit();
+}
+
+TEST(QueueUi, RealHttpRollingWindowIgnoresMidnightAndReleasesWithoutResumingManualTasks) {
+    platform();
+    int argc = 1;
+    char program[] = "QueueRollingNativeFlow";
+    char* argv[]{program, nullptr};
+    QApplication app(argc, argv);
+    QCoreApplication::setOrganizationName("MaskPilotTests");
+    QCoreApplication::setApplicationName(program);
+    struct Clock final : IQueueCivilTime {
+        std::atomic<std::int64_t> utc{2 * 86400 - 10};
+        std::int64_t utcNow() const override { return utc.load(); }
+        std::optional<CivilMinute> at(const std::string&, std::int64_t) const override {
+            return CivilMinute{};
+        }
+    };
+    auto clock = std::make_shared<Clock>();
+    Store store(true, {}, clock);
+    LocalHttpServer origin;
+    QueueConfiguration draft;
+    draft.name = "Rolling HTTP";
+    draft.maxActive = 1;
+    draft.dailyPayloadBudget = 1280 * 1024;
+    draft.payloadWindowHours = 1;
+    const auto queue = store.service->configureQueue(draft).get();
+    MainWindow window(*store.service);
+    window.show();
+    ModalBudget modal;
+    auto* filter = widget<QComboBox>(&window, "queueFilter");
+    ASSERT_TRUE(untilGui([&] { return filter->findData(QString::fromStdString(queue.id)) >= 0; }));
+    addPaused(window, store, origin.url("/rolling"), queue.id, "rolling.bin");
+    addPaused(window, store, origin.url("/rolling-manual"), queue.id, "rolling-manual.bin");
+    const auto running = findTask(store, origin.url("/rolling"));
+    const auto manual = findTask(store, origin.url("/rolling-manual"));
+    ASSERT_TRUE(untilGui([&] { return selectTask(window, running); }));
+    widget<QAction>(&window, "resumeTasksAction")->trigger();
+    ASSERT_TRUE(untilGui([&] {
+        return store.task(running).state == TaskState::PolicyWaiting && store.task(running).downloaded > 0;
+    }));
+    EXPECT_EQ(store.service->queueTraffic(queue.id).get().charged, queue.dailyPayloadBudget);
+    const auto requests = origin.requests("/rolling");
+    clock->utc += 20; // Cross UTC midnight without releasing rolling credits.
+    const auto settle = std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
+    ASSERT_TRUE(untilGui([&] { return std::chrono::steady_clock::now() >= settle; }));
+    EXPECT_EQ(store.task(running).state, TaskState::PolicyWaiting);
+    EXPECT_EQ(origin.requests("/rolling"), requests);
+    EXPECT_EQ(store.service->queueTraffic(queue.id).get().charged, queue.dailyPayloadBudget);
+    clock->utc += 3600;
+    ASSERT_TRUE(untilGui([&] { return store.task(running).state == TaskState::Completed; }));
+    QFile output(QString::fromStdWString(store.task(running).spec.destination.wstring()));
+    ASSERT_TRUE(output.open(QIODevice::ReadOnly));
+    EXPECT_EQ(output.readAll(), origin.data());
+    const auto usage = store.service->queueTraffic(queue.id).get();
+    EXPECT_EQ(usage.charged, usage.observed);
+    EXPECT_LE(usage.charged, queue.dailyPayloadBudget);
+    EXPECT_EQ(store.task(manual).state, TaskState::Paused);
+    EXPECT_EQ(origin.requests("/rolling-manual"), 0);
+    EXPECT_GE(origin.bodyRequests("/rolling"), 2);
     window.requestQuit();
 }
 

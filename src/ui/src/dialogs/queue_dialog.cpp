@@ -30,6 +30,7 @@ class QueueManagerDialog final : public QDialog {
     QTimeEdit *start_, *end_;
     QLineEdit* zone_;
     QDoubleSpinBox* daily_;
+    QSpinBox* windowHours_;
     QLabel* usage_;
     bool usagePending_ = false;
     QLabel* status_;
@@ -47,6 +48,19 @@ class QueueManagerDialog final : public QDialog {
                 usagePending_ = false;
                 if (id != selected_)
                     return;
+                const auto* policy = current();
+                if (policy && policy->payloadWindowHours > 0) {
+                    usage_->setText(
+                        tr("Confirmed received: %1 B\nCharged: %2 B; reserved / uncertain: %3 B\nRolling %4 "
+                           "h: active credits stay held; settled bytes expire from finish time.",
+                           "已确认接收：%1 B\n已扣额度：%2 B；预留／未核实：%3 B\n滚动 %4 "
+                           "小时：活动额度持续预留，已结算正文从结束时间起保留一个窗口。")
+                            .arg(value.observed)
+                            .arg(value.charged)
+                            .arg(std::max<std::int64_t>(0, value.charged - value.observed))
+                            .arg(policy->payloadWindowHours));
+                    return;
+                }
                 const auto reset = QDateTime::fromSecsSinceEpoch(value.period + 86400, QTimeZone::utc())
                                        .toString("yyyy-MM-dd HH:mm 'UTC'");
                 usage_->setText(tr("Confirmed received: %1 B\nCharged: %2 B; reserved / uncertain: %3 "
@@ -101,6 +115,7 @@ class QueueManagerDialog final : public QDialog {
         end_->setTime(QTime(value->schedule.endMinute / 60, value->schedule.endMinute % 60));
         zone_->setText(qs(value->schedule.timeZone));
         daily_->setValue(static_cast<double>(value->dailyPayloadBudget));
+        windowHours_->setValue(value->payloadWindowHours);
         usage_->clear();
         status_->setText(
             value->enabled && value->schedule.enabled
@@ -129,6 +144,7 @@ class QueueManagerDialog final : public QDialog {
         end_->setTime(QTime(0, 0));
         zone_->setText("UTC");
         daily_->setValue(0);
+        windowHours_->setValue(0);
         usage_->clear();
         status_->setText(tr("Create a queue for its own concurrency and bandwidth limits.",
                             "新建队列，可分别设置任务并发与带宽。"));
@@ -185,6 +201,7 @@ class QueueManagerDialog final : public QDialog {
         draft.enabled = enabled.value_or(enabled_->isChecked());
         draft.dailyPayloadBudget =
             enabled && previous ? previous->dailyPayloadBudget : static_cast<std::int64_t>(daily_->value());
+        draft.payloadWindowHours = enabled && previous ? previous->payloadWindowHours : windowHours_->value();
         if (enabled && previous)
             draft.schedule = previous->schedule;
         else {
@@ -305,14 +322,22 @@ class QueueManagerDialog final : public QDialog {
         daily_->setSingleStep(1024 * 1024);
         daily_->setSpecialValueText(tr("Off", "关闭"));
         daily_->setSuffix(" B");
-        form->addRow(tr("Native bytes / UTC day", "原生正文／UTC 日"), daily_);
+        form->addRow(tr("Native body allowance", "原生正文额度"), daily_);
+        windowHours_ = new QSpinBox;
+        windowHours_->setObjectName("queuePayloadWindowHours");
+        windowHours_->setRange(0, 168);
+        windowHours_->setSpecialValueText(tr("UTC day", "UTC 日"));
+        windowHours_->setSuffix(tr(" h rolling", " 小时滚动"));
+        form->addRow(tr("Allowance window (0 = UTC day)", "额度窗口（0 为 UTC 日）"), windowHours_);
         auto* budgetNote = new QLabel(
             tr("A positive allowance accepts HTTP/FTP only. It counts admitted body bytes, including "
                "probes and retries, not network overhead or existing parts. Crash reservations remain "
                "charged; confirmed usage may lag while running. Pause this queue's active tasks before "
-               "changing its allowance.",
+               "changing its allowance or window. Rolling mode holds active credits and retains settled "
+               "bytes from finish time (uncertain crash credits from recovery time) for a full window.",
                "启用额度后仅接收 HTTP/FTP，计入获准接收的正文（含探测及重试），不计网络开销或已有分片。"
-               "崩溃后的预留额度保持扣减；运行中确认量可能稍有延迟。修改额度前请暂停该队列的活动任务。"));
+               "崩溃后的预留额度保持扣减；运行中确认量可能稍有延迟。修改额度或窗口前请暂停该队列的活动任务。"
+               "滚动模式保留活动预留，已结算正文从结束时间、崩溃预留从恢复时间起保留整个窗口。"));
         budgetNote->setWordWrap(true);
         form->addRow(budgetNote);
         usage_ = new QLabel;
