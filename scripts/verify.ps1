@@ -5,6 +5,8 @@ if (-not $?) { throw 'Build failed.' }
 $preset = 'windows-msvc-' + $Configuration.ToLowerInvariant()
 & ctest --preset $preset --output-on-failure
 if ($LASTEXITCODE -ne 0) { throw 'Tests failed.' }
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$PSScriptRoot/../tests/system/package_update_test.ps1" -SourceRoot (Split-Path -Parent $PSScriptRoot)
+if ($LASTEXITCODE -ne 0) { throw 'Package update and recovery tests failed.' }
 if (Get-Command npm.cmd -ErrorAction SilentlyContinue) {
     & npm.cmd --prefix browser_extension ci
     if ($LASTEXITCODE -ne 0) { throw 'Extension dependency install failed.' }

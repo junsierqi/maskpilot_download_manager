@@ -1,16 +1,15 @@
 param([switch]$NoShortcuts)
 $ErrorActionPreference = 'Stop'
-$target = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..')).TrimEnd('\')
-function Assert-NoReparse([string]$Path) {
-    while ($Path) {
-        if ((Test-Path -LiteralPath $Path) -and ((Get-Item -LiteralPath $Path -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Refusing an uninstall path containing a junction or symbolic link.' }
-        $parent = Split-Path $Path -Parent
-        if ($parent -eq $Path) { break }
-        $Path = $parent
-    }
+. "$PSScriptRoot/package-common.ps1"
+$target = MP-GetTarget ([IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..')))
+$lock = MP-EnterTargetLock $target
+try {
+$transaction = MP-ReadTransaction $target
+if ($transaction) {
+    if ($transaction.journal.phase -ne 'Committed') { throw 'Recover the incomplete update before uninstalling.' }
+    MP-CompleteAction $target 'Finalize'
 }
-Assert-NoReparse $target
-Assert-NoReparse (Join-Path $target 'maskpilot-install.json')
+$null = MP-ReadInstalled $target
 $markerPath = Join-Path $target 'maskpilot-install.json'
 if (-not (Test-Path -LiteralPath $markerPath)) { throw 'Installation marker missing; refusing directory removal.' }
 $marker = Get-Content -LiteralPath $markerPath -Raw | ConvertFrom-Json
@@ -23,13 +22,13 @@ foreach ($record in $marker.files) {
     }
     $file = [IO.Path]::GetFullPath((Join-Path $target $record.path))
     if (-not $file.StartsWith($target + '\',[StringComparison]::OrdinalIgnoreCase)) { throw 'Installed path escaped the installation directory.' }
-    Assert-NoReparse $file
+    MP-AssertNoReparse $file
     $inventory += @{ file=$file; sha256=$record.sha256 }
 }
-Get-Process maskpilot,maskpilot_native_host -ErrorAction SilentlyContinue | ForEach-Object { if ($_.Path -and $_.Path.StartsWith($target + '\',[StringComparison]::OrdinalIgnoreCase)) { throw 'Close MaskPilot before uninstalling.' } }
+MP-AssertStopped $target
 # Restore exact-owned HKCU64 browser defaults before deleting their manifest/journal files.
 # Any cleanup failure stops uninstall, leaving the recovery journal and installation intact.
-Assert-NoReparse (Join-Path $target 'browser-registration.json')
+MP-AssertNoReparse (Join-Path $target 'browser-registration.json')
 & "$target/scripts/register-browser.ps1" -InstallDirectory $target -Unregister
 $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\MaskPilot'
 if ((Test-Path -LiteralPath $key) -and (Get-ItemProperty -LiteralPath $key).InstallLocation -eq $target) { Remove-Item -LiteralPath $key }
@@ -60,3 +59,5 @@ foreach ($directory in $directories | Select-Object -Unique | Sort-Object { $_.L
 }
 if (@(Get-ChildItem -LiteralPath $target -Force).Count -eq 0) { Remove-Item -LiteralPath $target }
 Write-Output 'Uninstalled MaskPilot. Application data, task history and downloaded files were kept.'
+
+} finally { MP-ExitTargetLock $lock }

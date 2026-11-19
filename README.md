@@ -8,7 +8,7 @@
 
 静态站点项目处理公开、同来源 HTTP(S) 页面，使用 libxml2 和 CSS 分词器重写本地引用。实际响应类型用于分类；缺失、冲突或不安全的类型不按文件名猜测。支持 UTF-8、UTF-16、Latin-1／ASCII，移除脚本、表单、嵌入框架及外部自动加载引用，并设置限制内容安全策略；不还原动态应用、登录会话或受保护内容。
 
-解压发布 ZIP 后直接运行 `maskpilot.exe`，或双击 `Install.cmd` 安装到当前用户目录，无需管理员权限。升级前退出程序，再运行新版本的安装脚本。`Uninstall.cmd` 保留任务数据库、配置和已下载文件。
+解压发布 ZIP 后直接运行 `maskpilot.exe`，或双击 `Install.cmd` 安装到当前用户目录，无需管理员权限。升级前退出安装目录内的程序；新版本提供带恢复记录的离线升级。`Uninstall.cmd` 保留任务数据库、配置和已下载文件。
 
 1. 点击“新建下载”，填写地址和保存位置；高级选项提供连接数、校验值、代理、请求头、任务限速与计划时间。
 2. 使用工具栏或右键菜单暂停、恢复、调整优先级、重新下载、刷新链接或登录信息。删除记录保留最终文件；取消任务清理其缓存。
@@ -26,6 +26,26 @@ HTTP 文件只有在服务器提供可验证的强资源标识及 Range 支持�
 成功结果位于所选目录的 `site-<项目编号>/r-<修订>/index.html`。“打开”先核验标记与文件哈希。“更新”重新获取并预览，确认后发布到新修订；失败或取消时仍可打开上一版。旧修订、原始下载和普通任务记录保留，删除项目历史也保留文件。存储正文与输出上限按修订计算，不代表线路流量或总磁盘限额。
 
 本地验证客户端使用 `maskpilot_cli.exe --project REQUEST_JSON DATA_DIRECTORY`，支持 `create`、`preview`、`start`、`pause`、`resume`、`cancel`、`update`、`status`、`list`、`open`、`remove`。请求为有界 JSON，代理凭据仅通过指定的环境变量名传入。UI 与客户端使用同一数据目录锁，不能同时打开同一目录。
+
+## 升级与恢复
+
+从可信渠道独立取得 ZIP 的 SHA-256，使用已信任的安装目录或已校验解压目录中的更新脚本：
+
+```powershell
+$expectedHash = '填写独立取得的64位十六进制SHA256'
+./scripts/update.ps1 -Action Apply -Package D:/downloads/MaskPilot-0.3.0-windows-x64.zip -PackageSha256 $expectedHash -InstallDirectory D:/Apps/MaskPilot
+./scripts/update.ps1 -Action Recover -InstallDirectory D:/Apps/MaskPilot
+./scripts/update.ps1 -Action Rollback -InstallDirectory D:/Apps/MaskPilot
+./scripts/update.ps1 -Action Finalize -InstallDirectory D:/Apps/MaskPilot
+```
+
+`Apply` 在同一个只读文件句柄上校验 ZIP，再验证解压路径、完整文件清单和原安装归属。安装目录中的程序须先退出；遇到未知冲突、文件修改或目录联接会停止并保留现场。包内清单用于一致性检查，独立取得的外部哈希决定本次选择的包。
+
+中断后用 `Recover` 恢复原安装。升级成功保留一份回滚材料：确认效果后 `Finalize` 清理；需要撤销时 `Rollback` 恢复安装文件。下一次升级前应处理这份记录。配置、下载文件和旧浏览器注册记录按归属保留。
+
+可核验的持久检查点支持自动恢复；捕获到写入错误时只清理本次独占创建的半成品。若强制终止或存储故障留下无法核验的截断暂存／日志，工具保留现有安装、备份与现场并报告冲突，需要先人工核验，不猜测删除。新增浏览器的注册按下文步骤另行执行。
+
+回滚只恢复安装文件。新程序已迁移数据库后，旧程序的数据兼容性另行处理；迁移备份为数据目录中的 `tasks.db.before-v<版本>-<编号>.db`，更新工具不覆盖任务数据库或自动回退下载数据。当前提供手动离线升级，在线发现、签名与商店发行仍需发布配置。
 
 ## 代理与凭据
 

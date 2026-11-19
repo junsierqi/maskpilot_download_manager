@@ -1,58 +1,24 @@
 param([string]$InstallDirectory = '', [switch]$NoShortcuts, [switch]$NoBrowserRegistration, [switch]$NoUninstallRegistration)
 $ErrorActionPreference = 'Stop'
+. "$PSScriptRoot/package-common.ps1"
 $source = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..')).TrimEnd('\')
 if (-not $InstallDirectory) { $InstallDirectory = Join-Path $env:LOCALAPPDATA 'Programs/MaskPilot' }
-$target = [IO.Path]::GetFullPath($InstallDirectory).TrimEnd('\')
-function Assert-NoReparse([string]$Path) {
-    while ($Path) {
-        if ((Test-Path -LiteralPath $Path) -and ((Get-Item -LiteralPath $Path -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Installation paths must not contain junctions or symbolic links.' }
-        $parent = Split-Path $Path -Parent
-        if ($parent -eq $Path) { break }
-        $Path = $parent
-    }
-}
-Assert-NoReparse $target
-Assert-NoReparse (Join-Path $target 'maskpilot-install.json')
-if ($target -eq [IO.Path]::GetPathRoot($target) -or $target -eq $env:USERPROFILE -or $target -eq $env:LOCALAPPDATA) { throw 'Choose a dedicated application directory.' }
-if ($target.StartsWith($source + '\',[StringComparison]::OrdinalIgnoreCase)) { throw 'Install outside the package source directory.' }
+$target = MP-GetTarget $InstallDirectory
+$lock = MP-EnterTargetLock $target
+try {
 $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\MaskPilot'
 if (-not $NoUninstallRegistration -and (Test-Path -LiteralPath $key) -and (Get-ItemProperty -LiteralPath $key).InstallLocation -ne $target) { throw 'A different MaskPilot installation owns the uninstall registration.' }
-$ownedFiles = @()
-foreach ($line in Get-Content -LiteralPath "$source/SHA256SUMS.txt") {
-    if ($line -notmatch '^([a-fA-F0-9]{64})  (.+)$') { throw 'Invalid package inventory.' }
-    $hash = $matches[1]; $relative = $matches[2]
-    if ([IO.Path]::IsPathRooted($relative) -or $relative -match '(^|[\\/])\.\.([\\/]|$)|:' -or $relative -eq 'maskpilot-install.json') { throw 'Unsafe package path.' }
-    foreach ($component in ($relative -split '[\\/]')) {
-        if (-not $component -or $component -match '[<>:"|?*\x00-\x1f]' -or $component.EndsWith('.') -or $component.EndsWith(' ') -or $component -match '^(CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|COM[1-9\u00b9\u00b2\u00b3]|LPT[1-9\u00b9\u00b2\u00b3])(\.|$)') { throw 'Invalid Windows package path component.' }
+$result = MP-InstallDirectoryPackage $source $target
+# Same-target upgrades preserve browser paths, settings, prior defaults and ownership hashes.
+if ($result.fresh -and -not $NoBrowserRegistration) {
+    & "$target/scripts/register-browser.ps1" -InstallDirectory $target
+    $installed = MP-ReadInstalled $target
+    foreach ($name in $script:MPDynamic) {
+        $path = MP-Join $target $name
+        if ([IO.File]::Exists($path)) { $installed.value.files += @{path=$name;sha256=(MP-Hash $path)} }
     }
-    $file = [IO.Path]::GetFullPath((Join-Path $source $relative))
-    if (-not $file.StartsWith($source + '\',[StringComparison]::OrdinalIgnoreCase) -or (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ine $hash) { throw "Package integrity check failed: $relative" }
-    $ownedFiles += @{ path=$relative; sha256=$hash }
-    Assert-NoReparse ([IO.Path]::GetFullPath((Join-Path $target $relative)))
+    MP-WriteBytes (Join-Path $target 'maskpilot-install.json') (MP-JsonBytes $installed.value) -Replace
 }
-$ownedFiles += @{ path='SHA256SUMS.txt'; sha256=(Get-FileHash -LiteralPath "$source/SHA256SUMS.txt" -Algorithm SHA256).Hash }
-if ($target -ne $source) {
-    if ((Test-Path -LiteralPath $target) -and @(Get-ChildItem -LiteralPath $target -Force).Count -gt 0 -and -not (Test-Path -LiteralPath "$target/maskpilot-install.json")) { throw 'The target is not an existing MaskPilot installation or an empty directory.' }
-    if (Test-Path -LiteralPath "$target/maskpilot-install.json") {
-        $existing = Get-Content -LiteralPath "$target/maskpilot-install.json" -Raw | ConvertFrom-Json
-        if ($existing.product -ne 'MaskPilot' -or $existing.schema -ne 2 -or $existing.directory -ne $target) { throw 'Invalid existing installation marker.' }
-    }
-    Get-Process maskpilot,maskpilot_native_host -ErrorAction SilentlyContinue | ForEach-Object { if ($_.Path -and $_.Path.StartsWith($target + '\',[StringComparison]::OrdinalIgnoreCase)) { throw 'Close the installed MaskPilot before upgrading.' } }
-    New-Item -ItemType Directory -Path $target -Force | Out-Null
-    foreach ($record in $ownedFiles) {
-        $destination = Join-Path $target $record.path
-        New-Item -ItemType Directory -Path (Split-Path $destination -Parent) -Force | Out-Null
-        Copy-Item -LiteralPath (Join-Path $source $record.path) -Destination $destination -Force
-    }
-}
-$marker = @{ product='MaskPilot'; schema=2; installedAtUtc=[DateTime]::UtcNow.ToString('o'); directory=$target; files=$ownedFiles }
-$marker | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath "$target/maskpilot-install.json" -Encoding UTF8
-if (-not $NoBrowserRegistration) { & "$target/scripts/register-browser.ps1" -InstallDirectory $target }
-foreach ($name in @('native-bridge.json','com.maskpilot.downloads.json','com.maskpilot.downloads.firefox.json','browser-registration.json')) {
-    if (-not $NoBrowserRegistration -and (Test-Path -LiteralPath "$target/$name")) { $ownedFiles += @{ path=$name; sha256=(Get-FileHash -LiteralPath "$target/$name" -Algorithm SHA256).Hash } }
-}
-$marker.files = $ownedFiles
-$marker | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath "$target/maskpilot-install.json" -Encoding UTF8
 if (-not $NoShortcuts) {
     $shell = New-Object -ComObject WScript.Shell
     $menu = Join-Path ([Environment]::GetFolderPath('Programs')) 'MaskPilot'
@@ -66,6 +32,7 @@ if (-not $NoShortcuts) {
 if (-not $NoUninstallRegistration) {
     New-Item -Path $key -Force | Out-Null
     New-ItemProperty -LiteralPath $key -Name DisplayName -Value 'MaskPilot' -PropertyType String -Force | Out-Null
+    New-ItemProperty -LiteralPath $key -Name DisplayVersion -Value $result.version -PropertyType String -Force | Out-Null
     New-ItemProperty -LiteralPath $key -Name InstallLocation -Value $target -PropertyType String -Force | Out-Null
     New-ItemProperty -LiteralPath $key -Name DisplayIcon -Value "$target/maskpilot.exe" -PropertyType String -Force | Out-Null
     $uninstallCommand = '"' + "$env:SystemRoot/System32/WindowsPowerShell/v1.0/powershell.exe" + '" -NoProfile -ExecutionPolicy Bypass -File "' + "$target/scripts/uninstall.ps1" + '"'
@@ -74,3 +41,5 @@ if (-not $NoUninstallRegistration) {
     New-ItemProperty -LiteralPath $key -Name NoRepair -Value 1 -PropertyType DWord -Force | Out-Null
 }
 Write-Output "Installed MaskPilot in $target. Your task database and downloaded files are preserved."
+
+} finally { MP-ExitTargetLock $lock }

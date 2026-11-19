@@ -12,6 +12,14 @@
 
 ## 功能回归
 
+离线升级运行 `powershell -NoProfile -ExecutionPolicy Bypass -File tests/system/package_update_test.ps1 -SourceRoot .`。受控临时目录覆盖旧／新包替换、移除旧文件、回滚与清理、摘要／ZIP 路径／大小写冲突、修改与未知文件、实际进程占用、阶段故障及进程终止恢复。内部故障回调为 fixture-only；ZIP、文件锁、原子替换和恢复使用真实 Windows 文件操作。测试载荷不代表程序或数据库兼容性，实际包与旧数据库升级另验。
+
+另覆盖 64 KiB 写入后的异常、独占临时文件清理及已存在临时文件保留。实际子进程在完整检查点后被终止时验证自动恢复；在暂存流真正截断时验证保留现场与原负载，只有测试器明确修复其自有截断文件后才继续恢复。后一场景不记为自动修复通过，也不推断任意断电／磁盘故障均可自动恢复。
+
+`scripts/package.ps1 -SkipBuild -BuildDirectory <build> -OutputDirectory out/package/preflight-03 -QualificationManifest out/qa/qualification-0.3-long.json -QualificationRuntimeDirectory out/qualification/MaskPilot-0.3.0-runtime` 核对冻结资格并生成独立候选目录、ZIP 和外部 `.sha256`。已有产物不覆盖，重试使用新的输出父目录。私有资格清单不随包分发。
+
+`scripts/smoke.ps1 -PackageDirectory <解压目录> -PackageArchive <ZIP>` 移除开发 PATH／Qt 覆盖值，运行实际桌面、客户端与原生桥接，核对库／插件／版本／许可证，执行安装、同版重装、离线 ZIP 更新、回滚、清理和卸载。保留下载文件，并确认临时进程与目录清理。包的 smoke 和功能测试均不能替代新版本完整长测。
+
 站点项目运行 `python tests/integration/site_project_test.py --exercise <cli.exe>`，覆盖真实创建零请求、HTML／CSS 预览与资源计划、同源／路径／循环限制、明确启动、不可覆盖发布、手动更新、失败或取消后旧版本保留，以及下载中强制退出与明确恢复。设置 `MASKPILOT_TEST_BROWSER=<chromium.exe>` 并传入 `--browser tests/system/site_project_test.mjs`，会在关闭来源后用真实浏览器验证已发布文件、图片解码、CSS 导入、页面往返、零来源请求和无活动脚本。
 
 `ctest --test-dir <build> -R 'SiteProject|ProjectTask|site_project_' --output-on-failure --no-tests=error` 包含 SQLite 12→13、原子项目清单、发布回执、实际 Windows 目录联接拒绝及 Qt 项目控件流程。原生队列窗口／日额度由测试所属时钟和真实 Curl 传输驱动，不修改系统时间。保存失败、旧代回调及精确状态交错属于 fixture-only，补充实际协议、文件和界面证据。`maskpilot_site_project_system_tests.exe --screenshot <绝对路径.png>` 可保存项目视图；设置 `MASKPILOT_TEST_NATIVE_UI=1` 使用原生窗口。测试不执行真正关机。

@@ -1,7 +1,9 @@
-param([string]$Configuration = 'Release', [switch]$SkipBuild, [string]$BuildDirectory)
+param([string]$Configuration = 'Release', [switch]$SkipBuild, [string]$BuildDirectory,
+      [string]$OutputDirectory, [string]$QualificationManifest, [string]$QualificationRuntimeDirectory)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 . "$PSScriptRoot/bootstrap.ps1"
+. "$projectRoot/packaging/windows/package-common.ps1"
 if ($Configuration -ne 'Release') { throw 'Distributable packages require Release binaries.' }
 if ($BuildDirectory -and -not $SkipBuild) { throw 'Use -SkipBuild when packaging an explicit existing build directory.' }
 if (-not $SkipBuild) { & "$PSScriptRoot/build.ps1" -Configuration Release }
@@ -24,19 +26,33 @@ if (-not $version) { throw 'Project version was not found.' }
 if ((Read-BuildCacheValue 'CMAKE_PROJECT_VERSION') -ne $version) { throw 'Build version does not match the current project. Reconfigure and rebuild before packaging.' }
 $clientInfo = & "$buildRoot/maskpilot_cli.exe"
 if ($LASTEXITCODE -ne 0 -or $clientInfo[0] -ne "MaskPilot $version verification client") { throw 'The built verification client is stale or cannot load its runtime.' }
-$packageBase = [IO.Path]::GetFullPath((Join-Path $projectRoot 'out/package'))
+$qualification = $null
+if ([bool]$QualificationManifest -xor [bool]$QualificationRuntimeDirectory) { throw 'Supply both qualification manifest and runtime directory.' }
+if ($QualificationManifest) {
+    & python "$PSScriptRoot/release_manifest.py" verify --root $projectRoot --build-directory $QualificationRuntimeDirectory --manifest $QualificationManifest
+    if ($LASTEXITCODE -ne 0) { throw 'Frozen runtime qualification verification failed.' }
+    $qualification = Get-Content -LiteralPath $QualificationManifest -Raw | ConvertFrom-Json
+}
+$packageRoot = [IO.Path]::GetFullPath((Join-Path $projectRoot 'out/package'))
+$packageBase = if ($OutputDirectory) { [IO.Path]::GetFullPath($OutputDirectory).TrimEnd('\') } else { $packageRoot }
+if ($packageBase -ine $packageRoot -and -not $packageBase.StartsWith($packageRoot + '\',[StringComparison]::OrdinalIgnoreCase)) { throw 'Package output must stay under repository out/package.' }
+MP-AssertNoReparse $packageBase
 $stage = [IO.Path]::GetFullPath((Join-Path $packageBase "MaskPilot-$version-windows-x64"))
 if (-not $stage.StartsWith($packageBase + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw 'Invalid staging path.' }
-if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
-New-Item -ItemType Directory -Path $stage -Force | Out-Null
+$zip = "$stage.zip"
+foreach ($path in @($stage, $zip, "$zip.sha256")) {
+    if (Test-Path -LiteralPath $path) { throw "Refusing to overwrite an existing package artifact: $path. Choose a new -OutputDirectory." }
+}
+New-Item -ItemType Directory -Path $stage | Out-Null
 foreach ($exe in @('maskpilot.exe','maskpilot_cli.exe','maskpilot_native_host.exe')) { Copy-Item -LiteralPath "$buildRoot/$exe" -Destination $stage }
 New-Item -ItemType Directory -Path "$stage/media_guard" -Force | Out-Null
 foreach ($exe in @('ffmpeg.exe','ffprobe.exe')) { Copy-Item -LiteralPath "$buildRoot/media_guard/$exe" -Destination "$stage/media_guard" }
 foreach ($dll in @('libcurl.dll','libz.dll','nghttp2.dll','sqlite3.dll','torrent-rasterbar.dll','libcrypto-3-x64.dll','libssl-3-x64.dll','libxml2.dll')) { Copy-Item -LiteralPath "$projectRoot/out/dependencies/x64-windows/bin/$dll" -Destination $stage }
-& "$env:QT_ROOT_DIR/bin/windeployqt.exe" --release --compiler-runtime --no-opengl-sw --no-system-d3d-compiler --no-system-dxc-compiler --no-ffmpeg --no-plugins --no-translations --dir $stage "$stage/maskpilot.exe"
-if ($LASTEXITCODE -ne 0) { throw 'Qt deployment failed.' }
-# Windows supplies ICU. Do not redistribute a system DLL selected from the build machine.
-if (Test-Path -LiteralPath "$stage/icuuc.dll") { Remove-Item -LiteralPath "$stage/icuuc.dll" -Force }
+# Keep the deployed modules identical to the independently qualified runtime.
+# Windows supplies its own system dependencies, including ICU.
+foreach ($dll in @('Qt6Core.dll','Qt6Gui.dll','Qt6Widgets.dll','Qt6Network.dll','Qt6Svg.dll')) {
+    Copy-Item -LiteralPath "$env:QT_ROOT_DIR/bin/$dll" -Destination $stage
+}
 $runtimeRoot = Get-ChildItem -LiteralPath (Join-Path $env:VSINSTALLDIR 'VC/Redist/MSVC') -Directory | Where-Object { $_.Name -match '^\d+\.\d+\.\d+$' } | Sort-Object { [Version]$_.Name } -Descending | Select-Object -First 1
 if (-not $runtimeRoot) { throw 'MSVC redistributable runtime directory missing.' }
 Copy-Item -Path (Join-Path $runtimeRoot.FullName 'x64/Microsoft.VC143.CRT/*.dll') -Destination $stage
@@ -45,17 +61,31 @@ foreach ($pair in @(@('platforms','qwindows.dll'),@('platforms','qoffscreen.dll'
     $folder = Join-Path $stage ('plugins/' + $pair[0]); New-Item -ItemType Directory -Path $folder -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $env:QT_ROOT_DIR ('plugins/' + $pair[0] + '/' + $pair[1])) -Destination $folder
 }
-Copy-Item -LiteralPath "$env:QT_ROOT_DIR/bin/Qt6Svg.dll" -Destination $stage
 New-Item -ItemType Directory -Path "$stage/translations" -Force | Out-Null
 Copy-Item -LiteralPath "$env:QT_ROOT_DIR/translations/qtbase_zh_CN.qm" -Destination "$stage/translations"
 @('[Paths]','Prefix=.','Plugins=plugins','Translations=translations') | Set-Content -LiteralPath "$stage/qt.conf" -Encoding ASCII
+if ($qualification) {
+    $runtimeFiles = @(Get-ChildItem -LiteralPath $stage -File | Where-Object { $_.Extension -in @('.exe','.dll') -or $_.Name -eq 'qt.conf' })
+    $runtimeFiles += @(Get-ChildItem -LiteralPath "$stage/media_guard" -File | Where-Object { $_.Extension -in @('.exe','.dll') })
+    foreach ($directory in @('plugins','translations','platforms','styles','imageformats','iconengines','networkinformation','tls','generic')) {
+        if (Test-Path -LiteralPath "$stage/$directory") { $runtimeFiles += @(Get-ChildItem -LiteralPath "$stage/$directory" -File -Recurse) }
+    }
+    $actualNames = @($runtimeFiles | ForEach-Object { $_.FullName.Substring($stage.Length + 1).Replace('\','/') } | Sort-Object)
+    $expectedNames = @($qualification.runtime.PSObject.Properties.Name | Sort-Object)
+    if (@(Compare-Object $actualNames $expectedNames).Count) { throw 'Packaged runtime file set differs from the frozen qualification.' }
+    foreach ($entry in $qualification.runtime.PSObject.Properties) {
+        $file = Join-Path $stage $entry.Name
+        if ((Get-Item -LiteralPath $file).Length -ne $entry.Value.size -or (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ine $entry.Value.sha256) { throw "Packaged runtime differs from qualification: $($entry.Name)" }
+    }
+    Write-Output "PASS packaged runtime matches all $($expectedNames.Count) frozen qualification files."
+}
 & npm.cmd --prefix "$projectRoot/browser_extension" run build
 if ($LASTEXITCODE -ne 0) { throw 'Browser extension build failed.' }
 Copy-Item -LiteralPath "$projectRoot/browser_extension/dist" -Destination "$stage/browser_extension" -Recurse
 Copy-Item -LiteralPath "$projectRoot/browser_extension/dist-firefox" -Destination "$stage/browser_extension_firefox" -Recurse
 foreach ($dir in @('scripts','licenses','dependency-sources')) { New-Item -ItemType Directory -Path "$stage/$dir" -Force | Out-Null }
 Copy-Item -LiteralPath "$projectRoot/scripts/register-browser.ps1" -Destination "$stage/scripts"
-Copy-Item -LiteralPath "$projectRoot/packaging/windows/install.ps1","$projectRoot/packaging/windows/uninstall.ps1" -Destination "$stage/scripts"
+Copy-Item -LiteralPath "$projectRoot/packaging/windows/install.ps1","$projectRoot/packaging/windows/uninstall.ps1","$projectRoot/packaging/windows/update.ps1","$projectRoot/packaging/windows/package-common.ps1" -Destination "$stage/scripts"
 Copy-Item -LiteralPath "$projectRoot/packaging/windows/Install.cmd","$projectRoot/packaging/windows/Uninstall.cmd","$projectRoot/README.md","$projectRoot/LICENSE" -Destination $stage
 Copy-Item -LiteralPath "$projectRoot/third_party/NOTICES.md" -Destination "$stage/licenses/NOTICES.md"
 Copy-Item -LiteralPath "$projectRoot/docs" -Destination "$stage/docs" -Recurse
@@ -104,11 +134,26 @@ foreach ($dependency in @(Get-ChildItem -LiteralPath "$projectRoot/out/dependenc
 }
 $licensePath = Join-Path $env:VSINSTALLDIR 'Licenses/1033/Redist.txt'
 Copy-Item -LiteralPath $licensePath -Destination "$stage/licenses/Microsoft-runtime-redistribution.txt"
+$sourceCommit = (& git -C $projectRoot rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0 -or $sourceCommit -notmatch '^[a-f0-9]{40,64}$') { throw 'Cannot identify package source commit.' }
+$sourceStatus = @(& git -C $projectRoot status --porcelain=v1)
+if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect package source status.' }
+$release = [ordered]@{ schema=1; product='MaskPilot'; version=$version; architecture='x64'; sourceCommit=$sourceCommit; sourceDirty=($sourceStatus.Count -ne 0); qtVersion=$qtVersion; compilerVersion=([IO.DirectoryInfo]$env:VCToolsInstallDir).Name }
+if ($qualification) {
+    $release['qualificationManifestSha256'] = (Get-FileHash -LiteralPath $QualificationManifest -Algorithm SHA256).Hash.ToLowerInvariant()
+    $release['qualifiedSourceCommit'] = $qualification.sourceCommit
+}
+[IO.File]::WriteAllText("$stage/release.json",($release | ConvertTo-Json -Depth 4),[Text.UTF8Encoding]::new($false))
 $hashes = Get-ChildItem -LiteralPath $stage -File -Recurse | Sort-Object FullName | ForEach-Object {
     '{0}  {1}' -f (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $_.FullName.Substring($stage.Length + 1).Replace('\','/')
 }
-$hashes | Set-Content -LiteralPath "$stage/SHA256SUMS.txt" -Encoding ASCII
-$zip = "$stage.zip"
-if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
-Compress-Archive -LiteralPath $stage -DestinationPath $zip -CompressionLevel Optimal
+[IO.File]::WriteAllText("$stage/SHA256SUMS.txt",(($hashes -join "`n") + "`n"),[Text.UTF8Encoding]::new($false))
+$zipPending = Join-Path $packageBase ('.MaskPilot-' + $version + '-' + [Guid]::NewGuid().ToString('N') + '.zip')
+Compress-Archive -LiteralPath $stage -DestinationPath $zipPending -CompressionLevel Optimal
+[IO.File]::Move($zipPending,$zip)
+$digest = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+$digestBytes = [Text.Encoding]::ASCII.GetBytes($digest + '  ' + [IO.Path]::GetFileName($zip) + "`n")
+$digestStream = [IO.File]::Open("$zip.sha256",[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+try { $digestStream.Write($digestBytes,0,$digestBytes.Length); $digestStream.Flush($true) } finally { $digestStream.Dispose() }
 Write-Output "Packaged $zip"
+Write-Output "SHA256 $digest"
