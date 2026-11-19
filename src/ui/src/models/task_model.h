@@ -48,6 +48,7 @@
 #include <QStyledItemDelegate>
 #include <QSystemTrayIcon>
 #include <QTableView>
+#include <QTimeZone>
 #include <QTimer>
 #include <QToolBar>
 #include <QUrlQuery>
@@ -84,6 +85,17 @@ inline QString stateText(TaskState state, bool chinese) {
     return chinese && index >= 0 && index < static_cast<int>(std::size(zh))
                ? QString::fromUtf8(zh[index])
                : QString::fromUtf8(stateName(state));
+}
+inline QString scanText(const Task& task, bool chinese) {
+    static const char* en[] = {"Not requested", "Required; pending", "Scanning",          "Reported pass",
+                               "Rejected",      "Scan error",        "Explicitly skipped"};
+    static const char* zh[] = {"未要求",   "需要扫描；待处理", "扫描中",    "扫描程序报告通过",
+                               "扫描拒绝", "扫描错误",         "已明确跳过"};
+    const auto index = static_cast<std::size_t>(task.scanState);
+    auto text = QString::fromUtf8((chinese ? zh : en)[index < std::size(en) ? index : 0]);
+    if (task.scanAt > 0)
+        text += " · " + QDateTime::fromSecsSinceEpoch(task.scanAt, QTimeZone::UTC).toString(Qt::ISODate);
+    return text;
 }
 class TaskModel final : public QAbstractTableModel {
     std::array<QIcon, 4> icons_;
@@ -156,8 +168,9 @@ class TaskModel final : public QAbstractTableModel {
                     ? Qt::AlignRight | Qt::AlignVCenter
                     : Qt::AlignLeft | Qt::AlignVCenter);
         if (role == Qt::ToolTipRole)
-            return pathString(task.spec.destination) +
-                   (task.error.empty() ? QString() : "\n" + qs(task.error));
+            return pathString(task.spec.destination) + "\n" +
+                   (chinese ? QStringLiteral("完成后扫描：") : QStringLiteral("Completion scan: ")) +
+                   scanText(task, chinese) + (task.error.empty() ? QString() : "\n" + qs(task.error));
         if (role == Qt::ForegroundRole) {
             if (index.column() == 4 &&
                 (task.state == TaskState::Failed || task.state == TaskState::NeedsAttention))
@@ -183,6 +196,8 @@ class TaskModel final : public QAbstractTableModel {
         case 3:
             return task.bytesPerSecond > 0 ? bytes(task.bytesPerSecond) + "/s" : QStringLiteral("—");
         case 4:
+            if (task.scanState == ScanState::Scanning && task.state == TaskState::Verifying)
+                return chinese ? QStringLiteral("扫描中") : QStringLiteral("Scanning");
             return stateText(task.state, chinese);
         case 5:
             if (chinese) {

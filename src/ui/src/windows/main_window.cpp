@@ -479,6 +479,20 @@ MainWindow::MainWindow(DownloadService& service, QWidget* parent)
             p.service.pause(task.id);
     });
     tools->addAction(p.t("Settings…", "设置…"), this, [&p] { p.settingsDialog(); });
+    auto* scanSettings = tools->addAction(p.t("Completion scanning…", "完成后扫描…"), this, [this, &p] {
+        cancelCompletionCountdown();
+        p.completionScanDialog();
+    });
+    scanSettings->setObjectName("completionScanSettingsAction");
+    ui::watchFuture(
+        p.service.completionScanIssue(), this,
+        [&p](std::string issue) {
+            if (!issue.empty())
+                p.notify("MaskPilot",
+                         p.t("Completion scanner unavailable. Repair it in Tools → Completion scanning.",
+                             "完成后扫描程序不可用。请在“工具 → 完成后扫描”中修复。"));
+        },
+        [&p](QString issue) { p.notify("MaskPilot", issue); });
     auto* help = menuBar()->addMenu(p.t("Help", "帮助"));
     help->addAction(p.t("About MaskPilot", "关于 MaskPilot"), this, [this, &p] {
         QMessageBox::about(this, "MaskPilot",
@@ -516,6 +530,7 @@ MainWindow::MainWindow(DownloadService& service, QWidget* parent)
                 p.service.remove(task.id);
     });
     connect(p.detailAction, &QAction::triggered, this, [&p] { p.details(); });
+    p.detailAction->setObjectName("taskDetailsAction");
     connect(p.table, &QTableView::doubleClicked, this, [&p](const QModelIndex&) { p.details(); });
     connect(p.table->selectionModel(), &QItemSelectionModel::selectionChanged, this,
             [&p] { p.updateActions(); });
@@ -552,6 +567,21 @@ MainWindow::MainWindow(DownloadService& service, QWidget* parent)
                 task.torrentPublished ? task.spec.destination : task.spec.destination.parent_path())));
         });
         menu.addAction(p.detailAction);
+        if (task.scanRequired || task.scanState == ScanState::Waived) {
+            auto* requirement = menu.addAction(
+                task.scanRequired ? p.t("Explicitly skip scanning for this task", "明确跳过此任务的扫描")
+                                  : p.t("Require scanning for this task", "重新要求扫描此任务"),
+                this, [this, &p, task] {
+                    cancelCompletionCountdown();
+                    ui::watchFuture(
+                        p.service.setCompletionScanRequired(task.id, !task.scanRequired), this,
+                        [&p] { p.refresh(); },
+                        [this](QString issue) { QMessageBox::warning(this, "MaskPilot", issue); });
+                });
+            requirement->setObjectName("scanRequirementAction");
+            requirement->setEnabled(!isActive(task.state) && !isTerminal(task.state) &&
+                                    (task.scanRequired || !task.torrentPublished));
+        }
         menu.addSeparator();
         menu.addAction(p.t("Edit request / sign-in…", "编辑请求 / 登录信息…"), this,
                        [this, &p, task] {

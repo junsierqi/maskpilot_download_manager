@@ -117,6 +117,7 @@ struct MainWindow::Impl {
     void details();
     void torrentDetails(const Task& task);
     void settingsDialog();
+    void completionScanDialog();
     void mediaSupport();
     void exportTasks();
     void importTasks();

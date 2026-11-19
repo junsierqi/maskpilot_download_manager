@@ -20,6 +20,7 @@
 #include <maskpilot/infrastructure/credential_vault.h>
 #include <maskpilot/infrastructure/download_bridge.h>
 #include <maskpilot/infrastructure/media_tools.h>
+#include <maskpilot/ui/completion_scan_settings.h>
 #include <maskpilot/ui/main_window.h>
 
 int main(int argc, char** argv) {
@@ -97,7 +98,9 @@ int main(int argc, char** argv) {
                 maskpilot::InitialQueueLimits{settings.value("concurrentTasks", 3).toInt(),
                                               settings.value("globalLimit", 0).toLongLong() * 1024,
                                               settings.value("globalUploadLimit", 0).toLongLong() * 1024},
-                std::move(store.traffic)});
+                std::move(store.traffic)},
+            maskpilot::CompletionScanDependencies{maskpilot::ui::loadCompletionScanSettings(settings),
+                                                  maskpilot::makeCompletionScanner});
         std::unique_ptr<maskpilot::SiteProjectService> projects;
         try {
             projects = std::make_unique<maskpilot::SiteProjectService>(

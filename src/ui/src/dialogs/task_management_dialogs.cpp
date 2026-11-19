@@ -14,11 +14,13 @@ void MainWindow::Impl::details() {
         return;
     }
     auto* dialog = new QDialog(window);
+    dialog->setObjectName("taskDetailsDialog");
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     dialog->resize(640, 420);
     dialog->setWindowTitle(t("Download details", "任务详情"));
     auto* layout = new QVBoxLayout(dialog);
     auto* text = new QPlainTextEdit;
+    text->setObjectName("taskDetailsText");
     text->setReadOnly(true);
     layout->addWidget(text);
     auto update = [this, text, id = task.id] {
@@ -36,7 +38,8 @@ void MainWindow::Impl::details() {
             t("Connections: ", "连接数：") + QString::number(it->spec.connections) + "\n" +
             t("Resume identity: ", "续传身份验证：") +
             (it->resumable ? t("Validated", "已验证") : t("Not available", "不可用")) + "\n" +
-            t("Retries: ", "重试次数：") + QString::number(it->retries) + "\n\n" + qs(it->error));
+            t("Retries: ", "重试次数：") + QString::number(it->retries) + "\n" +
+            t("Completion scan: ", "完成后扫描：") + scanText(*it, chinese) + "\n\n" + qs(it->error));
     };
     update();
     auto* tick = new QTimer(dialog);

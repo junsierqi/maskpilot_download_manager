@@ -78,7 +78,8 @@ void MainWindow::Impl::torrentDetails(const Task& initial) {
                         bytes(it->bytesPerSecond) + "/s  ·  " + t("Upload ", "上传 ") +
                         bytes(it->uploadSpeed) + "/s  ·  " + t("Peers / seeds ", "连接 / 种子 ") +
                         QString::number(it->peers) + " / " + QString::number(it->seeds) + "\n" +
-                        qs(it->torrent.infoHash) + (it->error.empty() ? QString() : "\n" + qs(it->error)));
+                        qs(it->torrent.infoHash) + "\n" + t("Completion scan: ", "完成后扫描：") +
+                        scanText(*it, chinese) + (it->error.empty() ? QString() : "\n" + qs(it->error)));
         if (it->torrent.files != view->files) {
             files->clear();
             view->files = it->torrent.files;
