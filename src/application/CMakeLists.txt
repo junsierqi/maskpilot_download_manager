@@ -1,4 +1,5 @@
 add_library(maskpilot_application src/download_service.cpp src/context_registry.cpp src/queue_registry.cpp src/payload_budget.cpp)
 target_sources(maskpilot_application PRIVATE src/site_project_service.cpp)
+target_sources(maskpilot_application PRIVATE src/browser_recovery_registry.cpp)
 target_include_directories(maskpilot_application PUBLIC include)
 target_link_libraries(maskpilot_application PUBLIC maskpilot_domain)

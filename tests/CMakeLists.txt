@@ -1,5 +1,6 @@
 add_executable(maskpilot_tests unit/domain_test.cpp integration/engine_test.cpp integration/credential_vault_test.cpp integration/context_test.cpp unit/context_ui_test.cpp unit/task_list_test.cpp)
 target_sources(maskpilot_tests PRIVATE unit/http_layout_test.cpp)
+target_sources(maskpilot_tests PRIVATE unit/browser_recovery_test.cpp)
 target_sources(maskpilot_tests PRIVATE unit/queue_test.cpp integration/queue_store_test.cpp unit/queue_ui_test.cpp)
 target_sources(maskpilot_tests PRIVATE unit/queue_schedule_test.cpp)
 target_sources(maskpilot_tests PRIVATE unit/traffic_budget_test.cpp integration/traffic_store_test.cpp)
@@ -21,6 +22,10 @@ gtest_discover_tests(maskpilot_tests DISCOVERY_MODE PRE_TEST WORKING_DIRECTORY "
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 add_test(NAME local_http_product_path COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/support/http_fixture.py --exercise $<TARGET_FILE:maskpilot_cli>)
 set_tests_properties(local_http_product_path PROPERTIES TIMEOUT 120)
+add_test(NAME browser_recovery_product_path COMMAND ${Python3_EXECUTABLE}
+  ${CMAKE_CURRENT_SOURCE_DIR}/integration/browser_recovery_test.py
+  --desktop $<TARGET_FILE:maskpilot> --host $<TARGET_FILE:maskpilot_native_host>)
+set_tests_properties(browser_recovery_product_path PROPERTIES TIMEOUT 120)
 add_test(NAME adaptive_http_product_path COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/integration/adaptive_http_test.py --exercise $<TARGET_FILE:maskpilot_cli>)
 set_tests_properties(adaptive_http_product_path PROPERTIES TIMEOUT 150)
 add_test(NAME native_payload_budget_product_path COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/integration/native_budget_test.py --exercise $<TARGET_FILE:maskpilot_cli>)

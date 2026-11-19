@@ -76,6 +76,17 @@ bool controls(const QString& value) {
     return std::any_of(value.begin(), value.end(),
                        [](QChar ch) { return ch.unicode() < 0x20 || ch.unicode() == 0x7f; });
 }
+std::string httpSource(const QJsonObject& object, const QString& key, bool required = false) {
+    const auto raw = text(object, key, 32768, required);
+    if (raw.isEmpty() && !required)
+        return {};
+    auto url = QUrl::fromEncoded(raw.toUtf8(), QUrl::StrictMode);
+    if (!url.isValid() || url.host().isEmpty() || (url.scheme() != "http" && url.scheme() != "https") ||
+        !url.userName().isEmpty() || !url.password().isEmpty())
+        invalid();
+    url.setFragment({});
+    return url.toEncoded().toStdString();
+}
 QJsonObject safeContext(const DownloadContext& context) {
     return {{"id", qs(context.id)},
             {"externalKey", qs(context.externalKey)},
@@ -240,6 +251,30 @@ struct DownloadBridge::Impl {
             await(
                 service.add(std::move(spec), requestId), std::move(answer),
                 [](const std::string& value) { return QJsonObject{{"taskId", qs(value)}}; }, true);
+        } else if (command == "recovery.begin") {
+            fields(request, {"version", "requestId", "command", "taskId"});
+            await(service.beginBrowserRecovery(id(request, "taskId")), std::move(answer),
+                  [](const BrowserRecoverySession& session) {
+                      return QJsonObject{{"taskId", qs(session.taskId)},
+                                         {"recoveryToken", qs(session.token)},
+                                         {"name", qs(session.name)},
+                                         {"pageUrl", qs(session.pageUrl)},
+                                         {"expiresAt", static_cast<double>(session.expiresAt)}};
+                  });
+        } else if (command == "recovery.apply") {
+            fields(request, {"version", "requestId", "command", "recoveryToken", "url", "cookie", "referrer",
+                             "userAgent"});
+            BrowserRecoveryMaterial material{
+                httpSource(request, "url", true), text(request, "cookie", 16384).toStdString(),
+                httpSource(request, "referrer"), text(request, "userAgent", 1024).toStdString()};
+            await(
+                service.applyBrowserRecovery(id(request, "recoveryToken"), std::move(material)),
+                std::move(answer),
+                [](const std::string& value) { return QJsonObject{{"taskId", qs(value)}}; }, true);
+        } else if (command == "recovery.cancel") {
+            fields(request, {"version", "requestId", "command", "recoveryToken"});
+            await(service.cancelBrowserRecovery(id(request, "recoveryToken")), std::move(answer),
+                  [] { return QJsonObject{}; });
         } else if (command == "ping") {
             fields(request, {"version", "requestId", "command"});
             answer(true, {}, {});

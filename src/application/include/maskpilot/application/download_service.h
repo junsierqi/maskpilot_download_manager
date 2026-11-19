@@ -1,5 +1,6 @@
 #pragma once
 #include <future>
+#include <maskpilot/application/browser_recovery.h>
 #include <maskpilot/application/download_context.h>
 #include <maskpilot/application/media.h>
 #include <maskpilot/application/ports.h>
@@ -64,6 +65,10 @@ class DownloadService {
                                                    bool rememberProxy);
     std::future<void> forgetSavedProxyCredentials(const std::string& id);
     std::future<void> retryCredentialCleanup();
+    // Narrow standalone browser recovery; no path, route or ownership changes.
+    std::future<BrowserRecoverySession> beginBrowserRecovery(std::string taskId);
+    std::future<std::string> applyBrowserRecovery(std::string token, BrowserRecoveryMaterial);
+    std::future<void> cancelBrowserRecovery(std::string token);
     void restart(const std::string& id);
     void schedule(const std::string& id, std::int64_t startAt, std::int64_t stopAt);
     std::vector<Task> snapshot() const;

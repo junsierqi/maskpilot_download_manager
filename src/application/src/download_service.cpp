@@ -1,3 +1,4 @@
+#include "browser_recovery_registry.h"
 #include "context_registry.h"
 #include "payload_budget.h"
 #include "queue_registry.h"
@@ -107,6 +108,7 @@ struct DownloadService::Impl {
     std::jthread coordinator;
     std::atomic_bool stopping{false};
     bool healthy = true;
+    BrowserRecoveryRegistry browserRecovery;
     int concurrentTasks = 3;
     std::int64_t globalLimit = 0, globalUploadLimit = 0;
 
@@ -371,6 +373,7 @@ struct DownloadService::Impl {
             if (jobs.contains(id))
                 return false;
             repository->erase(id);
+            browserRecovery.invalidate(id);
             clearOwnedParts(task);
             tasks.erase(it);
             return true;
@@ -421,6 +424,7 @@ struct DownloadService::Impl {
         task.spec.originAuthenticationRequired = task.originAuthenticationRequired;
         task.updatedAt = unixTime();
         repository->save(task);
+        browserRecovery.invalidate(task.id);
     }
     void clearOwnedParts(const Task& task) {
         const auto folder = workDirectory / task.id;
@@ -1215,6 +1219,7 @@ std::future<void> DownloadService::moveToQueue(std::vector<std::string> ids, std
         for (const auto& id : ids) {
             p->tasks.at(id).queueId = target;
             p->tasks.at(id).updatedAt = now;
+            p->browserRecovery.invalidate(id);
         }
         p->publish();
     });
@@ -1436,6 +1441,34 @@ void DownloadService::schedule(const std::string& id, std::int64_t startAt, std:
         task.state = startAt > p->queueRegistry->now() ? TaskState::Scheduled : TaskState::Queued;
         p->save(task);
     });
+}
+std::future<BrowserRecoverySession> DownloadService::beginBrowserRecovery(std::string taskId) {
+    return impl_->request([p = impl_.get(), taskId = std::move(taskId)] {
+        const auto found = p->tasks.find(taskId);
+        if (!p->healthy || found == p->tasks.end() || p->jobs.contains(taskId))
+            throw std::invalid_argument("Pause an unfinished standalone HTTP task before browser recovery.");
+        return p->browserRecovery.begin(found->second, p->queueRegistry->now());
+    });
+}
+std::future<std::string> DownloadService::applyBrowserRecovery(std::string token,
+                                                               BrowserRecoveryMaterial material) {
+    return impl_->request(
+        [p = impl_.get(), token = std::move(token), material = std::move(material)]() mutable {
+            const auto now = p->queueRegistry->now();
+            const auto taskId = p->browserRecovery.taskId(token, now);
+            const auto found = p->tasks.find(taskId);
+            if (!p->healthy || found == p->tasks.end() || p->jobs.contains(taskId))
+                throw std::invalid_argument("Browser recovery is no longer available for this task.");
+            p->browserRecovery.apply(token, found->second, std::move(material), now, [p](Task& candidate) {
+                p->save(candidate);
+                p->tasks.at(candidate.id) = candidate;
+                p->publish();
+            });
+            return taskId;
+        });
+}
+std::future<void> DownloadService::cancelBrowserRecovery(std::string token) {
+    return impl_->request([p = impl_.get(), token = std::move(token)] { p->browserRecovery.cancel(token); });
 }
 std::string DownloadService::lastError() const {
     std::lock_guard lock(impl_->mutex);
