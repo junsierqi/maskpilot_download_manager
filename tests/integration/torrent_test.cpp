@@ -1555,7 +1555,6 @@ TEST(TorrentEngine, UnifiedRouterCapturesDurablyAndDispatchesQueuedTorrentToVeri
     fixture.expectPayload(task.spec.destination);
 }
 
-#ifdef _WIN32
 TEST(TorrentEngine, ActualCliCapturesAndDownloadsLocalTorrentWithoutPublicDiscovery) {
     TorrentFixture fixture;
     const auto source = fixture.temporary.path / "source.torrent";
@@ -1563,8 +1562,9 @@ TEST(TorrentEngine, ActualCliCapturesAndDownloadsLocalTorrentWithoutPublicDiscov
     std::filesystem::path cli;
     const auto configured = qEnvironmentVariable("MASKPILOT_TEST_CLI");
     if (!configured.isEmpty())
-        cli = std::filesystem::path(configured.toStdWString());
+        cli = std::filesystem::path(configured.toStdU16String());
     else {
+#ifdef _WIN32
         std::array<wchar_t, 32768> executable{};
         const auto length =
             GetModuleFileNameW(nullptr, executable.data(), static_cast<DWORD>(executable.size()));
@@ -1574,6 +1574,12 @@ TEST(TorrentEngine, ActualCliCapturesAndDownloadsLocalTorrentWithoutPublicDiscov
         cli = directory / "maskpilot_cli.exe";
         if (!std::filesystem::is_regular_file(cli))
             cli = directory.parent_path() / "maskpilot_cli.exe";
+#else
+        const auto directory = std::filesystem::read_symlink("/proc/self/exe").parent_path();
+        cli = directory / "maskpilot_cli";
+        if (!std::filesystem::is_regular_file(cli))
+            cli = directory.parent_path() / "maskpilot_cli";
+#endif
     }
     ASSERT_TRUE(std::filesystem::is_regular_file(cli)) << pathText(cli);
     const auto destination = fixture.temporary.path / "cli-output";
@@ -1581,16 +1587,22 @@ TEST(TorrentEngine, ActualCliCapturesAndDownloadsLocalTorrentWithoutPublicDiscov
     QProcess process;
     if (qEnvironmentVariable("MASKPILOT_TEST_CLEAN_CLI_ENV") == "1") {
         auto environment = QProcessEnvironment::systemEnvironment();
+#ifdef _WIN32
         const auto systemRoot = environment.value("SystemRoot");
         ASSERT_FALSE(systemRoot.isEmpty());
         environment.insert("PATH", systemRoot + "\\System32;" + systemRoot);
+#else
+        environment.insert("PATH", "/usr/bin:/bin");
+#endif
         for (const auto* name : {"QT_ROOT_DIR", "QT_PLUGIN_PATH", "QT_QPA_PLATFORM_PLUGIN_PATH",
                                  "QML2_IMPORT_PATH", "QT_QPA_PLATFORM"})
             environment.remove(name);
         process.setProcessEnvironment(environment);
     }
+#ifdef _WIN32
     process.setCreateProcessArgumentsModifier(
         [](QProcess::CreateProcessArguments* arguments) { arguments->flags |= CREATE_NO_WINDOW; });
+#endif
     struct Cleanup {
         QProcess& child;
         ~Cleanup() {
@@ -1600,9 +1612,10 @@ TEST(TorrentEngine, ActualCliCapturesAndDownloadsLocalTorrentWithoutPublicDiscov
             }
         }
     } cleanup{process};
-    process.start(QString::fromStdWString(cli.wstring()),
-                  {"--bt-no-discovery", QString::fromStdWString(source.wstring()),
-                   QString::fromStdWString(destination.wstring()), QString::fromStdWString(data.wstring())});
+    process.start(QString::fromStdU16String(cli.u16string()),
+                  {"--bt-no-discovery", QString::fromStdU16String(source.u16string()),
+                   QString::fromStdU16String(destination.u16string()),
+                   QString::fromStdU16String(data.u16string())});
     ASSERT_TRUE(process.waitForStarted(10000)) << process.errorString().toStdString();
     if (!process.waitForFinished(45000)) {
         process.kill();
@@ -1622,6 +1635,7 @@ TEST(TorrentEngine, ActualCliCapturesAndDownloadsLocalTorrentWithoutPublicDiscov
     EXPECT_EQ(*persisted[0].spec.torrent.metadata, *fixture.metadata);
 }
 
+#ifdef _WIN32
 TEST(TorrentEngine, CaptureMetadataRejectsUncAndDeviceSourcesBeforeOpeningThem) {
     TemporaryDirectory temporary;
     maskpilot::DownloadSpec spec;

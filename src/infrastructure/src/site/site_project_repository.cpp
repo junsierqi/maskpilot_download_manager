@@ -21,7 +21,7 @@ constexpr qsizetype manifestLimit = 4 * 1024 * 1024;
 [[noreturn]] void invalid() {
     throw std::runtime_error("Invalid or changed project storage. Existing files were preserved.");
 }
-QString text(const fs::path& value) { return QString::fromStdWString(value.wstring()); }
+QString text(const fs::path& value) { return QString::fromStdU16String(value.u16string()); }
 QString string(const std::string& value) { return QString::fromStdString(value); }
 bool opaque(const std::string& value) {
     return value.size() == 32 && std::all_of(value.begin(), value.end(), [](unsigned char c) {

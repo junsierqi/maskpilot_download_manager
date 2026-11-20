@@ -144,7 +144,7 @@ std::string validateSpec(const DownloadSpec& spec) {
                 const auto text = spec.url.substr(8);
                 const std::filesystem::path path(std::u8string(text.begin(), text.end()));
                 if (!path.is_absolute() || path.filename().empty() || text.starts_with("\\\\") ||
-                    text.starts_with("//"))
+                    text.starts_with("//") || text.starts_with("/\\"))
                     return "Choose an absolute local torrent file path.";
 #ifdef _WIN32
                 const auto root = path.root_name().native();

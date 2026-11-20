@@ -32,6 +32,11 @@
 #include <tuple>
 #ifdef _WIN32
 #include <windows.h>
+#elif defined(__linux__)
+#include <fcntl.h>
+#include <linux/fs.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 #endif
 
 namespace maskpilot {
@@ -202,8 +207,12 @@ void publish(Storage& storage) {
     if (!MoveFileExW(storage.stage.c_str(), storage.final.c_str(), MOVEFILE_WRITE_THROUGH))
         throw std::runtime_error(
             "Cannot publish torrent directory. Existing destination and staged files were preserved.");
+#elif defined(__linux__)
+    if (syscall(SYS_renameat2, AT_FDCWD, storage.stage.c_str(), AT_FDCWD, storage.final.c_str(),
+                RENAME_NOREPLACE) != 0)
+        throw std::runtime_error(
+            "Cannot publish torrent directory. Existing destination and staged files were preserved.");
 #else
-    // This product currently targets Windows; require an atomic no-replace primitive before other ports.
     throw std::runtime_error("Atomic torrent publication is not supported on this platform.");
 #endif
     storage.published = true;
@@ -255,7 +264,6 @@ void verifyPublishedFiles(const Storage& storage, const TransferDescription& des
         if (!std::filesystem::is_regular_file(path) ||
             std::filesystem::file_size(path) != static_cast<std::uint64_t>(file.size))
             throw std::runtime_error("Verified torrent output is missing or has changed size.");
-#ifdef _WIN32
         if (prune) {
             auto* output = files::openFile(path, L"rb+");
             if (!output)
@@ -268,7 +276,6 @@ void verifyPublishedFiles(const Storage& storage, const TransferDescription& des
                 throw;
             }
         }
-#endif
     }
 }
 struct Job {

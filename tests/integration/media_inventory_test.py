@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import select
 import sqlite3
 import subprocess
 import sys
@@ -150,8 +151,6 @@ def inspect_case(client, parser, muxer, root, origin, options=(), environment=No
 
 
 def argv_case(client, parser, muxer, root, origin):
-    if os.name != 'nt':
-        raise AssertionError('This actual argv qualification requires the Windows test target')
     root.mkdir()
     origin.hold = True
     environment = os.environ.copy()
@@ -165,11 +164,37 @@ def argv_case(client, parser, muxer, root, origin):
     process = subprocess.Popen(command, env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
         assert origin.seen.wait(timeout=15), 'Actual helper never reached the held proxy origin'
-        script = (f'Get-CimInstance Win32_Process -Filter "ParentProcessId = {process.pid}" | '
-                  'Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress')
-        snapshot = execute(['powershell', '-NoProfile', '-NonInteractive', '-Command', script], timeout=10)
-        children = json.loads(snapshot.stdout.decode('utf-8-sig'))
-        if isinstance(children, dict): children = [children]
+        if os.name == 'nt':
+            script = (f'Get-CimInstance Win32_Process -Filter "ParentProcessId = {process.pid}" | '
+                      'Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress')
+            snapshot = execute(['powershell', '-NoProfile', '-NonInteractive', '-Command', script], timeout=10)
+            children = json.loads(snapshot.stdout.decode('utf-8-sig'))
+            if isinstance(children, dict): children = [children]
+        else:
+            children = []
+            for proc in Path('/proc').iterdir():
+                if not proc.name.isdecimal():
+                    continue
+                try:
+                    descriptor = os.pidfd_open(int(proc.name))
+                except ProcessLookupError:
+                    continue
+                try:
+                    poller = select.poll(); poller.register(descriptor, select.POLLIN)
+                    if poller.poll(0):
+                        continue
+                    before = (proc / 'stat').read_text().rsplit(')', 1)[1].split()
+                    if int(before[1]) != process.pid:
+                        continue
+                    arguments = (proc / 'cmdline').read_bytes().split(b'\0')
+                    after = (proc / 'stat').read_text().rsplit(')', 1)[1].split()
+                    assert before[19] == after[19] and not poller.poll(0), 'Helper exited during argv observation'
+                    children.append(dict(ProcessId=int(proc.name),
+                        CommandLine=[argument.decode('utf-8') for argument in arguments if argument]))
+                except FileNotFoundError:
+                    continue
+                finally:
+                    os.close(descriptor)
         assert children, 'No actual owned helper argv was observed'
         arguments = json.dumps(children)
         for private in (USERNAME, PASSWORD, 'private_query_marker', 'owned-argv-164'):

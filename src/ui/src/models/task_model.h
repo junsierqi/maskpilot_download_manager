@@ -63,7 +63,7 @@
 namespace maskpilot {
 
 inline QString qs(const std::string& s) { return QString::fromStdString(s); }
-inline QString pathString(const std::filesystem::path& p) { return QString::fromStdWString(p.wstring()); }
+inline QString pathString(const std::filesystem::path& p) { return QString::fromStdU16String(p.u16string()); }
 inline QString bytes(std::int64_t value) {
     if (value < 0)
         return QStringLiteral("—");

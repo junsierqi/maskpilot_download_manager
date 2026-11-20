@@ -1,3 +1,4 @@
+#include "../../src/infrastructure/src/filesystem/transfer_files.h"
 #include "../../src/infrastructure/src/process/owned_process.h"
 #include <QCoreApplication>
 #include <QCryptographicHash>
@@ -40,6 +41,26 @@ template <class F> void failure(CredentialVaultFailure expected, F action) {
     } catch (const CredentialVaultError& error) {
         EXPECT_EQ(error.failure(), expected);
     }
+}
+TEST(LinuxFiles, PreservesExclusiveCreationAndReadWriteModes) {
+    QTemporaryDir temporary;
+    ASSERT_TRUE(temporary.isValid());
+    const auto file = path(temporary.path()) / u"模式.bin";
+    std::ofstream(file, std::ios::binary) << "original";
+    auto* exclusive = transfer_files::openFile(file, L"wbx");
+    if (exclusive)
+        fclose(exclusive);
+    EXPECT_EQ(exclusive, nullptr) << "Exclusive creation must never truncate an existing download";
+    std::ifstream preserved(file, std::ios::binary);
+    EXPECT_EQ(std::string(std::istreambuf_iterator<char>(preserved), {}), "original");
+    preserved.close();
+    auto* update = transfer_files::openFile(file, L"rb+");
+    ASSERT_NE(update, nullptr);
+    EXPECT_EQ(fwrite("updated!", 1, 8, update), 8u);
+    EXPECT_NO_THROW(transfer_files::syncFile(update));
+    fclose(update);
+    std::ifstream changed(file, std::ios::binary);
+    EXPECT_EQ(std::string(std::istreambuf_iterator<char>(changed), {}), "updated!");
 }
 TEST(LinuxHash, IndependentVectorsUnicodeConcurrentCancellationAndReadFailure) {
     QTemporaryDir temporary;

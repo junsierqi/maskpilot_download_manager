@@ -14,7 +14,13 @@ FILE* openFile(const std::filesystem::path& path, const wchar_t* mode) {
     _wfopen_s(&file, path.c_str(), mode);
     return file;
 #else
-    return fopen(path.c_str(), mode[0] == L'a' ? "ab" : mode[0] == L'r' ? "rb" : "wb");
+    std::string nativeMode;
+    for (const auto* unit = mode; *unit; ++unit) {
+        if (*unit < 0 || *unit > 127)
+            return nullptr;
+        nativeMode.push_back(static_cast<char>(*unit));
+    }
+    return fopen(path.c_str(), nativeMode.c_str());
 #endif
 }
 void syncFile(FILE* file) {

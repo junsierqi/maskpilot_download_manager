@@ -15,13 +15,20 @@
 #include <algorithm>
 #include <array>
 #include <iostream>
+#include <vector>
 #ifdef _WIN32
 #include <fcntl.h>
 #include <io.h>
+#include <windows.h>
 #endif
 
 namespace {
 constexpr quint32 kMaxMessage = 1024 * 1024;
+#ifdef _WIN32
+constexpr auto pathCase = Qt::CaseInsensitive;
+#else
+constexpr auto pathCase = Qt::CaseSensitive;
+#endif
 void respond(QJsonObject message) {
     const auto bytes = QJsonDocument(message).toJson(QJsonDocument::Compact);
     auto length = qToLittleEndian(static_cast<quint32>(bytes.size()));
@@ -61,10 +68,23 @@ bool firefoxInvocation(const QStringList& arguments, const QJsonObject& config,
         std::any_of(manifestArgument.begin(), manifestArgument.end(),
                     [](QChar c) { return c.unicode() < 32 || c.unicode() == 127; }))
         return false;
-    const auto expected = QDir(applicationDirectory).absoluteFilePath("com.maskpilot.downloads.firefox.json");
+    auto expected = QDir(applicationDirectory).absoluteFilePath("com.maskpilot.downloads.firefox.json");
+#ifdef __linux__
+    if (config.contains("firefoxManifestPath")) {
+        const auto value = config.value("firefoxManifestPath");
+        if (!value.isString())
+            return false;
+        const auto registered = value.toString();
+        if (!QDir::isAbsolutePath(registered) || registered.startsWith("//") ||
+            std::any_of(registered.begin(), registered.end(),
+                        [](QChar c) { return c.unicode() < 32 || c.unicode() == 127; }))
+            return false;
+        expected = QDir::cleanPath(registered);
+    }
+#endif
     // Reject arbitrary/remote paths lexically before querying or opening them.
     if (QDir::cleanPath(QDir::fromNativeSeparators(manifestArgument))
-            .compare(QDir::cleanPath(expected), Qt::CaseInsensitive) != 0)
+            .compare(QDir::cleanPath(expected), pathCase) != 0)
         return false;
     bool registered = false;
     for (const auto& value : config.value("allowedFirefoxExtensions").toArray())
@@ -89,12 +109,12 @@ bool firefoxInvocation(const QStringList& arguments, const QJsonObject& config,
     const auto target = manifest.value("path").toString();
     if (!QDir::isAbsolutePath(target) ||
         QDir::cleanPath(QDir::fromNativeSeparators(target))
-                .compare(QDir::cleanPath(QCoreApplication::applicationFilePath()), Qt::CaseInsensitive) != 0)
+                .compare(QDir::cleanPath(QCoreApplication::applicationFilePath()), pathCase) != 0)
         return false;
     const auto canonical = QFileInfo(target).canonicalFilePath();
     if (canonical.isEmpty() ||
-        canonical.compare(QFileInfo(QCoreApplication::applicationFilePath()).canonicalFilePath(),
-                          Qt::CaseInsensitive) != 0)
+        canonical.compare(QFileInfo(QCoreApplication::applicationFilePath()).canonicalFilePath(), pathCase) !=
+            0)
         return false;
     for (const auto& entry : manifest.value("allowed_extensions").toArray())
         if (entry.isString() && entry.toString() == geckoId)
@@ -200,8 +220,13 @@ int main(int argc, char** argv) {
                : QDir(config.value("dataDirectory")
                           .toString(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)))
                      .absolutePath();
-    const auto desktop = config.value("desktopPath")
-                             .toString(QDir(application.applicationDirPath()).filePath("maskpilot.exe"));
+#ifdef _WIN32
+    constexpr auto desktopName = "maskpilot.exe";
+#else
+    constexpr auto desktopName = "maskpilot";
+#endif
+    const auto desktop =
+        config.value("desktopPath").toString(QDir(application.applicationDirPath()).filePath(desktopName));
     QLocalSocket socket;
     bool launched = false;
     QElapsedTimer timeout;
@@ -212,7 +237,44 @@ int main(int argc, char** argv) {
         if (socket.waitForConnected(200))
             break;
         if (!launched) {
-            if (!QProcess::startDetached(desktop, {"--background", "--data-dir", data}))
+            QProcess launcher;
+            launcher.setProgram(desktop);
+            launcher.setArguments({"--background", "--data-dir", data});
+            // The persistent desktop must not retain the browser's native
+            // messaging pipes after this one-response host exits.
+            launcher.setStandardInputFile(QProcess::nullDevice());
+            launcher.setStandardOutputFile(QProcess::nullDevice());
+            launcher.setStandardErrorFile(QProcess::nullDevice());
+#ifdef _WIN32
+            SIZE_T attributeSize = 0;
+            InitializeProcThreadAttributeList(nullptr, 1, 0, &attributeSize);
+            std::vector<unsigned char> attributeMemory(attributeSize);
+            auto* attributes = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attributeMemory.data());
+            if (!InitializeProcThreadAttributeList(attributes, 1, 0, &attributeSize))
+                return fail("Cannot isolate MaskPilot desktop handles.");
+            struct AttributeCleanup {
+                LPPROC_THREAD_ATTRIBUTE_LIST value;
+                ~AttributeCleanup() { DeleteProcThreadAttributeList(value); }
+            } attributeCleanup{attributes};
+            STARTUPINFOEXW startup{};
+            std::array<HANDLE, 3> inherited{};
+            launcher.setCreateProcessArgumentsModifier([&](QProcess::CreateProcessArguments* args) {
+                startup.StartupInfo = *reinterpret_cast<STARTUPINFOW*>(args->startupInfo);
+                startup.StartupInfo.cb = sizeof(startup);
+                startup.lpAttributeList = attributes;
+                inherited = {startup.StartupInfo.hStdInput, startup.StartupInfo.hStdOutput,
+                             startup.StartupInfo.hStdError};
+                if (!UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                                               inherited.data(), sizeof(inherited), nullptr, nullptr)) {
+                    args->applicationName = L"";
+                    return;
+                }
+                args->startupInfo = reinterpret_cast<Q_STARTUPINFO*>(&startup);
+                args->flags |= EXTENDED_STARTUPINFO_PRESENT;
+                args->inheritHandles = true;
+            });
+#endif
+            if (!launcher.startDetached())
                 return fail("Cannot start MaskPilot desktop.");
             launched = true;
         }

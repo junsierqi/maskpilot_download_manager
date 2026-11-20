@@ -8,8 +8,11 @@ import json
 import os
 from pathlib import Path
 import re
+import select
+import signal
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -126,6 +129,33 @@ def child_gone(identity_path, scanner):
     """Only terminate a leaked fixture child after exact image and creation-time checks."""
     assert identity_path.is_file(), 'Owned scanner did not start its actual descendant'
     value = json.loads(identity_path.read_text(encoding='utf-8'))
+    if sys.platform == 'linux':
+        try:
+            handle = os.pidfd_open(value['pid'])
+        except ProcessLookupError:
+            return
+        try:
+            poller = select.poll()
+            poller.register(handle, select.POLLIN)
+            if poller.poll(0):
+                return
+            try:
+                proc = Path('/proc') / str(value['pid'])
+                stamp = (proc / 'stat').read_text().rsplit(')', 1)[1].split()[19]
+                image = (proc / 'exe').resolve(strict=True)
+            except FileNotFoundError:
+                assert poller.poll(3000), 'Owned descendant changed identity while running'
+                return
+            if stamp != value['created'] or image != scanner.resolve():
+                return  # Never signal a reused PID.
+            exited = bool(poller.poll(3000))
+            if not exited:
+                signal.pidfd_send_signal(handle, signal.SIGKILL)
+                assert poller.poll(5000), 'Cannot clean up verified fixture descendant'
+            assert exited, 'Owned scanner descendant survived owner termination'
+        finally:
+            os.close(handle)
+        return
     kernel = ctypes.WinDLL('kernel32', use_last_error=True)
     kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     kernel.OpenProcess.restype = wintypes.HANDLE

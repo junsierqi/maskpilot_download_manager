@@ -17,7 +17,13 @@ void MainWindow::Impl::mediaSupport() {
         auto* browse = new QPushButton(t("Locate…", "选择…"));
         line->addWidget(browse);
         QObject::connect(browse, &QPushButton::clicked, dialog, [dialog, field] {
-            auto path = QFileDialog::getOpenFileName(dialog, "MaskPilot", {}, "Executable (*.exe)");
+            auto path = QFileDialog::getOpenFileName(dialog, "MaskPilot", {},
+#ifdef _WIN32
+                                                     "Executable (*.exe)"
+#else
+                                                    "Executable (*)"
+#endif
+            );
             if (!path.isEmpty())
                 field->setText(path);
         });
@@ -49,6 +55,12 @@ void MainWindow::Impl::mediaSupport() {
         settings.setValue("mediaMuxer", muxer->text());
         label->setText(t("Media support is ready.", "媒体支持已就绪。"));
     });
+#ifndef _WIN32
+    install->hide();
+    information->setText(t("Locate trusted native components installed through your system package manager. "
+                           "Native live recording does not require these components.",
+                           "请选择通过系统包管理器安装的可信媒体组件。原生直播录制无需这些组件。"));
+#else
     QObject::connect(install, &QPushButton::clicked, dialog, [this, parser, muxer, label] {
         if (installingMedia) {
             if (label)
@@ -78,7 +90,7 @@ void MainWindow::Impl::mediaSupport() {
         auto add = [&, state](const QString& kind, const QString& url, const QString& filename,
                               const std::string& sha) {
             auto spec = window->defaultSpec(url);
-            spec.destination = std::filesystem::path(QDir(tools).filePath(filename).toStdWString());
+            spec.destination = std::filesystem::path(QDir(tools).filePath(filename).toStdU16String());
             spec.expectedSha256 = sha;
             spec.category = "Components";
             ++state->expected;
@@ -186,6 +198,7 @@ void MainWindow::Impl::mediaSupport() {
             });
         poll->start(500);
     });
+#endif
     dialog->show();
 }
 } // namespace maskpilot

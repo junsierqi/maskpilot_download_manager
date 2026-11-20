@@ -28,8 +28,8 @@
 namespace maskpilot {
 namespace {
 QString text(const std::string& s) { return QString::fromUtf8(s); }
-std::filesystem::path native(const QString& s) { return std::filesystem::path(s.toStdWString()); }
-QString pathText(const std::filesystem::path& p) { return QString::fromStdWString(p.wstring()); }
+std::filesystem::path native(const QString& s) { return std::filesystem::path(s.toStdU16String()); }
+QString pathText(const std::filesystem::path& p) { return QString::fromStdU16String(p.u16string()); }
 struct Editor : QWidget {
     QLineEdit *name, *root, *output, *proxy, *user, *password;
     QComboBox* queue;

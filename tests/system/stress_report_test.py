@@ -2,6 +2,7 @@
 import argparse
 import importlib.util
 import json
+import os
 from pathlib import Path
 import shutil
 import tempfile
@@ -33,13 +34,34 @@ def atomic_publication(module, root):
     try:
         with report.open(encoding='utf-8') as reader:
             writer.start()
-            assert not done.wait(.15), 'Windows reader did not block replacement'
+            if os.name == 'nt':
+                assert not done.wait(.15), 'Windows reader did not block replacement'
+            else:
+                assert done.wait(3), 'POSIX replacement blocked on an open reader'
             assert json.load(reader) == {'version': 0}, 'Reader saw a partial/new report'
     finally:
         if writer.ident is not None:
             writer.join(timeout=5)
     assert not writer.is_alive() and not errors, errors
     assert json.loads(report.read_text()) == {'version': 1}
+    if os.name != 'nt':
+        parent = root / 'readonly'
+        parent.mkdir()
+        locked = parent / 'result.json'
+        module.write_report(locked, {'version': 1})
+        parent.chmod(0o500)
+        try:
+            try:
+                module.write_report(locked, {'version': 2})
+            except PermissionError:
+                pass
+            else:
+                raise AssertionError('Unwritable report directory was silently ignored; run as non-root')
+            assert json.loads(locked.read_text()) == {'version': 1}
+        finally:
+            parent.chmod(0o700)
+        print('PASS POSIX report replacement preserves readers and rejects unwritable destinations', flush=True)
+        return
     with report.open(encoding='utf-8') as reader:
         try:
             module.write_report(report, {'version': 2})

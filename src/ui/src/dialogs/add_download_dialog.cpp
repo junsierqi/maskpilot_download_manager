@@ -28,7 +28,7 @@
 
 namespace maskpilot {
 namespace {
-std::filesystem::path nativePath(const QString& s) { return std::filesystem::path(s.toStdWString()); }
+std::filesystem::path nativePath(const QString& s) { return std::filesystem::path(s.toStdU16String()); }
 QString safeName(const QString& url) { return ui::defaultDownloadName(url); }
 } // namespace
 struct AddDownloadDialog::Impl {
@@ -342,8 +342,13 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
     };
     connect(impl_->proxyUsername, &QLineEdit::textChanged, this, updateCredentialRequirement);
     connect(impl_->proxyPassword, &QLineEdit::textChanged, this, updateCredentialRequirement);
-    impl_->rememberProxy =
-        new QCheckBox(t("Save proxy credentials securely in Windows", "由 Windows 安全保存代理凭据"));
+    impl_->rememberProxy = new QCheckBox(
+#ifdef _WIN32
+        t("Save proxy credentials securely in Windows", "由 Windows 安全保存代理凭据")
+#else
+        t("Save proxy credentials with the system secret service", "由系统凭据服务安全保存代理凭据")
+#endif
+    );
     impl_->rememberProxy->setObjectName("rememberProxyCredentials");
     impl_->rememberProxy->setEnabled(false);
     proxyForm->addRow(impl_->rememberProxy);
@@ -504,7 +509,13 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
         auto* pick = new QPushButton(t("Locate…", "选择…"));
         line->addWidget(pick);
         connect(pick, &QPushButton::clicked, this, [this, field] {
-            auto file = QFileDialog::getOpenFileName(this, windowTitle(), {}, "Executable (*.exe)");
+            auto file = QFileDialog::getOpenFileName(this, windowTitle(), {},
+#ifdef _WIN32
+                                                     "Executable (*.exe)"
+#else
+                                                    "Executable (*)"
+#endif
+            );
             if (!file.isEmpty())
                 field->setText(file);
         });
@@ -849,7 +860,7 @@ void AddDownloadDialog::setSpecification(const DownloadSpec& spec) {
     impl_->ftpPassword->setText(QString::fromStdString(spec.ftpPassword));
     impl_->ftpTls->setChecked(spec.ftpExplicitTls);
     impl_->ftpActive->setChecked(spec.ftpActiveMode);
-    impl_->ftpCa->setText(QString::fromStdWString(spec.ftpCaBundle.wstring()));
+    impl_->ftpCa->setText(QString::fromStdU16String(spec.ftpCaBundle.u16string()));
     impl_->torrentSource = spec.url;
     impl_->torrentMetadata = spec.torrent.metadata;
     impl_->torrentSelection = spec.torrent.selectedFiles;
@@ -867,10 +878,10 @@ void AddDownloadDialog::setSpecification(const DownloadSpec& spec) {
     impl_->exactLiveBytes = spec.live.maxBytes;
     impl_->live->setChecked(spec.kind == TransferKind::Live);
     if (!spec.mediaDownloader.empty())
-        impl_->downloader->setText(QString::fromStdWString(spec.mediaDownloader.wstring()));
+        impl_->downloader->setText(QString::fromStdU16String(spec.mediaDownloader.u16string()));
     if (!spec.mediaMuxer.empty())
-        impl_->muxer->setText(QString::fromStdWString(spec.mediaMuxer.wstring()));
-    impl_->destination->setText(QString::fromStdWString(spec.destination.wstring()));
+        impl_->muxer->setText(QString::fromStdU16String(spec.mediaMuxer.u16string()));
+    impl_->destination->setText(QString::fromStdU16String(spec.destination.u16string()));
     impl_->originAuthenticationRequired->setChecked(requiresOriginAuthentication(spec));
     impl_->originAuthenticationRequired->setEnabled(!isTorrentUrl(spec.url) && !isSftpUrl(spec.url) &&
                                                     !hasOriginMaterial(spec));
@@ -878,7 +889,7 @@ void AddDownloadDialog::setSpecification(const DownloadSpec& spec) {
     impl_->sftpUsername->setText(QString::fromUtf8(spec.sftp.username));
     impl_->sftpAuthentication->setCurrentIndex(static_cast<int>(spec.sftp.authentication));
     impl_->sftpPassword->setText(QString::fromUtf8(spec.sftp.password));
-    impl_->sftpPrivateKey->setText(QString::fromStdWString(spec.sftp.privateKeyFile.wstring()));
+    impl_->sftpPrivateKey->setText(QString::fromStdU16String(spec.sftp.privateKeyFile.u16string()));
     impl_->sftpKeyPassphrase->setText(QString::fromUtf8(spec.sftp.keyPassphrase));
     impl_->updateStorage();
     impl_->selection->setSelection(spec.mediaSelection, spec.audioOnly, spec.mediaFormat);

@@ -103,7 +103,7 @@ def exercise(desktop, host):
         (data / "MaskPilot/MaskPilot.ini").write_text(
             "[General]\ndownloadDirectory=" + downloads.as_posix() + "\nlanguage=en\n", encoding="utf-8")
         isolated_host = isolated / host.name
-        shutil.copyfile(host, isolated_host)
+        shutil.copy2(host, isolated_host)
         (isolated / "native-bridge.json").write_text(json.dumps({
             "allowedOrigins": [ORIGIN], "desktopPath": str(desktop), "dataDirectory": str(data)}), encoding="utf-8")
         server = Server(("127.0.0.1", 0), Handler)

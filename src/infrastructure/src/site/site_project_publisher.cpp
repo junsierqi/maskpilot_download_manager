@@ -24,7 +24,7 @@ constexpr auto markerName = ".maskpilot-publication.json";
     throw std::runtime_error(
         "Project publication ownership or content changed. Existing files were preserved.");
 }
-QString text(const fs::path& path) { return QString::fromStdWString(path.wstring()); }
+QString text(const fs::path& path) { return QString::fromStdU16String(path.u16string()); }
 void safe(const fs::path& path) {
     if (!path.is_absolute() || path.lexically_normal() != path ||
         path.native().starts_with(fs::path("//").native()) ||

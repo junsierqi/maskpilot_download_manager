@@ -105,7 +105,7 @@ void MainWindow::Impl::settingsDialog() {
             return;
         DownloadSpec check;
         check.url = "https://example.invalid/file";
-        check.destination = std::filesystem::path(folder->text().toStdWString()) / L"test";
+        check.destination = std::filesystem::path(folder->text().toStdU16String()) / L"test";
         check.proxy = proxy->text().toStdString();
         auto error = validateSpec(check);
         if (!error.empty()) {

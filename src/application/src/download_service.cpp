@@ -205,9 +205,10 @@ struct DownloadService::Impl {
         for (int n = 1; reserved(spec.destination); ++n) {
             if (n > 10000)
                 throw std::runtime_error("Too many conflicting file names.");
-            spec.destination =
-                original.parent_path() / (original.stem().wstring() + L" (" + std::to_wstring(n) + L")" +
-                                          original.extension().wstring());
+            auto filename = original.stem();
+            filename += " (" + std::to_string(n) + ")";
+            filename += original.extension();
+            spec.destination = original.parent_path() / filename;
         }
         task.id = legacy && !requestId.empty() ? requestId : newTaskId();
         task.requestId = std::move(requestId);
@@ -748,8 +749,9 @@ struct DownloadService::Impl {
             if (policy.dailyPayloadBudget > 0) {
                 if (task->spec.kind == TransferKind::BitTorrent || task->spec.kind == TransferKind::Media) {
                     task->state = TaskState::NeedsAttention;
-                    task->error = "BT and finite media tasks cannot use native payload budgets. Move this task "
-                                  "to an unbudgeted queue.";
+                    task->error =
+                        "BT and finite media tasks cannot use native payload budgets. Move this task "
+                        "to an unbudgeted queue.";
                     save(*task);
                     continue;
                 }
@@ -923,8 +925,9 @@ struct DownloadService::Impl {
                     (task.spec.kind == TransferKind::BitTorrent || task.spec.kind == TransferKind::Media);
                 if (unsupportedBudget && !isTerminal(task.state)) {
                     task.state = TaskState::NeedsAttention;
-                    task.error = "BT and finite media tasks cannot use native payload budgets. Move this task "
-                                 "to an unbudgeted queue.";
+                    task.error =
+                        "BT and finite media tasks cannot use native payload budgets. Move this task "
+                        "to an unbudgeted queue.";
                     save(task);
                 }
                 if (!unsupportedBudget && task.spec.kind == TransferKind::BitTorrent) {

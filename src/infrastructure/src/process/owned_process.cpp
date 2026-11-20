@@ -7,8 +7,10 @@
 #elif defined(__linux__)
 #include <cerrno>
 #include <csignal>
+#include <poll.h>
 #include <sys/prctl.h>
 #include <sys/syscall.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #endif
 namespace maskpilot::process {
@@ -104,14 +106,54 @@ struct OwnedProcessGroup::Impl {
         if (pidfd_ >= 0)
             throw std::logic_error("Private process group is already in use.");
         QProcess::UnixProcessParameters parameters;
-        parameters.flags =
-            QProcess::UnixProcessFlag::CreateNewSession | QProcess::UnixProcessFlag::CloseFileDescriptors;
+        parameters.flags = QProcess::UnixProcessFlag::CloseFileDescriptors;
         process.setUnixProcessParameters(parameters);
-        process.setChildProcessModifier([&process] {
+        const auto owner = getpid();
+        process.setChildProcessModifier([&process, owner] {
+            if (setsid() < 0)
+                process.failChildProcessModifier("Cannot isolate private helper session", errno);
             if (prctl(PR_SET_PDEATHSIG, SIGKILL) != 0)
                 process.failChildProcessModifier("Cannot bind private helper lifetime", errno);
-            if (getppid() == 1)
+            const auto ownerFd = static_cast<int>(syscall(SYS_pidfd_open, owner, 0));
+            if (ownerFd < 0)
+                process.failChildProcessModifier("Cannot retain private helper owner", errno);
+            if (getppid() != owner)
                 _exit(130);
+            // The detached guardian remains in this private group, preventing
+            // group-ID reuse. PDEATHSIG alone does not cover grandchildren.
+            // Only async-signal-safe operations are allowed before exec here.
+            const auto launcher = syscall(SYS_clone, SIGCHLD, nullptr, nullptr, nullptr, 0);
+            if (launcher < 0)
+                process.failChildProcessModifier("Cannot start private lifetime guardian", errno);
+            if (launcher == 0) {
+                const auto watcher = syscall(SYS_clone, SIGCHLD, nullptr, nullptr, nullptr, 0);
+                if (watcher < 0)
+                    _exit(131);
+                if (watcher > 0)
+                    _exit(0);
+                // In particular, close Qt's startup pipe and all secret input
+                // channels. Retain only the owner kernel reference.
+                if ((ownerFd > 0 && syscall(SYS_close_range, 0U, unsigned(ownerFd - 1), 0U) != 0) ||
+                    syscall(SYS_close_range, unsigned(ownerFd + 1), ~0U, 0U) != 0) {
+                    kill(-getpgrp(), SIGKILL);
+                    _exit(132);
+                }
+                pollfd event{ownerFd, POLLIN, 0};
+                int result;
+                do {
+                    result = poll(&event, 1, -1);
+                } while (result < 0 && errno == EINTR);
+                kill(-getpgrp(), SIGKILL);
+                _exit(130);
+            }
+            close(ownerFd);
+            int status = 0;
+            pid_t waited;
+            do {
+                waited = waitpid(static_cast<pid_t>(launcher), &status, 0);
+            } while (waited < 0 && errno == EINTR);
+            if (waited < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
+                process.failChildProcessModifier("Cannot arm private lifetime guardian", ECHILD);
         });
         started_ = QObject::connect(&process, &QProcess::started, &process, [this, &process] {
             pidfd_ = static_cast<int>(syscall(SYS_pidfd_open, process.processId(), 0));

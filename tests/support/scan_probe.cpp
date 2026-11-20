@@ -9,6 +9,7 @@
 #include <QProcess>
 #include <QThread>
 #include <array>
+#include <csignal>
 #include <cstdio>
 #ifdef _WIN32
 #include <windows.h>
@@ -67,6 +68,15 @@ int main(int argc, char** argv) {
             return 5;
         const auto stamp = (static_cast<qulonglong>(created.dwHighDateTime) << 32) | created.dwLowDateTime;
         identity.insert("created", QString::number(stamp));
+#elif defined(__linux__)
+        QFile stat("/proc/self/stat");
+        if (!stat.open(QIODevice::ReadOnly))
+            return 5;
+        const auto bytes = stat.readAll();
+        const auto fields = bytes.mid(bytes.lastIndexOf(')') + 2).split(' ');
+        if (fields.size() <= 19)
+            return 5;
+        identity.insert("created", QString::fromLatin1(fields[19]));
 #endif
         QFile file(childRecord);
         if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate) ||
@@ -105,6 +115,7 @@ int main(int argc, char** argv) {
 #ifdef _WIN32
         TerminateProcess(GetCurrentProcess(), 0xC0000005);
 #else
+        std::raise(SIGSEGV);
         return 139;
 #endif
     }

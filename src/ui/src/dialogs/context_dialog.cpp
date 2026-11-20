@@ -126,7 +126,7 @@ class ContextManagerDialog final : public QDialog {
         draft.expectedRevision = previous ? previous->revision : 0;
         draft.externalKey = previous ? previous->externalKey : "desktop:" + newTaskId();
         draft.label = label_->text().trimmed().toStdString();
-        draft.downloadRoot = std::filesystem::path(root_->text().trimmed().toStdWString());
+        draft.downloadRoot = std::filesystem::path(root_->text().trimmed().toStdU16String());
         draft.proxyEndpoint = proxy_->text().trimmed().toStdString();
         draft.proxyAuthenticationRequired = proxyRequired_->isChecked();
         draft.originAuthenticationRequired = originRequired_->isChecked();

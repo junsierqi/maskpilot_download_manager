@@ -27,7 +27,15 @@ add_executable(maskpilot_site_content_probe support/site_content_probe.cpp)
 target_link_libraries(maskpilot_site_content_probe PRIVATE maskpilot_infrastructure)
 add_executable(maskpilot_media_system_tests integration/media_ui_system_test.cpp)
 add_dependencies(maskpilot_media_system_tests maskpilot_media_ffmpeg maskpilot_media_ffprobe)
-target_link_libraries(maskpilot_media_system_tests PRIVATE maskpilot_ui maskpilot_infrastructure Qt6::Network)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # GNU ld scans static archives once. The application site coordinator calls
+  # policy functions supplied by the content adapter; resolve the complete group.
+  target_link_libraries(maskpilot_media_system_tests PRIVATE
+    "$<LINK_GROUP:RESCAN,maskpilot_ui,maskpilot_application,maskpilot_infrastructure,maskpilot_domain>"
+    Qt6::Network)
+else()
+  target_link_libraries(maskpilot_media_system_tests PRIVATE maskpilot_ui maskpilot_infrastructure Qt6::Network)
+endif()
 target_link_libraries(maskpilot_tests PRIVATE Qt6::Network)
 target_link_libraries(maskpilot_tests PRIVATE maskpilot_application maskpilot_infrastructure GTest::gtest_main)
 include(GoogleTest)

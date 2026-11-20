@@ -112,7 +112,7 @@ TEST(LivePlaylist, StrictSameOriginSequenceMasterAndUnsupportedVariants) {
 TEST(LiveStorage, StrictPublicConfigurationCodecAndActualVersionSeventeenMigration) {
     QTemporaryDir temporary;
     ASSERT_TRUE(temporary.isValid());
-    const auto root = std::filesystem::path(temporary.path().toStdWString());
+    const auto root = std::filesystem::path(temporary.path().toStdU16String());
     const auto database = root / "tasks.db";
     Task task;
     task.id = newTaskId();
@@ -180,9 +180,9 @@ TEST(LiveUi, ActualDialogServiceFinishPauseRestartAndPublicationRace) {
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, temporary.path());
     QCoreApplication::setOrganizationName("MaskPilotTests");
     QCoreApplication::setApplicationName(name);
-    const auto root = std::filesystem::path(temporary.path().toStdWString());
+    const auto root = std::filesystem::path(temporary.path().toStdU16String());
     Feed feed;
-    auto spec = liveSpec(root / L"录制.flv");
+    auto spec = liveSpec(root / u"录制.flv");
     spec.url = feed.url();
     AddDownloadDialog dialog(false);
     dialog.setSpecification(spec);
@@ -204,7 +204,7 @@ TEST(LiveUi, ActualDialogServiceFinishPauseRestartAndPublicationRace) {
     ASSERT_TRUE(pump([&] { return service.snapshot()[0].state == TaskState::Completed; }))
         << service.snapshot()[0].error;
     EXPECT_FALSE(std::filesystem::exists(root / "work" / id / "live-recording.tmp"));
-    QFile output(QString::fromStdWString(spec.destination.wstring()));
+    QFile output(QString::fromStdU16String(spec.destination.u16string()));
     ASSERT_TRUE(output.open(QIODevice::ReadOnly));
     auto bytes = output.readAll();
     output.close();
@@ -227,7 +227,7 @@ TEST(LiveUi, ActualDialogServiceFinishPauseRestartAndPublicationRace) {
     ASSERT_TRUE(pump([&] { return feed.requests > requests && state().downloaded > 200; }));
     service.finishRecording(second);
     ASSERT_TRUE(pump([&] { return state().state == TaskState::Completed; })) << state().error;
-    QFile restarted(QString::fromStdWString(spec.destination.wstring()));
+    QFile restarted(QString::fromStdU16String(spec.destination.u16string()));
     ASSERT_TRUE(restarted.open(QIODevice::ReadOnly));
     EXPECT_EQ(restarted.readAll().count("FLV"), 1);
     restarted.close();
@@ -242,7 +242,7 @@ TEST(LiveUi, ActualDialogServiceFinishPauseRestartAndPublicationRace) {
                 return task.state == TaskState::NeedsAttention;
         return false;
     }));
-    QFile preserved(QString::fromStdWString(spec.destination.wstring()));
+    QFile preserved(QString::fromStdU16String(spec.destination.u16string()));
     ASSERT_TRUE(preserved.open(QIODevice::ReadOnly));
     EXPECT_EQ(preserved.readAll(), "preserved");
     preserved.close();

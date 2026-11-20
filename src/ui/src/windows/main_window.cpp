@@ -233,8 +233,13 @@ void MainWindow::Impl::completion() {
             dialog->accept();
             if (action == 1)
                 window->requestQuit();
-            else
+            else {
+#ifdef _WIN32
                 QProcess::startDetached(systemExecutable(L"shutdown.exe"), {"/s", "/t", "0"});
+#else
+                QProcess::startDetached("/usr/bin/systemctl", {"poweroff"});
+#endif
+            }
         }
     });
     countdown->start(1000);
@@ -554,7 +559,7 @@ MainWindow::MainWindow(DownloadService& service, QWidget* parent)
         auto task = tasks.front();
         if (task.spec.kind == TransferKind::Live) {
             auto* finish = menu.addAction(p.t("Finish and save recording", "结束并保存录制"), this,
-                [&p, task] { p.service.finishRecording(task.id); });
+                                          [&p, task] { p.service.finishRecording(task.id); });
             finish->setObjectName("finishRecordingAction");
             finish->setEnabled(task.state == TaskState::Downloading || task.state == TaskState::Probing);
         }
@@ -757,8 +762,8 @@ DownloadSpec MainWindow::defaultSpec(const QString& url) const {
     spec.connections = impl_->settings.value("connections", 4).toInt();
     spec.proxy = impl_->settings.value("proxy").toString().toStdString();
     spec.mediaDownloader =
-        std::filesystem::path(impl_->settings.value("mediaDownloader").toString().toStdWString());
-    spec.mediaMuxer = std::filesystem::path(impl_->settings.value("mediaMuxer").toString().toStdWString());
+        std::filesystem::path(impl_->settings.value("mediaDownloader").toString().toStdU16String());
+    spec.mediaMuxer = std::filesystem::path(impl_->settings.value("mediaMuxer").toString().toStdU16String());
     auto folder =
         impl_->settings
             .value("downloadDirectory", QStandardPaths::writableLocation(QStandardPaths::DownloadLocation))
@@ -782,7 +787,7 @@ DownloadSpec MainWindow::defaultSpec(const QString& url) const {
             category = "General";
         folder = QDir(folder).filePath(category);
     }
-    spec.destination = std::filesystem::path(QDir(folder).filePath(filenameFor(url)).toStdWString());
+    spec.destination = std::filesystem::path(QDir(folder).filePath(filenameFor(url)).toStdU16String());
     return spec;
 }
 void MainWindow::cancelCompletionCountdown() {

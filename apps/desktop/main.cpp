@@ -87,7 +87,7 @@ int main(int argc, char** argv) {
         };
         const auto token = writeToken("ipc.token");
         const auto administrativeToken = writeToken("ipc-admin.token");
-        const auto directory = std::filesystem::path(data.toStdWString());
+        const auto directory = std::filesystem::path(data.toStdU16String());
         auto store = maskpilot::makeSqliteStore(directory / L"tasks.db");
         auto vault = maskpilot::makeNativeCredentialVault(store.contexts->installationId());
         maskpilot::DownloadService service(

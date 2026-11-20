@@ -71,7 +71,7 @@ TEST(Checksums, UsesKnownSha256Vector) {
 TEST(Checksums, RepeatedParallelUnicodeAndEmptyFilesMatchIndependentKnownVectors) {
     TempDirectory temporary;
     const std::array<std::filesystem::path, 3> paths{temporary.path / "empty", temporary.path / "abc",
-                                                     temporary.path / L"校验.bin"};
+                                                     temporary.path / u"校验.bin"};
     const std::array<std::string, 3> expected{
         "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
@@ -266,6 +266,31 @@ TEST(Storage, RejectsNoncanonicalTaskIdentities) {
     repo->save(task);
     EXPECT_THROW(repo->load(), std::runtime_error);
 }
+TEST(Service, PreservesUnicodeWhenResolvingDestinationCollisions) {
+    TempDirectory temp;
+    const auto original = temp.path / u"文件.bin";
+    const auto renamed = temp.path / u"文件 (1).bin";
+    {
+        maskpilot::DownloadService service(maskpilot::makeSqliteRepository(temp.path / "tasks.db"),
+                                           maskpilot::makeCurlTransfer, temp.path / "parts");
+        maskpilot::DownloadSpec spec;
+        spec.url = "https://example.test/file";
+        spec.destination = original;
+        spec.startPaused = true;
+        service.add(spec).get();
+        service.add(spec).get();
+        const auto tasks = service.snapshot();
+        ASSERT_EQ(tasks.size(), 2);
+        EXPECT_TRUE(std::any_of(tasks.begin(), tasks.end(),
+                                [&](const auto& task) { return task.spec.destination == original; }));
+        EXPECT_TRUE(std::any_of(tasks.begin(), tasks.end(),
+                                [&](const auto& task) { return task.spec.destination == renamed; }));
+    }
+    const auto persisted = maskpilot::makeSqliteRepository(temp.path / "tasks.db")->load();
+    ASSERT_EQ(persisted.size(), 2);
+    EXPECT_TRUE(std::any_of(persisted.begin(), persisted.end(),
+                            [&](const auto& task) { return task.spec.destination == renamed; }));
+}
 TEST(Service, RejectsCaseVariantCacheOwners) {
     TempDirectory temp;
     maskpilot::DownloadService service(maskpilot::makeSqliteRepository(temp.path / "tasks.db"),
@@ -338,7 +363,7 @@ TEST(FtpTransfer, PauseCancelAndPublicationRespectActualControlCallbacks) {
     QProcess fixture;
     const auto script =
         std::filesystem::path(__FILE__).parent_path().parent_path() / "support" / "ftp_fixture.py";
-    fixture.start("python", {QString::fromStdWString(script.wstring()), "--serve"});
+    fixture.start("python", {QString::fromStdU16String(script.u16string()), "--serve"});
     struct Cleanup {
         QProcess& process;
         ~Cleanup() {

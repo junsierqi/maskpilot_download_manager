@@ -32,6 +32,8 @@ class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
     def __init__(self):
         self.lock = threading.Lock()
         self.requests = []
+        self.initial_ranges = {route: (count, threading.Event(), set()) for count, route in
+                               ((2, '/adaptive/basic'), (8, '/eight/basic'))}
         super().__init__(('127.0.0.1', 0), Handler)
 
     def snapshot(self, route):
@@ -79,6 +81,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         ended=None, done=False, abandoned=False, probe=probe,
                         active=active + int(not probe), sent=0, connection=self.connection)
             self.server.requests.append(item)
+            initial = self.server.initial_ranges.get(self.path)
+            initial_request = False
+            if initial:
+                count, ready, seen = initial
+                width = TOTAL // count
+                initial_request = begin % width == 0 and end == begin + width - 1
+                if initial_request:
+                    seen.add(begin)
+                    if len(seen) == count:
+                        ready.set()
         self.send_response(206 if match else 200)
         self.send_header('ETag', ETAG)
         self.send_header('Content-Length', str(end - begin + 1))
@@ -87,6 +99,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if match:
             self.send_header('Content-Range', f'bytes {begin}-{end}/{TOTAL}')
         self.end_headers()
+        if initial_request:
+            # Establish the scenario this case asserts: all initial ranges are
+            # observed before a fast response can trigger early repartitioning.
+            assert initial[1].wait(10), 'Initial Range workers never reached the owned origin'
         slow_start = TOTAL * 7 // 8 if self.path.startswith('/eight/') else TOTAL // 2
         try:
             for offset in range(begin, end + 1, 16384):
@@ -226,7 +242,8 @@ def exercise(executable):
                 finish(process, target)
                 requests = [x for x in server.snapshot(route) if not x['probe']]
                 slow_begin = TOTAL * (count - 1) // count
-                original = next(x for x in requests if x['begin'] == slow_begin and x['end'] == TOTAL - 1)
+                original = next((x for x in requests if x['begin'] == slow_begin and x['end'] == TOTAL - 1), None)
+                assert original is not None, requests
                 fast_finished = min(x['ended'] for x in requests
                                     if x['begin'] < slow_begin and x['ended'] is not None)
                 child_starts = {begin for identity, begin, _ in snapshot['extents'] if identity >= count}

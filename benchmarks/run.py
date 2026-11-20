@@ -1,6 +1,6 @@
-"""Windows stress/soak: 100 HTTP tasks, 8 active, 8 segments; stdlib only.
+"""Windows/Linux stress/soak: 100 HTTP tasks, 8 active, 8 segments; stdlib only.
 
-Run after scripts/bootstrap.ps1, supplying built --desktop and --native-host.
+Supply built --desktop and --native-host (Windows: run scripts/bootstrap.ps1 first).
 Default 300s is a quick stress check; --duration 28800 requests an eight-hour run.
 Optional media tools add periodic local synthetic MP4/HLS/DASH phases.
 No browser registration/profile changes. An interrupted/short run cannot PASS.
@@ -21,6 +21,7 @@ from pathlib import Path
 import re
 import shutil
 import socketserver
+import socket
 import sqlite3
 import statistics
 import struct
@@ -35,25 +36,26 @@ import uuid
 SIZE, CHUNK, COUNT = 2 * 1024 * 1024, 16384, 100
 ACTIVE = {'Probing', 'Downloading', 'Pausing', 'Verifying', 'Finalizing', 'Cancelling'}
 ORIGIN = 'chrome-extension://epdfgbhpbpkpephcfmemmadlblpodnfo/'
-kernel, psapi, user = ct.WinDLL('kernel32', use_last_error=True), ct.WinDLL('psapi'), ct.WinDLL('user32')
-kernel.CreateFileW.argtypes = [wt.LPCWSTR, wt.DWORD, wt.DWORD, ct.c_void_p, wt.DWORD, wt.DWORD, wt.HANDLE]
-kernel.CreateFileW.restype = wt.HANDLE
-kernel.WaitNamedPipeW.argtypes = [wt.LPCWSTR, wt.DWORD]
-kernel.CloseHandle.argtypes = [wt.HANDLE]
-kernel.PeekNamedPipe.argtypes = [wt.HANDLE, ct.c_void_p, wt.DWORD, ct.c_void_p, ct.POINTER(wt.DWORD), ct.c_void_p]
-kernel.ReadFile.argtypes = kernel.WriteFile.argtypes = [wt.HANDLE, ct.c_void_p, wt.DWORD, ct.POINTER(wt.DWORD), ct.c_void_p]
-kernel.OpenProcess.argtypes, kernel.OpenProcess.restype = [wt.DWORD, wt.BOOL, wt.DWORD], wt.HANDLE
-kernel.SetThreadExecutionState.argtypes, kernel.SetThreadExecutionState.restype = [wt.DWORD], wt.DWORD
+kernel, psapi, user = (ct.WinDLL('kernel32', use_last_error=True), ct.WinDLL('psapi'), ct.WinDLL('user32')) if os.name == 'nt' else (None, None, None)
+if os.name == "nt":
+    kernel.CreateFileW.argtypes = [wt.LPCWSTR, wt.DWORD, wt.DWORD, ct.c_void_p, wt.DWORD, wt.DWORD, wt.HANDLE]
+    kernel.CreateFileW.restype = wt.HANDLE
+    kernel.WaitNamedPipeW.argtypes = [wt.LPCWSTR, wt.DWORD]
+    kernel.CloseHandle.argtypes = [wt.HANDLE]
+    kernel.PeekNamedPipe.argtypes = [wt.HANDLE, ct.c_void_p, wt.DWORD, ct.c_void_p, ct.POINTER(wt.DWORD), ct.c_void_p]
+    kernel.ReadFile.argtypes = kernel.WriteFile.argtypes = [wt.HANDLE, ct.c_void_p, wt.DWORD, ct.POINTER(wt.DWORD), ct.c_void_p]
+    kernel.OpenProcess.argtypes, kernel.OpenProcess.restype = [wt.DWORD, wt.BOOL, wt.DWORD], wt.HANDLE
+    kernel.SetThreadExecutionState.argtypes, kernel.SetThreadExecutionState.restype = [wt.DWORD], wt.DWORD
 
-class Memory(ct.Structure):
-    _fields_ = [('cb', wt.DWORD), ('faults', wt.DWORD)] + [(name, ct.c_size_t) for name in
-        ['peak_working', 'working', 'peak_paged', 'paged', 'peak_nonpaged', 'nonpaged', 'pagefile', 'peak_pagefile', 'private']]
+    class Memory(ct.Structure):
+        _fields_ = [('cb', wt.DWORD), ('faults', wt.DWORD)] + [(name, ct.c_size_t) for name in
+            ['peak_working', 'working', 'peak_paged', 'paged', 'peak_nonpaged', 'nonpaged', 'pagefile', 'peak_pagefile', 'private']]
 
-psapi.GetProcessMemoryInfo.argtypes = [wt.HANDLE, ct.POINTER(Memory), wt.DWORD]
-psapi.EnumProcessModulesEx.argtypes = [wt.HANDLE, ct.POINTER(wt.HMODULE), wt.DWORD, ct.POINTER(wt.DWORD), wt.DWORD]
-psapi.GetModuleFileNameExW.argtypes = [wt.HANDLE, wt.HMODULE, wt.LPWSTR, wt.DWORD]
-psapi.GetModuleFileNameExW.restype = wt.DWORD
-user.GetGuiResources.argtypes, user.GetGuiResources.restype = [wt.HANDLE, wt.DWORD], wt.DWORD
+    psapi.GetProcessMemoryInfo.argtypes = [wt.HANDLE, ct.POINTER(Memory), wt.DWORD]
+    psapi.EnumProcessModulesEx.argtypes = [wt.HANDLE, ct.POINTER(wt.HMODULE), wt.DWORD, ct.POINTER(wt.DWORD), wt.DWORD]
+    psapi.GetModuleFileNameExW.argtypes = [wt.HANDLE, wt.HMODULE, wt.LPWSTR, wt.DWORD]
+    psapi.GetModuleFileNameExW.restype = wt.DWORD
+    user.GetGuiResources.argtypes, user.GetGuiResources.restype = [wt.HANDLE, wt.DWORD], wt.DWORD
 
 
 def is_system_module(path, system_root):
@@ -97,12 +99,23 @@ def write_report(path, value):
             temporary.replace(path)
             return
         except PermissionError as error:
-            if error.winerror not in (5, 32, 33) or time.monotonic() >= deadline:
+            if getattr(error, 'winerror', None) not in (5, 32, 33) or time.monotonic() >= deadline:
                 raise
             time.sleep(.025)
 
 def failure_dump(process, directory):
     """Capture the isolated fixture desktop before cleanup; never mask its failure."""
+    if os.name != 'nt':
+        target = directory / 'failure-process.txt'
+        proc = Path('/proc') / str(process.pid)
+        sections = []
+        for name in ('status', 'maps', 'smaps_rollup'):
+            try:
+                sections.append(name + '\n' + (proc / name).read_text())
+            except OSError as error:
+                sections.append(name + ': ' + type(error).__name__)
+        target.write_text('\n'.join(sections), encoding='utf-8')
+        return str(target)
     target = directory / 'failure.dmp'
     handle = kernel.OpenProcess(0x0410, False, process.pid)
     if not handle:
@@ -131,6 +144,8 @@ class Bridge:
     def __init__(self, data):
         name = hashlib.sha256(data.resolve().as_posix().encode()).hexdigest()[:24]
         self.pipe = r'\\.\pipe\maskpilot-' + name
+        if os.name != 'nt':
+            self.pipe = str(Path(tempfile.gettempdir()) / ('maskpilot-' + name))
         self.token = (data / 'ipc.token').read_text().strip()
 
     def call(self, command, *, read_delay=0, **fields):
@@ -138,6 +153,28 @@ class Bridge:
         message = frame(request)
         if len(message) > 4096:
             raise ValueError('Benchmark request exceeds its bounded synchronous pipe-write size')
+        if os.name != 'nt':
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+                connection.settimeout(10)
+                connection.connect(self.pipe)
+                connection.sendall(message)
+                if read_delay:
+                    time.sleep(read_delay)
+                def read_exact(length):
+                    result = bytearray()
+                    while len(result) < length:
+                        block = connection.recv(length - len(result))
+                        if not block:
+                            raise EOFError('Incomplete desktop IPC response')
+                        result.extend(block)
+                    return bytes(result)
+                length = struct.unpack('<I', read_exact(4))[0]
+                if not 0 < length <= 1024 * 1024:
+                    raise ValueError('Invalid IPC response length')
+                response = json.loads(read_exact(length))
+                if response.get('version') != 1 or response.get('requestId') != request['requestId'] or not response.get('ok'):
+                    raise RuntimeError('Rejected benchmark command: ' + str(response.get('error', response)))
+                return response
         kernel.WaitNamedPipeW(self.pipe, 5000)
         handle = kernel.CreateFileW(self.pipe, 0xC0000000, 0, None, 3, 0, None)
         if handle == ct.c_void_p(-1).value:
@@ -230,11 +267,11 @@ def run(options):
     if options.media_parser:
         with (data / 'MaskPilot/MaskPilot.ini').open('a', encoding='utf-8') as settings:
             settings.write('mediaDownloader=' + options.media_parser.as_posix() + '\nmediaMuxer=' + options.media_muxer.as_posix() + '\n')
-    host = hostdir / options.native_host.name; shutil.copyfile(options.native_host, host)
+    host = hostdir / options.native_host.name; shutil.copy2(options.native_host, host)
     (hostdir / 'native-bridge.json').write_text(json.dumps(dict(allowedOrigins=[ORIGIN], desktopPath=str(options.desktop), dataDirectory=str(data))))
     environment = dict(os.environ, QT_QPA_PLATFORM=options.qt_platform, NO_PROXY='127.0.0.1,localhost', no_proxy='127.0.0.1,localhost')
     environment['PATH'] = str(options.desktop.parent) + os.pathsep + str(options.native_host.parent) + os.pathsep + environment.get('PATH', '')
-    binaries = [options.desktop, options.native_host] + ([options.media_parser, options.media_muxer, options.media_muxer.with_name('ffprobe.exe')] if options.media_parser else [])
+    binaries = [options.desktop, options.native_host] + ([options.media_parser, options.media_muxer, options.media_muxer.with_name('ffprobe.exe' if os.name == 'nt' else 'ffprobe')] if options.media_parser else [])
     report = dict(status='starting', mode='HTTP cycles with periodic local synthetic MP4/HLS/DASH phase' if options.media_parser else 'HTTP Range only; no media/TLS soak claim', requestedSeconds=options.duration,
                   command=[sys.executable, str(Path(__file__).resolve()), *sys.argv[1:]], artifacts=str(root),
                   python=sys.version, platform=sys.platform, noExternalSiteOrTlsClaim=True,
@@ -284,7 +321,7 @@ def run(options):
             helper.verify(manifest, repository, build)
             external = {Path(value['path']).resolve() for value in manifest['external'].values()}
             pinned = external | {build / name for name in manifest['runtime']}
-            required_external = [options.media_parser, options.media_muxer, options.media_muxer.with_name('ffprobe.exe')] if options.media_parser else []
+            required_external = [options.media_parser, options.media_muxer, options.media_muxer.with_name('ffprobe.exe' if os.name == 'nt' else 'ffprobe')] if options.media_parser else []
             for name in ('QT_PLUGIN_PATH', 'QT_QPA_PLATFORM_PLUGIN_PATH'):
                 for directory in environment.get(name, '').split(os.pathsep):
                     if directory:
@@ -299,10 +336,12 @@ def run(options):
                                           version=manifest['version'], environment=manifest['environment'],
                                           helperSha256=qualification[-1], verifiedBeforeLaunch=True,
                                           verifiedAfterCleanup=False)
-        if not kernel.SetThreadExecutionState(0x80000001):
+        if os.name != 'nt' and (qualification_path or getattr(options, 'isolated_runtime', False)):
+            raise ValueError('Windows release qualification is unavailable on this platform')
+        if os.name == 'nt' and not kernel.SetThreadExecutionState(0x80000001):
             raise ct.WinError(ct.get_last_error())
         def tool(binary, arguments):
-            result = subprocess.run([str(binary), '-hide_banner', '-loglevel', 'error', '-nostdin', *arguments], capture_output=True, env=environment, timeout=30, creationflags=subprocess.CREATE_NO_WINDOW)
+            result = subprocess.run([str(binary), '-hide_banner', '-loglevel', 'error', '-nostdin', *arguments], capture_output=True, env=environment, timeout=30, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
             if result.returncode: raise RuntimeError('Media verification/generation failed: ' + result.stderr.decode(errors='replace')[-700:])
             return result.stdout
         def decoded_video_hash(filename):
@@ -320,7 +359,7 @@ def run(options):
             threading.Thread(target=media_fixture.serve_forever, daemon=True).start()
         log = (root / 'desktop.log').open('wb')
         process = subprocess.Popen([str(options.desktop), '--background', '--data-dir', str(data)], env=environment,
-                                   stdout=log, stderr=log, creationflags=subprocess.CREATE_NO_WINDOW)
+                                   stdout=log, stderr=log, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         report['desktopPid'] = process.pid
         deadline = time.monotonic() + 30
         while not (data / 'ipc.token').exists():
@@ -329,14 +368,14 @@ def run(options):
         probe = dict(version=1, requestId=uuid.uuid4().hex, command='ping')
         before = time.perf_counter()
         result = subprocess.run([str(host), ORIGIN], input=frame(probe), capture_output=True, env=environment,
-                                timeout=20, creationflags=subprocess.CREATE_NO_WINDOW)
+                                timeout=20, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         report['nativeHostSpawnPingMs'] = (time.perf_counter() - before) * 1000
         if len(result.stdout) < 4 or struct.unpack('<I', result.stdout[:4])[0] != len(result.stdout) - 4: raise RuntimeError('Native framing failed')
         response = json.loads(result.stdout[4:])
         if not response.get('ok') or response.get('requestId') != probe['requestId']: raise RuntimeError('Actual native host handshake failed')
         bridge = Bridge(data)
-        memory_handle = kernel.OpenProcess(0x410, False, process.pid)
-        if not memory_handle: raise ct.WinError(ct.get_last_error())
+        memory_handle = kernel.OpenProcess(0x410, False, process.pid) if os.name == 'nt' else os.pidfd_open(process.pid)
+        if os.name == 'nt' and not memory_handle: raise ct.WinError(ct.get_last_error())
         if qualification:
             report['mappedRuntimeBeforeLoad'] = verify_loaded_runtime(memory_handle, qualification[1], qualification[3])
         fixture = Fixture(); threading.Thread(target=fixture.serve_forever, daemon=True).start()
@@ -354,11 +393,20 @@ def run(options):
                     if gap > 30:
                         raise RuntimeError('Sampling gap exceeded 30 seconds; suspended or unobserved time cannot count as soak load')
                 before = time.perf_counter(); bridge.call('ping'); report['pingMs'].append((time.perf_counter() - before) * 1000)
-                memory = Memory(); memory.cb = ct.sizeof(memory)
-                if not psapi.GetProcessMemoryInfo(memory_handle, ct.byref(memory), ct.sizeof(memory)): raise ct.WinError(ct.get_last_error())
-                report['samples'].append(dict(seconds=now - started, private=memory.private, working=memory.working,
-                                             gdi=user.GetGuiResources(memory_handle, 0), user=user.GetGuiResources(memory_handle, 1)))
-                if max(memory.private, memory.working) >= 512 * 1024**2: raise RuntimeError('Sampled desktop memory exceeded 512 MiB')
+                if os.name == 'nt':
+                    memory = Memory(); memory.cb = ct.sizeof(memory)
+                    if not psapi.GetProcessMemoryInfo(memory_handle, ct.byref(memory), ct.sizeof(memory)): raise ct.WinError(ct.get_last_error())
+                    metrics = dict(private=memory.private, working=memory.working,
+                                   gdi=user.GetGuiResources(memory_handle, 0), user=user.GetGuiResources(memory_handle, 1))
+                else:
+                    values = {}
+                    for line in (Path('/proc') / str(process.pid) / 'smaps_rollup').read_text().splitlines()[1:]:
+                        key, value = line.split(':', 1)
+                        values[key] = int(value.split()[0]) * 1024
+                    metrics = dict(private=sum(values.get(key, 0) for key in ('Private_Clean', 'Private_Dirty', 'Private_Hugetlb')),
+                                   working=values['Rss'], gdi=None, user=None)
+                report['samples'].append(dict(seconds=now - started, **metrics))
+                if max(metrics['private'], metrics['working']) >= 512 * 1024**2: raise RuntimeError('Sampled desktop memory exceeded 512 MiB')
                 last_sample = now
             if now - last_write >= 15: save()
         with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:
@@ -421,8 +469,8 @@ def run(options):
                         target = Path(row[1]).resolve()
                         if target.parent != outputs.resolve() or not target.is_file(): raise AssertionError('Invalid media destination')
                         media_hash = decoded_video_hash(target)
-                        probe = options.media_muxer.with_name('ffprobe.exe')
-                        checked = subprocess.run([str(probe), '-v', 'error', '-show_entries', 'stream=codec_type', '-of', 'json', str(target)], capture_output=True, env=environment, timeout=15, creationflags=subprocess.CREATE_NO_WINDOW)
+                        probe = options.media_muxer.with_name('ffprobe.exe' if os.name == 'nt' else 'ffprobe')
+                        checked = subprocess.run([str(probe), '-v', 'error', '-show_entries', 'stream=codec_type', '-of', 'json', str(target)], capture_output=True, env=environment, timeout=15, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
                         if checked.returncode or not {'audio', 'video'} <= {s['codec_type'] for s in json.loads(checked.stdout)['streams']} or media_hash != reference_video: raise AssertionError('Media audio/video content validation failed')
                         report['mediaOutputs'].append(dict(cycle=cycle, source=name, sha256=hashlib.sha256(target.read_bytes()).hexdigest(), decodedVideo=media_hash))
                         target.unlink(); bridge.call('remove', taskId=item['taskId'])
@@ -456,9 +504,11 @@ def run(options):
                 report['failureDumpError'] = f'{type(diagnostic_error).__name__}: {diagnostic_error}'
         save('failed')
     finally:
-        kernel.SetThreadExecutionState(0x80000000)
+        if os.name == 'nt': kernel.SetThreadExecutionState(0x80000000)
         try:
-            if memory_handle: kernel.CloseHandle(memory_handle)
+            if memory_handle is not None:
+                if os.name == 'nt': kernel.CloseHandle(memory_handle)
+                else: os.close(memory_handle)
             if process and process.poll() is None:
                 process.terminate()
                 try: process.wait(timeout=10)
@@ -501,6 +551,6 @@ if __name__ == '__main__':
     if arguments.media_parser:
         arguments.media_parser = arguments.media_parser.resolve(strict=True); arguments.media_muxer = arguments.media_muxer.resolve(strict=True)
         arguments.media_fixtures = arguments.media_fixtures.resolve(strict=True)
-        if not arguments.media_muxer.with_name('ffprobe.exe').is_file(): parser.error('ffprobe.exe must accompany the media muxer')
+        if not arguments.media_muxer.with_name('ffprobe.exe' if os.name == 'nt' else 'ffprobe').is_file(): parser.error('ffprobe.exe must accompany the media muxer')
     arguments.desktop = arguments.desktop.resolve(strict=True); arguments.native_host = arguments.native_host.resolve(strict=True)
     sys.exit(run(arguments))

@@ -56,8 +56,11 @@
 #include <set>
 
 #include "../models/task_model.h"
+#ifdef _WIN32
 #include <windows.h>
+#endif
 namespace maskpilot {
+#ifdef _WIN32
 inline QString systemExecutable(const wchar_t* name) {
     wchar_t directory[32768];
     const auto count = GetSystemDirectoryW(directory, static_cast<UINT>(std::size(directory)));
@@ -66,6 +69,7 @@ inline QString systemExecutable(const wchar_t* name) {
     return QDir(QString::fromWCharArray(directory, static_cast<int>(count)))
         .filePath(QString::fromWCharArray(name));
 }
+#endif
 struct MainWindow::Impl {
     MainWindow* window;
     DownloadService& service;

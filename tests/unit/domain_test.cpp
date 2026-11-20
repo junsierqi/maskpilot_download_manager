@@ -219,6 +219,7 @@ TEST(Validation, TorrentSourceValidationNeverAccessesNetworkPaths) {
                                R"(torrent:\\?\UNC\untrusted.invalid\share\fixture.torrent)",
                                R"(torrent:/\untrusted.invalid\share\fixture.torrent)",
                                "torrent://untrusted.invalid/share/fixture.torrent"}) {
+        SCOPED_TRACE(source);
         spec.url = source;
         EXPECT_FALSE(maskpilot::validateSpec(spec).empty());
     }

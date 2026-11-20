@@ -579,8 +579,7 @@ TEST(QueueWindows, BackwardAndForwardJumpsRespectWindowAndAbsoluteOneShotGates) 
     q = f.service.configureQueue(c).get();
     auto id = f.add(q.id, true);
     f.service.schedule(id, 12 * 60, 14 * 60);
-    f.service.queues().get();
-    EXPECT_EQ(find(f.service, id).state, TaskState::Scheduled);
+    ASSERT_TRUE(waitFor([&] { return find(f.service, id).state == TaskState::Scheduled; }));
     clock->utc = 13 * 60;
     ASSERT_TRUE(waitFor([&] { return find(f.service, id).state == TaskState::Downloading; }));
     clock->utc = 9 * 60;

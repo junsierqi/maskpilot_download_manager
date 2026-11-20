@@ -117,7 +117,7 @@ class Harness:
         isolated = root / 'host'
         isolated.mkdir()
         self.host = isolated / host.name
-        shutil.copyfile(host, self.host)
+        shutil.copy2(host, self.host)
         (isolated / 'native-bridge.json').write_text(json.dumps({
             'allowedOrigins': [ORIGIN], 'desktopPath': str(desktop), 'dataDirectory': str(self.data)}), encoding='utf-8')
         self.environment = os.environ.copy()

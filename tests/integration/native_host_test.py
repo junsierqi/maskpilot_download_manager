@@ -4,6 +4,8 @@ import hashlib
 import http.server
 import json
 import os
+import select
+import signal
 from pathlib import Path
 import shutil
 import socketserver
@@ -40,6 +42,61 @@ class Server(socketserver.ThreadingMixIn,http.server.HTTPServer):
 def frame(value):
     payload=json.dumps(value,ensure_ascii=False).encode();return struct.pack('<I',len(payload))+payload
 
+def desktop_autostart(host,desktop,root,environment):
+    directory=root/'auto-start';directory.mkdir()
+    copied_host=directory/host.name;shutil.copy2(host,copied_host)
+    copied_desktop=directory/('maskpilot.exe' if os.name=='nt' else 'maskpilot');shutil.copy2(desktop,copied_desktop)
+    if (desktop.parent/'lib').is_dir():
+        shutil.copytree(desktop.parent/'lib',directory/'lib')
+    data=directory/'data'
+    (directory/'native-bridge.json').write_text(json.dumps(dict(allowedOrigins=[ORIGIN],dataDirectory=str(data))))
+    try:
+        request=dict(version=1,requestId=uuid.uuid4().hex,command='ping')
+        result=subprocess.run([str(copied_host),ORIGIN],input=frame(request),capture_output=True,
+                              env=environment,timeout=15,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+        assert result.returncode==0 and json.loads(result.stdout[4:])['ok'],result.stdout
+        print('PASS native host starts the adjacent desktop and closes its reply pipe without desktopPath',flush=True)
+    finally:
+        lock=data/'instance.lock'
+        if lock.exists():
+            pid=int(lock.read_text().splitlines()[0])
+            if os.name=='nt':
+                import ctypes as ct
+                from ctypes import wintypes as wt
+                kernel=ct.WinDLL('kernel32',use_last_error=True)
+                kernel.OpenProcess.argtypes=[wt.DWORD,wt.BOOL,wt.DWORD];kernel.OpenProcess.restype=wt.HANDLE
+                kernel.QueryFullProcessImageNameW.argtypes=[wt.HANDLE,wt.DWORD,wt.LPWSTR,ct.POINTER(wt.DWORD)]
+                kernel.WaitForSingleObject.argtypes=[wt.HANDLE,wt.DWORD]
+                kernel.TerminateProcess.argtypes=[wt.HANDLE,wt.UINT]
+                kernel.CloseHandle.argtypes=[wt.HANDLE]
+                handle=kernel.OpenProcess(0x100000|0x1000|1,False,pid)
+                if not handle:
+                    assert ct.get_last_error()==87,'Cannot inspect owned auto-start desktop'
+                else:
+                    try:
+                        if kernel.WaitForSingleObject(handle,0)!=0:
+                            image=ct.create_unicode_buffer(32768);length=wt.DWORD(len(image))
+                            assert kernel.QueryFullProcessImageNameW(handle,0,image,ct.byref(length))
+                            assert os.path.normcase(str(Path(image.value).resolve()))==os.path.normcase(str(copied_desktop.resolve()))
+                            assert kernel.TerminateProcess(handle,130)
+                            assert kernel.WaitForSingleObject(handle,5000)==0
+                    finally: kernel.CloseHandle(handle)
+            else:
+                try: descriptor=os.pidfd_open(pid)
+                except ProcessLookupError: descriptor=None
+                if descriptor is not None:
+                    try:
+                        poller=select.poll();poller.register(descriptor,select.POLLIN)
+                        if not poller.poll(0):
+                            proc=Path('/proc')/str(pid)
+                            assert (proc/'exe').resolve(strict=True)==copied_desktop.resolve()
+                            assert str(data).encode() in (proc/'cmdline').read_bytes().split(b'\0')
+                            signal.pidfd_send_signal(descriptor,signal.SIGTERM)
+                            if not poller.poll(5000):
+                                signal.pidfd_send_signal(descriptor,signal.SIGKILL)
+                                assert poller.poll(5000),'Owned auto-start desktop cleanup failed'
+                    finally: os.close(descriptor)
+
 def run(host,desktop,parser=None,muxer=None):
     environment=os.environ.copy();environment.update({'NO_PROXY':'127.0.0.1,localhost,::1','no_proxy':'127.0.0.1,localhost,::1','QT_QPA_PLATFORM':'offscreen'})
     environment['PATH']=str(host.parent)+os.pathsep+environment.get('PATH','')
@@ -50,7 +107,7 @@ def run(host,desktop,parser=None,muxer=None):
         if parser:settings+='mediaDownloader='+parser.as_posix()+'\n'
         if muxer:settings+='mediaMuxer='+muxer.as_posix()+'\n'
         (data/'MaskPilot/MaskPilot.ini').write_text(settings,encoding='utf-8')
-        isolated=root/'host';isolated.mkdir();test_host=isolated/host.name;shutil.copyfile(host,test_host)
+        isolated=root/'host';isolated.mkdir();test_host=isolated/host.name;shutil.copy2(host,test_host)
         (isolated/'native-bridge.json').write_text(json.dumps({'allowedOrigins':[ORIGIN],'desktopPath':str(desktop),'dataDirectory':str(data)}))
         process=subprocess.Popen([str(desktop),'--background','--data-dir',str(data)],env=environment,stdout=subprocess.PIPE,stderr=subprocess.PIPE,creationflags=flags)
         server=Server(('127.0.0.1',0),Handler);threading.Thread(target=server.serve_forever,daemon=True).start()
@@ -78,6 +135,30 @@ def run(host,desktop,parser=None,muxer=None):
             while not (data/'ipc.token').exists() and time.monotonic()<deadline:
                 assert process.poll() is None,process.communicate();time.sleep(.05)
             ping=query('ping');assert ping['ok'],ping;print('PASS native host to desktop authenticated connection',flush=True)
+            desktop_autostart(host,desktop,root,environment)
+            if os.name != 'nt':
+                config_path=isolated/'native-bridge.json'
+                config=json.loads(config_path.read_text())
+                manifest=root/'registered-manifest.json'
+                gecko='downloads@maskpilot.invalid'
+                manifest.write_text(json.dumps(dict(name='com.maskpilot.downloads',type='stdio',
+                    path=str(test_host),allowed_extensions=[gecko])))
+                config.update(firefoxManifestPath=str(manifest),allowedFirefoxExtensions=[gecko])
+                config_path.write_text(json.dumps(config))
+                def firefox(path,extension):
+                    request=dict(version=1,requestId=uuid.uuid4().hex,command='ping')
+                    return subprocess.run([str(test_host),str(path),extension],input=frame(request),
+                        capture_output=True,env=environment,timeout=10)
+                good=firefox(manifest,gecko)
+                assert good.returncode==0 and json.loads(good.stdout[4:])['ok'],good.stderr
+                assert firefox(root/'REGISTERED-manifest.json',gecko).returncode!=0
+                assert firefox(manifest,'unregistered@example.invalid').returncode!=0
+                saved=manifest.read_text();manifest.unlink()
+                actual=root/'actual-manifest.json';actual.write_text(saved)
+                manifest.symlink_to(actual)
+                assert firefox(manifest,gecko).returncode!=0
+                manifest.unlink();manifest.write_text(saved)
+                print('PASS registered Firefox manifest binding, case, extension and symlink rejection',flush=True)
             bridge_spec=importlib.util.spec_from_file_location('maskpilot_stress_bridge',Path(__file__).resolve().parents[2]/'benchmarks/run.py')
             bridge_module=importlib.util.module_from_spec(bridge_spec);bridge_spec.loader.exec_module(bridge_module)
             bridge=bridge_module.Bridge(data)
@@ -118,13 +199,13 @@ def run(host,desktop,parser=None,muxer=None):
                 for name in ('source.mp4','playlist.m3u8','manifest.mpd'):
                     response=query('add',url=f'http://127.0.0.1:{media_server.server_port}/{name}',filename=name+'.mkv',media=True);assert response['ok'],response
                     output=wait_complete(response['taskId'],90);assert output.stat().st_size>1000
-                    probe=muxer.with_name('ffprobe.exe');result=subprocess.run([str(probe),'-v','error','-show_entries','stream=codec_type','-of','json',str(output)],capture_output=True,text=True,timeout=15,creationflags=flags)
+                    probe=muxer.with_name('ffprobe.exe' if os.name == 'nt' else 'ffprobe');result=subprocess.run([str(probe),'-v','error','-show_entries','stream=codec_type','-of','json',str(output)],capture_output=True,text=True,timeout=15,creationflags=flags)
                     assert result.returncode==0,result.stderr
                     kinds=[stream['codec_type'] for stream in json.loads(result.stdout)['streams']];assert 'audio' in kinds and 'video' in kinds,kinds
                     print('PASS real media helper and audio/video output:',name,flush=True)
                 response=query('add',url=f'http://127.0.0.1:{media_server.server_port}/source.mp4',filename='audio-only.m4a',media=True,audioOnly=True);assert response['ok'],response
                 output=wait_complete(response['taskId'],90)
-                result=subprocess.run([str(muxer.with_name('ffprobe.exe')),'-v','error','-show_entries','stream=codec_type','-of','json',str(output)],capture_output=True,text=True,timeout=15,creationflags=flags)
+                result=subprocess.run([str(muxer.with_name('ffprobe.exe' if os.name == 'nt' else 'ffprobe')),'-v','error','-show_entries','stream=codec_type','-of','json',str(output)],capture_output=True,text=True,timeout=15,creationflags=flags)
                 assert result.returncode==0 and [stream['codec_type'] for stream in json.loads(result.stdout)['streams']]==['audio']
                 print('PASS real audio-only extraction',flush=True)
         finally:

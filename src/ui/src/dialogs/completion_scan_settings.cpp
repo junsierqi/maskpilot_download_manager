@@ -6,7 +6,8 @@ namespace maskpilot::ui {
 CompletionScanOptions loadCompletionScanSettings(QSettings& settings) {
     CompletionScanOptions value;
     value.enabled = settings.value("completionScan/enabled", false).toBool();
-    value.program = std::filesystem::path(settings.value("completionScan/program").toString().toStdWString());
+    value.program =
+        std::filesystem::path(settings.value("completionScan/program").toString().toStdU16String());
     value.arguments.clear();
     for (const auto& argument :
          settings.value("completionScan/arguments", QStringList{"{file}"}).toStringList())
@@ -24,7 +25,7 @@ void saveCompletionScanSettings(QSettings& settings, const CompletionScanOptions
     for (const auto& argument : value.arguments)
         arguments.push_back(QString::fromUtf8(argument));
     settings.setValue("completionScan/enabled", value.enabled);
-    settings.setValue("completionScan/program", QString::fromStdWString(value.program.wstring()));
+    settings.setValue("completionScan/program", QString::fromStdU16String(value.program.u16string()));
     settings.setValue("completionScan/arguments", arguments);
     settings.setValue("completionScan/timeoutSeconds", value.timeoutSeconds);
     settings.sync();

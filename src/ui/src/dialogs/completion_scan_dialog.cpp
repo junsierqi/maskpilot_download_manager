@@ -41,8 +41,13 @@ void MainWindow::Impl::completionScanDialog() {
     horizontal->addWidget(browse);
     form->addRow(t("Trusted executable", "可信程序"), row);
     QObject::connect(browse, &QPushButton::clicked, &dialog, [&] {
-        auto path =
-            QFileDialog::getOpenFileName(&dialog, dialog.windowTitle(), program->text(), "Programs (*.exe)");
+        auto path = QFileDialog::getOpenFileName(&dialog, dialog.windowTitle(), program->text(),
+#ifdef _WIN32
+                                                 "Programs (*.exe)"
+#else
+                                         "Programs (*)"
+#endif
+        );
         if (!path.isEmpty())
             program->setText(path);
     });
@@ -97,7 +102,7 @@ void MainWindow::Impl::completionScanDialog() {
             return;
         CompletionScanOptions value;
         value.enabled = enabled->isChecked();
-        value.program = std::filesystem::path(program->text().toStdWString());
+        value.program = std::filesystem::path(program->text().toStdU16String());
         value.arguments.clear();
         for (const auto& line : arguments->toPlainText().split('\n', Qt::KeepEmptyParts))
             value.arguments.push_back(line.toUtf8().toStdString());
