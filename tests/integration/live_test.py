@@ -20,6 +20,12 @@ from proxy_fixture import RecordingProxy
 
 COOKIE = 'session=owned-live-private-942'
 AUTH = 'Bearer owned-live-auth-852'
+FLV_HEADER = b'FLV\x01\x05\x00\x00\x00\x09' + b'\x00' * 4
+
+
+def flv_tag(kind, payload=b''):
+    return (bytes([kind]) + len(payload).to_bytes(3, 'big') + b'\x00' * 7 + payload
+            + (11 + len(payload)).to_bytes(4, 'big'))
 
 
 class Origin(http.server.ThreadingHTTPServer):
@@ -44,6 +50,12 @@ class Origin(http.server.ThreadingHTTPServer):
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
+    def handle(self):
+        try:
+            super().handle()
+        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
+            pass  # Expected when an owned duration/quota/forced-exit closes the fixture socket.
+
     def log_message(self, *args):
         pass
 
@@ -71,6 +83,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.reply(b'', 302, '/finite.m3u8')
         if name == 'master.m3u8':
             return self.reply(b'#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=900000\nfinite.m3u8\n')
+        if name == 'rollback.m3u8':
+            count = self.server.polls.get(name, 0)
+            self.server.polls[name] = count + 1
+            sequence, indices = (3, range(3, 6)) if count == 0 else (0, range(8))
+            lines = ['#EXTM3U', '#EXT-X-TARGETDURATION:1', f'#EXT-X-MEDIA-SEQUENCE:{sequence}']
+            for index in indices:
+                lines += ['#EXTINF:1,', f'segment-{index}.ts']
+            if count:
+                lines += ['#EXT-X-ENDLIST']
+            return self.reply(('\n'.join(lines) + '\n').encode())
+        if name in ('empty-video.flv', 'empty-audio.flv', 'empty-both.flv', 'metadata-only.flv'):
+            tags = {'empty-video.flv': flv_tag(9), 'empty-audio.flv': flv_tag(8),
+                    'empty-both.flv': flv_tag(8) + flv_tag(9),
+                    'metadata-only.flv': flv_tag(18, b'owned-metadata-without-media')}
+            return self.reply(FLV_HEADER + tags[name])
+        if name == 'padded.flv':
+            data = (self.server.root / 'feed.flv').read_bytes()
+            return self.reply(data[:13] + flv_tag(9) + data[13:] + flv_tag(9))
         if name in ('encrypted.m3u8', 'map.m3u8', 'discontinuity.m3u8', 'cross-segment.m3u8'):
             extra = {'encrypted.m3u8': '#EXT-X-KEY:METHOD=AES-128,URI="secret.key"\n',
                      'map.m3u8': '#EXT-X-MAP:URI="init.mp4"\n',
@@ -156,6 +186,17 @@ def exercise(executable, scanner):
             output, _, _ = run('flv-exact', origin.url('feed.flv'), ['--sha256', hashlib.sha256(expected_flv).hexdigest()])
             assert output.read_bytes() == expected_flv
             print('PASS real rolling HLS refresh/dedup, finite/master/relative redirect and complete playable TS/FLV exact bytes', flush=True)
+
+            before = len(origin.requests)
+            run('sequence-rollback', origin.url('rollback.m3u8'), good=False)
+            requested = [path for path, _ in origin.requests[before:]]
+            assert requested.count('/rollback.m3u8') == 2
+            assert not any(path in requested for path in ('/segment-6.ts', '/segment-7.ts'))
+            for name in ('empty-video.flv', 'empty-audio.flv', 'empty-both.flv', 'metadata-only.flv'):
+                run('refuse-' + name.replace('.', '-'), origin.url(name), good=False)
+            output, _, _ = run('padded', origin.url('padded.flv'))
+            assert output.read_bytes() == expected_flv[:13] + flv_tag(9) + expected_flv[13:] + flv_tag(9)
+            print('PASS overlapping HLS sequence rollback and empty-only AV/metadata sources never publish; empty padding preserves real playable FLV', flush=True)
 
             start = time.monotonic()
             output, _, _ = run('duration', origin.url('slow.flv'), ['--live-duration', '1'])

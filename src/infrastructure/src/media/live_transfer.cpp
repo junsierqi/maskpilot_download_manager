@@ -304,7 +304,7 @@ class Http {
 void hls(const DownloadSpec& spec, TransferControl& control, Recording& record, Http& http) {
     const QUrl origin(QString::fromUtf8(spec.url), QUrl::StrictMode);
     auto url = origin;
-    std::int64_t next = -1;
+    std::int64_t next = -1, previousSequence = -1;
     int depth = 0;
     auto lastSegment = Clock::now();
     while (!record.ended()) {
@@ -328,8 +328,9 @@ void hls(const DownloadSpec& spec, TransferControl& control, Recording& record, 
         const auto end = playlist.sequence + static_cast<std::int64_t>(playlist.segments.size());
         if (next < 0)
             next = playlist.ended ? playlist.sequence : std::max(playlist.sequence, end - 3);
-        if (next < playlist.sequence || next > end)
+        if (playlist.sequence < previousSequence || next < playlist.sequence || next > end)
             throw std::runtime_error("Live HLS sequence skipped or reset. Recording was not published.");
+        previousSequence = playlist.sequence;
         for (; next < end; ++next) {
             record.check();
             if (record.ended())
@@ -408,7 +409,7 @@ void flv(const DownloadSpec& spec, Recording& record, Http& http) {
                     return true;
                 if (be32(pending, length - 4) != size + 11)
                     throw std::runtime_error("Invalid FLV previous-tag size.");
-                if (!record.append(pending.left(length), type == 8 || type == 9))
+                if (!record.append(pending.left(length), (type == 8 || type == 9) && size != 0))
                     return false;
                 pending.remove(0, length);
             }
