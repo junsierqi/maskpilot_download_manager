@@ -1081,13 +1081,9 @@ std::string sha256File(const std::filesystem::path& path, const TransferControl*
                 BCryptCloseAlgorithmProvider(a, 0);
         }
     } cleanup{algorithm, hash};
-    DWORD length = 0, size = 0;
-    if (BCryptGetProperty(algorithm, BCRYPT_OBJECT_LENGTH, reinterpret_cast<PUCHAR>(&length), sizeof(length),
-                          &size, 0) < 0)
-        throw std::runtime_error("Cannot initialize checksum.");
-    std::vector<unsigned char> object(length);
     std::array<unsigned char, 32> digest{};
-    if (BCryptCreateHash(algorithm, &hash, object.data(), length, nullptr, 0, 0) < 0)
+    // CNG owns object storage until BCryptDestroyHash, including all exceptional exits.
+    if (BCryptCreateHash(algorithm, &hash, nullptr, 0, nullptr, 0, 0) < 0)
         throw std::runtime_error("Cannot initialize checksum.");
     std::ifstream input(path, std::ios::binary);
     if (!input)

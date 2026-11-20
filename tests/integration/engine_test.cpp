@@ -1,5 +1,7 @@
 #include <QProcess>
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <fstream>
 #include <gtest/gtest.h>
 #include <maskpilot/application/download_service.h>
@@ -65,6 +67,64 @@ TEST(Checksums, UsesKnownSha256Vector) {
     }
     EXPECT_EQ(maskpilot::sha256File(path),
               "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+}
+TEST(Checksums, RepeatedParallelUnicodeAndEmptyFilesMatchIndependentKnownVectors) {
+    TempDirectory temporary;
+    const std::array<std::filesystem::path, 3> paths{temporary.path / "empty", temporary.path / "abc",
+                                                     temporary.path / L"校验.bin"};
+    const std::array<std::string, 3> expected{
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        "fbbab289f7f94b25736c58be46a994c441fd02552cc6022352e3d86d2fab7c83"};
+    std::ofstream(paths[0], std::ios::binary).close();
+    std::ofstream(paths[1], std::ios::binary) << "abc";
+    {
+        std::ofstream file(paths[2], std::ios::binary);
+        std::array<char, 256> block{};
+        for (std::size_t i = 0; i < block.size(); ++i)
+            block[i] = static_cast<char>(i);
+        for (int i = 0; i < 4096; ++i)
+            file.write(block.data(), block.size());
+    }
+    std::atomic_int failures{0};
+    {
+        std::vector<std::jthread> workers;
+        for (int worker = 0; worker < 8; ++worker)
+            workers.emplace_back([&] {
+                for (int repetition = 0; repetition < 32; ++repetition)
+                    for (std::size_t i = 0; i < paths.size(); ++i)
+                        try {
+                            if (maskpilot::sha256File(paths[i]) != expected[i])
+                                ++failures;
+                        } catch (...) {
+                            ++failures;
+                        }
+            });
+    }
+    EXPECT_EQ(failures.load(), 0);
+}
+TEST(Checksums, CancelledAndMissingInputsDoNotPoisonSubsequentNativeContexts) {
+    TempDirectory temporary;
+    const auto path = temporary.path / "payload.bin";
+    {
+        std::ofstream file(path, std::ios::binary);
+        std::array<char, 256> block{};
+        for (std::size_t i = 0; i < block.size(); ++i)
+            block[i] = static_cast<char>(i);
+        for (int i = 0; i < 4096; ++i)
+            file.write(block.data(), block.size());
+    }
+    for (int repetition = 0; repetition < 16; ++repetition) {
+        maskpilot::TransferControl cancelled;
+        cancelled.cancel = true;
+        EXPECT_THROW(maskpilot::sha256File(path, &cancelled), std::runtime_error);
+        int polls = 0;
+        EXPECT_THROW(maskpilot::sha256File(path, nullptr, [&] { return ++polls >= 2; }), std::runtime_error);
+        EXPECT_EQ(polls, 2);
+        EXPECT_THROW(maskpilot::sha256File(temporary.path / "missing"), std::runtime_error);
+        EXPECT_EQ(maskpilot::sha256File(path),
+                  "fbbab289f7f94b25736c58be46a994c441fd02552cc6022352e3d86d2fab7c83");
+    }
 }
 TEST(Storage, SourceRequirementMirrorsTaskSpecAndProcessMaterialWithoutPersistingSecrets) {
     TempDirectory temporary;
@@ -480,7 +540,10 @@ TEST(Storage, MigratesPreviousSchemaWithoutChangingExistingProtocolsOrFiles) {
                                "post_content_type",
                                "sftp_authentication",
                                "sftp_host_key_sha256",
-                               "sftp_private_key", "live_format", "live_duration", "live_max_bytes"}) {
+                               "sftp_private_key",
+                               "live_format",
+                               "live_duration",
+                               "live_max_bytes"}) {
         const auto sql = std::string("ALTER TABLE tasks DROP COLUMN ") + column;
         ASSERT_EQ(sqlite3_exec(connection, sql.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
     }
