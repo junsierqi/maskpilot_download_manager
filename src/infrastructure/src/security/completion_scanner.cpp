@@ -9,6 +9,7 @@
 #include <map>
 #include <maskpilot/infrastructure/adapters.h>
 #include <stdexcept>
+#include <type_traits>
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -26,7 +27,10 @@ void safePath(const fs::path& path) {
     if (!path.is_absolute() || path.lexically_normal() != path || path.native().size() > 32768 ||
         path.native().starts_with(fs::path("//").native()) ||
         path.native().starts_with(fs::path("\\\\").native()) ||
-        std::any_of(path.native().begin(), path.native().end(), [](auto c) { return c < 32 || c == 127; }))
+        std::any_of(path.native().begin(), path.native().end(), [](auto c) {
+            const auto unit = static_cast<std::make_unsigned_t<decltype(c)>>(c);
+            return unit < 32 || unit == 127;
+        }))
         throw std::invalid_argument("Choose a regular local scanner input.");
 #ifdef _WIN32
     if (GetDriveTypeW(path.root_path().c_str()) == DRIVE_REMOTE)
@@ -107,19 +111,27 @@ class CompletionScanner final : public ICompletionScanner {
                                      "CommonProgramFiles", "CommonProgramFiles(x86)", "SystemDrive"})
                 if (system.contains(QString::fromLatin1(name)))
                     environment.insert(QString::fromLatin1(name), system.value(QString::fromLatin1(name)));
-            environment.insert("PATH", QString::fromStdWString(options_.program.parent_path().wstring()) +
+#ifdef _WIN32
+            environment.insert("PATH", QString::fromStdU16String(options_.program.parent_path().u16string()) +
                                            ";" + QDir(system.value("SystemRoot")).filePath("System32"));
+#else
+            for (const auto* name : {"HOME", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "XDG_RUNTIME_DIR"})
+                if (system.contains(QString::fromLatin1(name)))
+                    environment.insert(QString::fromLatin1(name), system.value(QString::fromLatin1(name)));
+            environment.insert("PATH", QString::fromStdU16String(options_.program.parent_path().u16string()) +
+                                           ":/usr/bin:/bin");
+#endif
             child.setProcessEnvironment(environment);
             child.setStandardOutputFile(QProcess::nullDevice());
             child.setStandardErrorFile(QProcess::nullDevice());
             process::OwnedProcessGroup group;
             group.prepare(child);
-            child.setWorkingDirectory(QString::fromStdWString(options_.program.parent_path().wstring()));
+            child.setWorkingDirectory(QString::fromStdU16String(options_.program.parent_path().u16string()));
             QStringList arguments;
             for (const auto& argument : options_.arguments)
-                arguments.push_back(argument == "{file}" ? QString::fromStdWString(path.wstring())
+                arguments.push_back(argument == "{file}" ? QString::fromStdU16String(path.u16string())
                                                          : QString::fromUtf8(argument));
-            child.start(QString::fromStdWString(options_.program.wstring()), arguments);
+            child.start(QString::fromStdU16String(options_.program.u16string()), arguments);
             while (child.state() == QProcess::Starting) {
                 child.waitForStarted(50);
                 if (stopped(control) || Clock::now() >= deadline) {

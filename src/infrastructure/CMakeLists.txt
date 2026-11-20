@@ -28,4 +28,6 @@ target_link_libraries(maskpilot_infrastructure PUBLIC maskpilot_application Qt6:
     PRIVATE CURL::libcurl unofficial::sqlite3::sqlite3 LibtorrentRasterbar::torrent-rasterbar LibXml2::LibXml2 Qt6::Network)
 if(WIN32)
   target_link_libraries(maskpilot_infrastructure PRIVATE bcrypt advapi32)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_link_libraries(maskpilot_infrastructure PRIVATE PkgConfig::LIBSECRET)
 endif()

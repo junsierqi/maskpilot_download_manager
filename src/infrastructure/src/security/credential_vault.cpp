@@ -2,8 +2,21 @@
 #include <maskpilot/domain/task.h>
 #include <maskpilot/infrastructure/credential_vault.h>
 
+#ifdef __linux__
+#include <cerrno>
+#include <condition_variable>
+#include <cstring>
+#include <libsecret/secret.h>
+#include <mutex>
+#include <sys/stat.h>
+#include <thread>
+#include <unistd.h>
+#endif
+#include <QDir>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLockFile>
+#include <QStandardPaths>
 #include <QUuid>
 #include <algorithm>
 #include <memory>
@@ -219,6 +232,232 @@ class NativeVault final : public ICredentialVault {
         if (!validateProxy(spec, true).empty())
             throw CredentialVaultError(CredentialVaultFailure::Corrupt, "Invalid credential vault entry");
         return owned;
+    }
+};
+#elif defined(__linux__)
+constexpr qsizetype secretLimit = 2560;
+const SecretSchema schema = [] {
+    SecretSchema value{};
+    value.name = "org.maskpilot.DownloadManager.Credentials.v1";
+    value.flags = SECRET_SCHEMA_NONE;
+    value.attributes[0] = {"installation", SECRET_SCHEMA_ATTRIBUTE_STRING};
+    value.attributes[1] = {"reference", SECRET_SCHEMA_ATTRIBUTE_STRING};
+    return value;
+}();
+struct SecretRequest {
+    GCancellable* cancel = g_cancellable_new();
+    GError* error = nullptr;
+    std::mutex mutex;
+    std::condition_variable_any wake;
+    std::jthread deadline{[this](std::stop_token stop) {
+        std::unique_lock lock(mutex);
+        wake.wait_for(lock, stop, std::chrono::seconds(5), [] { return false; });
+        if (!stop.stop_requested())
+            g_cancellable_cancel(cancel);
+    }};
+    ~SecretRequest() {
+        deadline.request_stop();
+        wake.notify_all();
+        deadline.join();
+        if (error)
+            g_error_free(error);
+        g_object_unref(cancel);
+    }
+    void check() const {
+        if (error) {
+            if (g_error_matches(error, G_IO_ERROR, G_IO_ERROR_PERMISSION_DENIED) ||
+                g_error_matches(error, G_DBUS_ERROR, G_DBUS_ERROR_ACCESS_DENIED))
+                throw CredentialVaultError(CredentialVaultFailure::AccessDenied, "System secret service access denied");
+            throw CredentialVaultError(CredentialVaultFailure::Unavailable,
+                                       "System secret service is unavailable, locked, or timed out");
+        }
+    }
+};
+struct ItemRelease {
+    void operator()(SecretItem* item) const {
+        if (item)
+            g_object_unref(item);
+    }
+};
+using SecretItemHandle = std::unique_ptr<SecretItem, ItemRelease>;
+class LinuxWriteLock {
+    QLockFile lock_;
+    static QString lockPath(const std::string& installation, const std::string& reference) {
+        const auto runtime = QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation);
+        if (runtime.isEmpty())
+            throw CredentialVaultError(CredentialVaultFailure::Unavailable,
+                                       "Private runtime directory is unavailable");
+        const auto directory = QDir(runtime).filePath("maskpilot-vault");
+        const auto bytes = directory.toUtf8();
+        if (mkdir(bytes.constData(), 0700) != 0 && errno != EEXIST)
+            throw CredentialVaultError(CredentialVaultFailure::Storage,
+                                       "Cannot create private vault lock directory");
+        struct stat status{};
+        if (lstat(bytes.constData(), &status) != 0 || !S_ISDIR(status.st_mode) || status.st_uid != getuid() ||
+            (status.st_mode & 077) != 0)
+            throw CredentialVaultError(CredentialVaultFailure::Storage,
+                                       "Vault lock directory has unsafe ownership");
+        return QDir(directory).filePath(text(installation + "-" + reference + ".lock"));
+    }
+
+  public:
+    LinuxWriteLock(const std::string& installation, const std::string& reference)
+        : lock_(lockPath(installation, reference)) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!lock_.tryLock(0)) {
+            if (std::chrono::steady_clock::now() >= deadline)
+                throw CredentialVaultError(CredentialVaultFailure::Storage, "Credential reference is busy");
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+};
+class NativeVault final : public ICredentialVault {
+    std::string installation_;
+    void validReference(const std::string& reference) const {
+        if (!opaqueId(reference))
+            invalid();
+    }
+    SecretItemHandle find(const std::string& reference, SecretRequest& request, bool load) const {
+        validReference(reference);
+        auto* service = secret_service_get_sync(SECRET_SERVICE_NONE, request.cancel, &request.error);
+        request.check();
+        if (!service)
+            throw CredentialVaultError(CredentialVaultFailure::Unavailable,
+                                       "System secret service is unavailable");
+        auto* attributes = secret_attributes_build(&schema, "installation", installation_.c_str(),
+                                                   "reference", reference.c_str(), nullptr);
+        const auto flags = static_cast<SecretSearchFlags>(
+            SECRET_SEARCH_ALL | (load ? SECRET_SEARCH_UNLOCK | SECRET_SEARCH_LOAD_SECRETS : 0));
+        auto* items =
+            secret_service_search_sync(service, &schema, attributes, flags, request.cancel, &request.error);
+        g_hash_table_unref(attributes);
+        g_object_unref(service);
+        if (request.error) {
+            g_list_free_full(items, g_object_unref);
+            request.check();
+        }
+        if (items && items->next) {
+            g_list_free_full(items, g_object_unref);
+            throw CredentialVaultError(CredentialVaultFailure::Corrupt, "Credential reference is ambiguous");
+        }
+        SecretItemHandle result(items ? SECRET_ITEM(g_object_ref(items->data)) : nullptr);
+        g_list_free_full(items, g_object_unref);
+        return result;
+    }
+    QJsonObject decode(SecretItem* item, const ProxyCredentialBinding& binding) const {
+        const auto canonical = route(binding);
+        auto* value = secret_item_get_secret(item);
+        if (!value)
+            throw CredentialVaultError(CredentialVaultFailure::Unavailable, "Credential item is locked");
+        gsize length = 0;
+        const auto* bytes = secret_value_get(value, &length);
+        if (!bytes || length == 0 || length > static_cast<gsize>(secretLimit)) {
+            secret_value_unref(value);
+            throw CredentialVaultError(CredentialVaultFailure::Corrupt, "Invalid credential vault entry");
+        }
+        const auto document =
+            QJsonDocument::fromJson(QByteArray::fromRawData(bytes, static_cast<qsizetype>(length)));
+        secret_value_unref(value);
+        const auto object = document.object();
+        if (!document.isObject() || object["version"].toInt() != 1 || !object["owner"].isString() ||
+            !object["route"].isString() || !object["nonce"].isString() || !object["username"].isString() ||
+            !object["password"].isString() ||
+            (!object["nonce"].toString().isEmpty() && !opaqueId(object["nonce"].toString().toStdString())))
+            throw CredentialVaultError(CredentialVaultFailure::Corrupt, "Invalid credential vault entry");
+        if (object["owner"].toString() != text(binding.ownerId) ||
+            object["route"].toString() != text(canonical) ||
+            object["nonce"].toString() != text(binding.ownershipNonce))
+            throw CredentialVaultError(CredentialVaultFailure::Binding,
+                                       "Credential vault binding does not match");
+        DownloadSpec spec;
+        spec.proxy = binding.proxyEndpoint;
+        spec.proxyUsername = object["username"].toString().toUtf8().toStdString();
+        spec.proxyPassword = object["password"].toString().toUtf8().toStdString();
+        spec.proxyAuthenticationRequired = true;
+        if (!validateProxy(spec, true).empty())
+            throw CredentialVaultError(CredentialVaultFailure::Corrupt, "Invalid credential vault entry");
+        return object;
+    }
+
+  public:
+    explicit NativeVault(std::string installation) : installation_(std::move(installation)) {}
+    std::string remember(const ProxyCredentialBinding& binding,
+                         const ProxyCredentials& credentials) override {
+        const auto reference = QUuid::createUuid().toString(QUuid::Id128).toStdString();
+        store(reference, binding, credentials);
+        return reference;
+    }
+    void store(const std::string& reference, const ProxyCredentialBinding& binding,
+               const ProxyCredentials& credentials) override {
+        validReference(reference);
+        const auto canonical = route(binding);
+        DownloadSpec spec;
+        spec.proxy = binding.proxyEndpoint;
+        spec.proxyUsername = credentials.username;
+        spec.proxyPassword = credentials.password;
+        spec.proxyAuthenticationRequired = true;
+        if (!validateProxy(spec, true).empty())
+            invalid();
+        auto blob = QJsonDocument(QJsonObject{{"version", 1},
+                                              {"owner", text(binding.ownerId)},
+                                              {"route", text(canonical)},
+                                              {"nonce", text(binding.ownershipNonce)},
+                                              {"username", text(credentials.username)},
+                                              {"password", text(credentials.password)}})
+                        .toJson(QJsonDocument::Compact);
+        struct Wipe {
+            QByteArray& bytes;
+            ~Wipe() { bytes.fill('\0'); }
+        } wipe{blob};
+        if (blob.size() > secretLimit) {
+            blob.fill('\0');
+            invalid();
+        }
+        const LinuxWriteLock lock(installation_, reference);
+        SecretRequest request;
+        if (find(reference, request, false)) {
+            blob.fill('\0');
+            throw CredentialVaultError(CredentialVaultFailure::AlreadyExists,
+                                       "Credential reference already exists");
+        }
+        const auto stored =
+            secret_password_store_sync(&schema, SECRET_COLLECTION_DEFAULT, "MaskPilot proxy credentials",
+                                       blob.constData(), request.cancel, &request.error, "installation",
+                                       installation_.c_str(), "reference", reference.c_str(), nullptr);
+        blob.fill('\0');
+        request.check();
+        if (!stored)
+            throw CredentialVaultError(CredentialVaultFailure::Storage,
+                                       "Cannot store credentials in system secret service");
+    }
+    std::optional<ProxyCredentials> recall(const ProxyCredentialBinding& binding,
+                                           const std::string& reference) override {
+        route(binding);
+        validReference(reference);
+        const LinuxWriteLock lock(installation_, reference);
+        SecretRequest request;
+        auto item = find(reference, request, true);
+        if (!item)
+            return {};
+        const auto object = decode(item.get(), binding);
+        return ProxyCredentials{object["username"].toString().toUtf8().toStdString(),
+                                object["password"].toString().toUtf8().toStdString()};
+    }
+    bool forget(const ProxyCredentialBinding& binding, const std::string& reference) override {
+        route(binding);
+        validReference(reference);
+        const LinuxWriteLock lock(installation_, reference);
+        SecretRequest request;
+        auto item = find(reference, request, true);
+        if (!item)
+            return false;
+        decode(item.get(), binding);
+        const auto deleted = secret_item_delete_sync(item.get(), request.cancel, &request.error);
+        request.check();
+        if (!deleted)
+            throw CredentialVaultError(CredentialVaultFailure::Storage,
+                                       "Cannot remove owned credential item");
+        return true;
     }
 };
 #else

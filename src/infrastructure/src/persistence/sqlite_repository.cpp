@@ -162,7 +162,7 @@ class Backend {
         const auto saved = sqlite3_column_int64(query.value, 0);
         if (saved < 0 || saved > 253402300799LL)
             throw std::runtime_error("Traffic accounting highwater is invalid.");
-        const auto now = std::max(saved, utc);
+        const auto now = std::max<std::int64_t>(saved, utc);
         if (now != saved) {
             Statement update(db_, "UPDATE traffic_clock SET utc_highwater=? WHERE singleton=1");
             update.number(1, now);

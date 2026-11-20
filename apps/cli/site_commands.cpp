@@ -140,10 +140,10 @@ QJsonObject summary(const SiteProjectSummary& s) {
             {"rootUrl", q(s.rootUrl)},
             {"queueId", q(s.queueId)},
             {"state", stateToken(s.state)},
-            {"revision", s.revision},
-            {"publishedRevision", s.publishedRevision},
-            {"storedBytes", s.storedBytes},
-            {"reservedBytes", s.reservedBytes},
+            {"revision", static_cast<qint64>(s.revision)},
+            {"publishedRevision", static_cast<qint64>(s.publishedRevision)},
+            {"storedBytes", static_cast<qint64>(s.storedBytes)},
+            {"reservedBytes", static_cast<qint64>(s.reservedBytes)},
             {"documents", static_cast<qint64>(s.documents)},
             {"resources", static_cast<qint64>(s.resources)},
             {"ready", static_cast<qint64>(s.ready)},
@@ -285,7 +285,7 @@ int runSiteProjectCommand(int argc, char** argv, CompletionScanDependencies scan
                                     {"url", q(e.url)},
                                     {"kind", static_cast<int>(e.kind)},
                                     {"state", QString::fromUtf8(siteProjectEntryStateName(e.state))},
-                                    {"bytes", e.bytes},
+                                    {"bytes", static_cast<qint64>(e.bytes)},
                                     {"responseUrl", q(e.responseUrl)},
                                     {"contentType", q(e.contentType)},
                                     {"error", q(e.error)}});
@@ -293,7 +293,7 @@ int runSiteProjectCommand(int argc, char** argv, CompletionScanDependencies scan
             }
             if (action == "open") {
                 auto path = await(projects.openPath(id), deadline);
-                answer.insert("path", QString::fromStdWString(path.wstring()));
+                answer.insert("path", QString::fromStdU16String(path.u16string()));
             }
             if (found->state == SiteProjectState::NeedsAttention && action != "status" && action != "open") {
                 answer["ok"] = false;

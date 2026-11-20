@@ -3,6 +3,7 @@
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QUuid>
+#include <filesystem>
 #include <functional>
 #include <gtest/gtest.h>
 #include <maskpilot/infrastructure/credential_vault.h>
@@ -255,6 +256,31 @@ TEST_F(CredentialVault, ReopenAcrossProcess) {
     ASSERT_TRUE(child.waitForFinished(20000));
     EXPECT_EQ(child.exitStatus(), QProcess::NormalExit);
     EXPECT_EQ(child.exitCode(), 0) << child.readAllStandardOutput().toStdString();
+}
+#elif defined(__linux__)
+TEST(CredentialVault, MissingLinuxSecretServiceFailsExplicitly) {
+    if (!qEnvironmentVariableIsSet("MASKPILOT_TEST_HEADLESS_VAULT_CHILD")) {
+        QProcess child;
+        auto environment = QProcessEnvironment::systemEnvironment();
+        environment.insert("MASKPILOT_TEST_HEADLESS_VAULT_CHILD", "1");
+        environment.insert("DBUS_SESSION_BUS_ADDRESS",
+                           "unix:path=/nonexistent-maskpilot-owned-vault-fixture");
+        child.setProcessEnvironment(environment);
+        const auto executable = std::filesystem::read_symlink("/proc/self/exe");
+        child.start(QString::fromStdU16String(executable.u16string()),
+                    {"--gtest_filter=CredentialVault.MissingLinuxSecretServiceFailsExplicitly"});
+        ASSERT_TRUE(child.waitForStarted(5000));
+        ASSERT_TRUE(child.waitForFinished(15000));
+        EXPECT_EQ(child.exitStatus(), QProcess::NormalExit);
+        EXPECT_EQ(child.exitCode(), 0) << child.readAllStandardOutput().toStdString();
+        return;
+    }
+    auto vault = makeNativeCredentialVault(randomId());
+    expectFailure(CredentialVaultFailure::Unavailable,
+                  [&] { vault->remember({"standalone", "http://proxy.example"}, {"user", "password"}); });
+    expectFailure(CredentialVaultFailure::Unavailable, [&] {
+        vault->store(randomId(), {"standalone", "http://proxy.example"}, {"user", "password"});
+    });
 }
 #else
 TEST(CredentialVault, UnsupportedPlatformFailsExplicitly) {

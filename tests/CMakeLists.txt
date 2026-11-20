@@ -33,6 +33,14 @@ target_link_libraries(maskpilot_tests PRIVATE maskpilot_application maskpilot_in
 include(GoogleTest)
 gtest_discover_tests(maskpilot_tests DISCOVERY_MODE PRE_TEST WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(maskpilot_linux_platform_tests linux/platform_test.cpp)
+  target_compile_definitions(maskpilot_linux_platform_tests PRIVATE QT_NO_KEYWORDS)
+  target_link_libraries(maskpilot_linux_platform_tests PRIVATE maskpilot_infrastructure GTest::gtest PkgConfig::LIBSECRET)
+  add_test(NAME linux_platform_product_path COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/linux/platform_fixture.py --exercise $<TARGET_FILE:maskpilot_linux_platform_tests>)
+  set_tests_properties(linux_platform_product_path PROPERTIES TIMEOUT 90)
+endif()
 execute_process(COMMAND ${Python3_EXECUTABLE} -c "import paramiko"
   RESULT_VARIABLE sftp_fixture_result OUTPUT_QUIET ERROR_QUIET)
 if(NOT sftp_fixture_result EQUAL 0)

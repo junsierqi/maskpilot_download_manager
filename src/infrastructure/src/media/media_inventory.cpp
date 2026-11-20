@@ -150,7 +150,7 @@ class MediaInspector final : public IMediaInspector {
         args << "--dump-single-json" << "--skip-download" << "--no-warnings";
         const auto started = std::chrono::steady_clock::now();
         if (!media_process::launch(process, tree, spec, args,
-                                   std::filesystem::path(temporary.path().toStdWString()),
+                                   std::filesystem::path(temporary.path().toStdU16String()),
                                    [&] { return stop.stop_requested(); }))
             throw std::runtime_error("Media inspection cancelled.");
         QByteArray output, diagnostics;

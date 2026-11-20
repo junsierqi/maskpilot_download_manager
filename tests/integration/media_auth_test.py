@@ -92,7 +92,7 @@ def call(client, parser, muxer, case, url, *options, inspect=False, authenticate
     for private in (COOKIE.encode(), AUTH.encode()):
         assert private not in result.stdout + result.stderr
     if not inspect and expected:
-        probe = muxer.with_name('ffprobe.exe')
+        probe = muxer.with_name('ffprobe.exe' if os.name == 'nt' else 'ffprobe')
         answer = subprocess.run([str(probe), '-v', 'error', '-show_streams', '-of', 'json', str(output)],
                                 capture_output=True, timeout=15)
         assert answer.returncode == 0, answer.stderr

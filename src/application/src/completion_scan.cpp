@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <maskpilot/application/completion_scan.h>
 #include <stdexcept>
+#include <type_traits>
 
 namespace maskpilot {
 std::string validateCompletionScanOptions(const CompletionScanOptions& options) {
@@ -23,8 +24,10 @@ std::string validateCompletionScanOptions(const CompletionScanOptions& options) 
     if (placeholders != 1)
         return "Provide exactly one {file} argument for the verified file or directory.";
     const auto program = options.program.native();
-    if (program.size() > 32768 ||
-        std::any_of(program.begin(), program.end(), [](auto c) { return c < 32 || c == 127; }))
+    if (program.size() > 32768 || std::any_of(program.begin(), program.end(), [](auto c) {
+            const auto unit = static_cast<std::make_unsigned_t<decltype(c)>>(c);
+            return unit < 32 || unit == 127;
+        }))
         return "Scanner program path is invalid.";
     if (options.enabled && (options.program.empty() || !options.program.is_absolute()))
         return "Choose an absolute trusted scanner executable path.";

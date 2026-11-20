@@ -1,4 +1,5 @@
 #include "torrent_internal.h"
+#include <QString>
 #include <algorithm>
 #include <cwctype>
 #include <fstream>
@@ -10,10 +11,16 @@
 #include <libtorrent/write_resume_data.hpp>
 #include <limits>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 #include <string_view>
 #ifdef _WIN32
 #include <windows.h>
+#elif defined(__linux__)
+#include <cerrno>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #endif
 
 namespace maskpilot::torrent_internal {
@@ -87,8 +94,8 @@ void inspectOriginalPaths(const std::vector<char>& bytes) {
     }
 }
 std::wstring foldedPath(const std::string& path) {
-    auto wide = nativePath(path).wstring();
 #ifdef _WIN32
+    auto wide = nativePath(path).wstring();
     const auto size = LCMapStringEx(LOCALE_NAME_INVARIANT, LCMAP_UPPERCASE, wide.data(),
                                     static_cast<int>(wide.size()), nullptr, 0, nullptr, nullptr, 0);
     if (size <= 0)
@@ -99,10 +106,72 @@ std::wstring foldedPath(const std::string& path) {
         throw std::invalid_argument("Cannot normalize torrent file paths.");
     return folded;
 #else
-    std::transform(wide.begin(), wide.end(), wide.begin(), [](wchar_t c) { return std::towupper(c); });
-    return wide;
+    const auto unicode = QString::fromUtf8(path.data(), static_cast<qsizetype>(path.size()));
+    if (unicode.toUtf8().toStdString() != path)
+        throw std::invalid_argument("Torrent file path contains invalid Unicode.");
+    return unicode.toUpper().toStdWString();
 #endif
 }
+#ifdef __linux__
+bool localMount(const std::filesystem::path& path) {
+    // Reject network and automounter paths before opening any component. The
+    // subsequent descriptor walk separately refuses symlinks and special files.
+    std::ifstream mounts("/proc/self/mountinfo");
+    if (!mounts)
+        return false;
+    std::string line, bestType;
+    std::size_t bestLength = 0, entries = 0;
+    const auto candidate = path.native();
+    while (std::getline(mounts, line)) {
+        if (++entries > 16384 || line.size() > 65536)
+            return false;
+        std::istringstream fields(line);
+        std::string id, parent, device, root, encoded, options, token, type;
+        if (!(fields >> id >> parent >> device >> root >> encoded >> options))
+            return false;
+        while (fields >> token && token != "-") {
+        }
+        if (token != "-" || !(fields >> type))
+            return false;
+        std::string mount;
+        for (std::size_t i = 0; i < encoded.size(); ++i) {
+            if (encoded[i] == '\\') {
+                if (i + 3 >= encoded.size() || encoded[i + 1] < '0' || encoded[i + 1] > '7' ||
+                    encoded[i + 2] < '0' || encoded[i + 2] > '7' || encoded[i + 3] < '0' ||
+                    encoded[i + 3] > '7')
+                    return false;
+                mount += static_cast<char>((encoded[i + 1] - '0') * 64 + (encoded[i + 2] - '0') * 8 +
+                                           encoded[i + 3] - '0');
+                i += 3;
+            } else
+                mount += encoded[i];
+        }
+        if ((mount == "/" || candidate == mount || candidate.starts_with(mount + "/")) &&
+            mount.size() >= bestLength) {
+            bestLength = mount.size();
+            bestType = std::move(type);
+        }
+    }
+    return bestType == "ext2" || bestType == "ext3" || bestType == "ext4" || bestType == "xfs" ||
+           bestType == "btrfs" || bestType == "tmpfs" || bestType == "ramfs" || bestType == "overlay" ||
+           bestType == "f2fs" || bestType == "zfs";
+}
+struct Descriptor {
+    int value = -1;
+    explicit Descriptor(int descriptor) : value(descriptor) {}
+    Descriptor(const Descriptor&) = delete;
+    Descriptor& operator=(const Descriptor&) = delete;
+    ~Descriptor() {
+        if (value >= 0)
+            close(value);
+    }
+    void reset(int next) {
+        if (value >= 0)
+            close(value);
+        value = next;
+    }
+};
+#endif
 TorrentMetadata readLocalMetadata(const std::string& source) {
 #ifdef _WIN32
     constexpr auto error = "Copy the torrent file to a directly mounted local disk before adding it.";
@@ -161,6 +230,52 @@ TorrentMetadata readLocalMetadata(const std::string& source) {
     if (!ReadFile(file.handle, bytes->data(), static_cast<DWORD>(bytes->size()), &read, nullptr) ||
         read != bytes->size())
         throw std::invalid_argument("Cannot read the bounded local torrent file.");
+    return bytes;
+#elif defined(__linux__)
+    constexpr auto error = "Choose a regular torrent file on a supported local disk without symlinks.";
+    const auto path = nativePath(source);
+    const auto unicodeSource = QString::fromUtf8(source.data(), static_cast<qsizetype>(source.size()));
+    if (!path.is_absolute() || path.filename().empty() || path.lexically_normal() != path ||
+        unicodeSource.toUtf8().toStdString() != source ||
+        source.size() > 32768 || source.starts_with("//") || source.starts_with("\\\\") ||
+        std::any_of(source.begin(), source.end(), [](unsigned char c) { return c < 32 || c == 127; }) ||
+        !localMount(path))
+        throw std::invalid_argument(error);
+    Descriptor directory{open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC)};
+    if (directory.value < 0)
+        throw std::invalid_argument(error);
+    std::filesystem::path cursor("/");
+    for (const auto& part : path.parent_path().relative_path()) {
+        cursor /= part;
+        if (!localMount(cursor))
+            throw std::invalid_argument(error);
+        const auto next =
+            openat(directory.value, part.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        if (next < 0)
+            throw std::invalid_argument(error);
+        directory.reset(next);
+    }
+    Descriptor file{
+        openat(directory.value, path.filename().c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)};
+    struct stat before{}, after{};
+    if (file.value < 0 || fstat(file.value, &before) != 0 || !S_ISREG(before.st_mode) ||
+        before.st_size <= 0 || static_cast<std::uint64_t>(before.st_size) > maxTorrentMetadataBytes)
+        throw std::invalid_argument(error);
+    auto bytes = std::make_shared<std::vector<char>>(static_cast<std::size_t>(before.st_size));
+    std::size_t offset = 0;
+    while (offset < bytes->size()) {
+        const auto count = read(file.value, bytes->data() + offset, bytes->size() - offset);
+        if (count < 0 && errno == EINTR)
+            continue;
+        if (count <= 0)
+            throw std::invalid_argument("Cannot read the bounded local torrent file.");
+        offset += static_cast<std::size_t>(count);
+    }
+    if (fstat(file.value, &after) != 0 || before.st_dev != after.st_dev || before.st_ino != after.st_ino ||
+        before.st_size != after.st_size || before.st_mtim.tv_sec != after.st_mtim.tv_sec ||
+        before.st_mtim.tv_nsec != after.st_mtim.tv_nsec || before.st_ctim.tv_sec != after.st_ctim.tv_sec ||
+        before.st_ctim.tv_nsec != after.st_ctim.tv_nsec)
+        throw std::invalid_argument("Local torrent metadata changed while being captured.");
     return bytes;
 #else
     (void)source;

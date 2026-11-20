@@ -21,6 +21,7 @@
 #include <io.h>
 #include <windows.h>
 #else
+#include <QCryptographicHash>
 #include <unistd.h>
 #endif
 
@@ -490,7 +491,7 @@ class CurlTransfer final : public ITransferTransport {
             callback(event);
         };
         event.phase = TaskState::Probing;
-        auto emit = [&](TransferOutcome result, std::string error = {}, bool retry = false) {
+        auto report = [&](TransferOutcome result, std::string error = {}, bool retry = false) {
             event.outcome = result;
             event.error = std::move(error);
             event.retryable = retry && !post;
@@ -499,11 +500,11 @@ class CurlTransfer final : public ITransferTransport {
         deliver();
         auto stopped = [&]() {
             if (control.cancel) {
-                emit(TransferOutcome::Cancelled);
+                report(TransferOutcome::Cancelled);
                 return true;
             }
             if (control.pause) {
-                emit(TransferOutcome::Paused);
+                report(TransferOutcome::Paused);
                 return true;
             }
             return false;
@@ -541,7 +542,7 @@ class CurlTransfer final : public ITransferTransport {
                 remote = probe(spec, control, requiresOriginAuthentication(spec));
         } catch (const std::exception& e) {
             if (!stopped())
-                emit(TransferOutcome::Attention, e.what());
+                report(TransferOutcome::Attention, e.what());
             return;
         }
         if (stopped())
@@ -549,7 +550,7 @@ class CurlTransfer final : public ITransferTransport {
         event.total = remote.total;
         event.retryAfter = remote.retryAfter;
         if (remote.status != 200 && remote.status != 206 && !(remote.status == 416 && remote.total == 0)) {
-            emit(remote.status == 401 || remote.status == 403 ? TransferOutcome::Attention
+            report(remote.status == 401 || remote.status == 403 ? TransferOutcome::Attention
                                                               : TransferOutcome::Failed,
                  "Server rejected download (HTTP " + std::to_string(remote.status) + ").",
                  retryStatus(remote.status) || retryCode(remote.code));
@@ -559,14 +560,14 @@ class CurlTransfer final : public ITransferTransport {
         observation.url = remote.effectiveUrl;
         if (remote.effectiveUrl.empty() || remote.effectiveUrl.size() > 32768 ||
             !validateSpec(observation).empty()) {
-            emit(TransferOutcome::Attention, "Server response URL is invalid.");
+            report(TransferOutcome::Attention, "Server response URL is invalid.");
             return;
         }
         if (!post)
             event.responseUrl = remote.effectiveUrl;
         contentType.seed(remote.status, remote.contentType, remote.contentTypeInvalid);
         if (task.spec.maxStoredBytes > 0 && remote.total > task.spec.maxStoredBytes) {
-            emit(TransferOutcome::Attention, "Resource exceeds this task's stored-byte limit.");
+            report(TransferOutcome::Attention, "Resource exceeds this task's stored-byte limit.");
             return;
         }
         bool resumable = remote.ranges && strongEtag(remote.etag) && remote.total >= 0;
@@ -947,7 +948,7 @@ class CurlTransfer final : public ITransferTransport {
                     callback(std::move(result));
                 });
             } catch (const std::exception&) {
-                emit(TransferOutcome::Attention, "POST redirect was refused. Submission may have reached the "
+                report(TransferOutcome::Attention, "POST redirect was refused. Submission may have reached the "
                                                  "server; review before retrying.");
             }
             return;
@@ -955,15 +956,15 @@ class CurlTransfer final : public ITransferTransport {
         if (!failure.empty()) {
             if (post)
                 failure += " POST may have reached the server; confirm a new submission before retrying.";
-            emit(integrityFailure ? TransferOutcome::Attention : TransferOutcome::Failed, failure, retryable);
+            report(integrityFailure ? TransferOutcome::Attention : TransferOutcome::Failed, failure, retryable);
             return;
         }
         if (task.spec.maxStoredBytes > 0 && event.downloaded > task.spec.maxStoredBytes) {
-            emit(TransferOutcome::Attention, "Downloaded resource exceeds this task's stored-byte limit.");
+            report(TransferOutcome::Attention, "Downloaded resource exceeds this task's stored-byte limit.");
             return;
         }
         if (remote.total >= 0 && event.downloaded != remote.total) {
-            emit(TransferOutcome::Failed, "Downloaded byte count does not match the resource.");
+            report(TransferOutcome::Failed, "Downloaded byte count does not match the resource.");
             return;
         }
         if (remote.total < 0)
@@ -976,7 +977,7 @@ class CurlTransfer final : public ITransferTransport {
         stage += L".maskpilot-" + std::filesystem::path(task.id).wstring() + L".tmp";
         FILE* output = openFile(stage, L"wb");
         if (!output) {
-            emit(TransferOutcome::Attention, "Cannot create destination file. Check disk space and access.");
+            report(TransferOutcome::Attention, "Cannot create destination file. Check disk space and access.");
             return;
         }
         try {
@@ -1017,7 +1018,7 @@ class CurlTransfer final : public ITransferTransport {
                 std::transform(expected.begin(), expected.end(), expected.begin(),
                                [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
                 if (sha256File(stage, &control) != expected) {
-                    emit(TransferOutcome::Attention,
+                    report(TransferOutcome::Attention,
                          "SHA-256 verification failed. The file was not published.");
                     return;
                 }
@@ -1025,7 +1026,7 @@ class CurlTransfer final : public ITransferTransport {
             if (control.scanBeforePublish) {
                 const auto scan = control.scanBeforePublish(stage);
                 if (scan.outcome != TransferOutcome::Complete) {
-                    emit(scan.outcome, scan.error);
+                    report(scan.outcome, scan.error);
                     return;
                 }
             }
@@ -1036,10 +1037,10 @@ class CurlTransfer final : public ITransferTransport {
                     if (stopped())
                         return;
                     std::filesystem::remove(stage);
-                    emit(TransferOutcome::Complete);
+                    report(TransferOutcome::Complete);
                     return;
                 }
-                emit(TransferOutcome::Attention, "Destination already exists. Existing file was preserved.");
+                report(TransferOutcome::Attention, "Destination already exists. Existing file was preserved.");
                 return;
             }
             if (stopped())
@@ -1053,12 +1054,12 @@ class CurlTransfer final : public ITransferTransport {
             std::filesystem::create_hard_link(stage, task.spec.destination);
             std::filesystem::remove(stage);
 #endif
-            emit(TransferOutcome::Complete);
+            report(TransferOutcome::Complete);
         } catch (const std::exception& e) {
             if (output)
                 fclose(output);
             if (!stopped())
-                emit(TransferOutcome::Attention, e.what());
+                report(TransferOutcome::Attention, e.what());
         }
     }
 };
@@ -1106,8 +1107,21 @@ std::string sha256File(const std::filesystem::path& path, const TransferControl*
         out << std::setw(2) << static_cast<int>(c);
     return out.str();
 #else
-    (void)path;
-    throw std::runtime_error("Checksum provider is not implemented for this platform.");
+    std::ifstream input(path, std::ios::binary);
+    if (!input)
+        throw std::runtime_error("Cannot read file for checksum.");
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    std::array<char, 128 * 1024> buffer{};
+    while (input) {
+        if ((control && (control->pause || control->cancel)) || (shouldStop && shouldStop()))
+            throw std::runtime_error("Checksum cancelled.");
+        input.read(buffer.data(), buffer.size());
+        if (const auto count = input.gcount(); count > 0)
+            hash.addData(QByteArrayView(buffer.data(), static_cast<qsizetype>(count)));
+    }
+    if (!input.eof())
+        throw std::runtime_error("Checksum calculation failed.");
+    return hash.result().toHex().toStdString();
 #endif
 }
 } // namespace maskpilot

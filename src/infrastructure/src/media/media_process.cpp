@@ -1,5 +1,6 @@
 #include "media_process.h"
 #include "media_origin_gateway.h"
+#include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
 #include <QProcessEnvironment>
@@ -24,7 +25,7 @@ DownloadSpec ProcessTree::route(const DownloadSpec& specification) {
     gateway_ = std::make_unique<MediaOriginGateway>(specification);
     return gateway_->routedRequest();
 }
-QString pathString(const std::filesystem::path& path) { return QString::fromStdWString(path.wstring()); }
+QString pathString(const std::filesystem::path& path) { return QString::fromStdU16String(path.u16string()); }
 QStringList commonArguments() {
     return {"--ignore-config",
             "--config-locations",
@@ -63,19 +64,27 @@ std::filesystem::path ownedGuardDirectory() {
     if (!length || length >= module.size())
         throw std::runtime_error("Cannot locate the owned media guard.");
     const auto directory = std::filesystem::path(std::wstring(module.data(), length)).parent_path();
+    constexpr auto ffmpegName = "ffmpeg.exe", ffprobeName = "ffprobe.exe";
+#else
+    std::error_code error;
+    const auto executable = std::filesystem::read_symlink("/proc/self/exe", error);
+    if (error || !executable.is_absolute())
+        throw std::runtime_error("Cannot locate the owned media guard.");
+    const auto directory = executable.parent_path();
+    constexpr auto ffmpegName = "ffmpeg", ffprobeName = "ffprobe";
+#endif
     std::vector<std::filesystem::path> candidates{directory / L"media_guard"};
     if (QFileInfo(pathString(directory)).fileName().compare("tests", Qt::CaseInsensitive) == 0)
         candidates.push_back(directory.parent_path() / L"media_guard");
     for (const auto& candidate : candidates) {
-        const auto ffmpeg = QFileInfo(pathString(candidate / L"ffmpeg.exe"));
-        const auto ffprobe = QFileInfo(pathString(candidate / L"ffprobe.exe"));
+        const auto ffmpeg = QFileInfo(pathString(candidate / ffmpegName));
+        const auto ffprobe = QFileInfo(pathString(candidate / ffprobeName));
         if (ffmpeg.isFile() && ffmpeg.isExecutable() && ffprobe.isFile() && ffprobe.isExecutable()) {
             const auto canonical = QFileInfo(pathString(candidate)).canonicalFilePath();
             if (!canonical.isEmpty())
-                return std::filesystem::path(canonical.toStdWString());
+                return std::filesystem::path(canonical.toStdU16String());
         }
     }
-#endif
     throw std::runtime_error("Media safety components are missing. Repair the application installation.");
 }
 QByteArray quoted(const QByteArray& value) {
@@ -135,17 +144,22 @@ bool launch(QProcess& process, ProcessTree& tree, const DownloadSpec& spec, cons
     const auto guard = ownedGuardDirectory();
     const QFileInfo selected(pathString(spec.mediaMuxer));
     const auto realFfmpeg = selected.canonicalFilePath();
+#ifdef _WIN32
+    constexpr auto ffmpegName = "ffmpeg.exe", ffprobeName = "ffprobe.exe";
+    constexpr auto pathCase = Qt::CaseInsensitive;
+#else
+    constexpr auto ffmpegName = "ffmpeg", ffprobeName = "ffprobe";
+    constexpr auto pathCase = Qt::CaseSensitive;
+#endif
     if (!selected.isFile() || !selected.isExecutable() || realFfmpeg.isEmpty() ||
-        realFfmpeg.compare(QFileInfo(pathString(guard / L"ffmpeg.exe")).canonicalFilePath(),
-                           Qt::CaseInsensitive) == 0 ||
-        realFfmpeg.compare(QFileInfo(pathString(guard / L"ffprobe.exe")).canonicalFilePath(),
-                           Qt::CaseInsensitive) == 0)
+        realFfmpeg.compare(QFileInfo(pathString(guard / ffmpegName)).canonicalFilePath(), pathCase) == 0 ||
+        realFfmpeg.compare(QFileInfo(pathString(guard / ffprobeName)).canonicalFilePath(), pathCase) == 0)
         throw std::runtime_error("Select a real media processor executable in media settings.");
     const QFileInfo workspace(pathString(work));
     const auto canonicalWork = workspace.canonicalFilePath();
     if (!workspace.isDir() || canonicalWork.isEmpty())
         throw std::runtime_error("Cannot establish the owned media workspace.");
-    const QFileInfo probe(QDir(selected.absolutePath()).filePath("ffprobe.exe"));
+    const QFileInfo probe(QDir(selected.absolutePath()).filePath(ffprobeName));
     auto environment = QProcessEnvironment::systemEnvironment();
     for (const auto& name : environment.keys()) {
         const auto lower = name.toLower();

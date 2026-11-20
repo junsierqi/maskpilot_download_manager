@@ -1,3 +1,4 @@
+#include "../filesystem/transfer_files.h"
 #include "media_process.h"
 #include <QCoreApplication>
 #include <QCryptographicHash>
@@ -37,11 +38,8 @@ std::int64_t progressNumber(const QString& text, std::int64_t fallback = 0) {
 using media_process::ProcessTree;
 void copyStage(const std::filesystem::path& source, const std::filesystem::path& stage,
                TransferControl& control) {
-#ifdef _WIN32
-    FILE* input = nullptr;
-    FILE* output = nullptr;
-    _wfopen_s(&input, source.c_str(), L"rb");
-    _wfopen_s(&output, stage.c_str(), L"wb");
+    FILE* input = transfer_files::openFile(source, L"rb");
+    FILE* output = transfer_files::openFile(stage, L"wb");
     if (!input || !output) {
         if (input)
             fclose(input);
@@ -58,8 +56,9 @@ void copyStage(const std::filesystem::path& source, const std::filesystem::path&
             if (fwrite(data.data(), 1, count, output) != count)
                 throw std::runtime_error("Cannot write media output. Check disk space.");
         }
-        if (ferror(input) || fflush(output) != 0 || _commit(_fileno(output)) != 0)
+        if (ferror(input))
             throw std::runtime_error("Cannot synchronize media output.");
+        transfer_files::syncFile(output);
         fclose(input);
         input = nullptr;
         fclose(output);
@@ -71,12 +70,6 @@ void copyStage(const std::filesystem::path& source, const std::filesystem::path&
             fclose(output);
         throw;
     }
-#else
-    (void)source;
-    (void)stage;
-    (void)control;
-    throw std::runtime_error("This media adapter currently supports Windows.");
-#endif
 }
 class MediaTransfer final : public ITransferTransport {
   public:
@@ -298,7 +291,7 @@ class MediaTransfer final : public ITransferTransport {
             std::filesystem::create_directories(task.spec.destination.parent_path());
             auto stage = task.spec.destination;
             stage += L".maskpilot-" + std::filesystem::path(task.id).wstring() + L".tmp";
-            copyStage(std::filesystem::path(result.canonicalFilePath().toStdWString()), stage, control);
+            copyStage(std::filesystem::path(result.canonicalFilePath().toStdU16String()), stage, control);
             if (!task.spec.expectedSha256.empty()) {
                 auto expected = task.spec.expectedSha256;
                 std::transform(expected.begin(), expected.end(), expected.begin(),
@@ -322,10 +315,7 @@ class MediaTransfer final : public ITransferTransport {
             callback(event);
             if (stopped())
                 return;
-#ifdef _WIN32
-            if (!MoveFileExW(stage.c_str(), task.spec.destination.c_str(), MOVEFILE_WRITE_THROUGH))
-                throw std::runtime_error("Cannot publish media output. Existing files were preserved.");
-#endif
+            transfer_files::publishFile(stage, task.spec.destination);
             finish(TransferOutcome::Complete);
         } catch (const std::exception& e) {
             if (!stopped())

@@ -4,6 +4,12 @@
 #include <vector>
 #ifdef _WIN32
 #include <windows.h>
+#elif defined(__linux__)
+#include <cerrno>
+#include <csignal>
+#include <sys/prctl.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 #endif
 namespace maskpilot::process {
 struct OwnedProcessGroup::Impl {
@@ -25,6 +31,16 @@ struct OwnedProcessGroup::Impl {
     } attributes_;
     STARTUPINFOEXW startup_{};
     std::array<HANDLE, 3> inherited_{};
+#elif defined(__linux__)
+    // PIDFD_SIGNAL_PROCESS_GROUP, available since Linux 6.9. Unlike a numeric
+    // process-group ID this retained kernel reference cannot target a reused PID.
+    static constexpr unsigned groupSignal = 1U << 2;
+    int pidfd_ = -1;
+    QMetaObject::Connection started_, finished_;
+    void killGroup() noexcept {
+        if (pidfd_ >= 0)
+            syscall(SYS_pidfd_send_signal, pidfd_, SIGKILL, nullptr, groupSignal);
+    }
 #endif
   public:
     Impl() {
@@ -46,6 +62,24 @@ struct OwnedProcessGroup::Impl {
         if (!UpdateProcThreadAttribute(list, 0, PROC_THREAD_ATTRIBUTE_JOB_LIST, &job_.value, sizeof(HANDLE),
                                        nullptr, nullptr))
             throw std::runtime_error("Cannot bind private process group.");
+#elif defined(__linux__)
+        const auto self = static_cast<int>(syscall(SYS_pidfd_open, getpid(), 0));
+        if (self < 0)
+            throw std::runtime_error("Private helpers require Linux pidfd support.");
+        const auto result = syscall(SYS_pidfd_send_signal, self, 0, nullptr, groupSignal);
+        const auto error = errno;
+        close(self);
+        if (result < 0 && error != ESRCH)
+            throw std::runtime_error("Private helpers require Linux 6.9+ process-group signaling.");
+#endif
+    }
+    ~Impl() {
+#ifdef __linux__
+        QObject::disconnect(started_);
+        QObject::disconnect(finished_);
+        killGroup();
+        if (pidfd_ >= 0)
+            close(pidfd_);
 #endif
     }
     void prepare(QProcess& process) {
@@ -66,6 +100,25 @@ struct OwnedProcessGroup::Impl {
             args->flags |= EXTENDED_STARTUPINFO_PRESENT;
             args->inheritHandles = true;
         });
+#elif defined(__linux__)
+        if (pidfd_ >= 0)
+            throw std::logic_error("Private process group is already in use.");
+        QProcess::UnixProcessParameters parameters;
+        parameters.flags =
+            QProcess::UnixProcessFlag::CreateNewSession | QProcess::UnixProcessFlag::CloseFileDescriptors;
+        process.setUnixProcessParameters(parameters);
+        process.setChildProcessModifier([&process] {
+            if (prctl(PR_SET_PDEATHSIG, SIGKILL) != 0)
+                process.failChildProcessModifier("Cannot bind private helper lifetime", errno);
+            if (getppid() == 1)
+                _exit(130);
+        });
+        started_ = QObject::connect(&process, &QProcess::started, &process, [this, &process] {
+            pidfd_ = static_cast<int>(syscall(SYS_pidfd_open, process.processId(), 0));
+            if (pidfd_ < 0 || syscall(SYS_pidfd_send_signal, pidfd_, 0, nullptr, groupSignal) != 0)
+                process.kill();
+        });
+        finished_ = QObject::connect(&process, &QProcess::finished, &process, [this] { killGroup(); });
 #else
         (void)process;
 #endif
@@ -73,6 +126,10 @@ struct OwnedProcessGroup::Impl {
     void stop(QProcess& process) {
 #ifdef _WIN32
         TerminateJobObject(job_.value, 130);
+#elif defined(__linux__)
+        killGroup();
+        if (pidfd_ < 0 && process.state() != QProcess::NotRunning)
+            process.kill();
 #else
         process.kill();
 #endif
