@@ -8,7 +8,18 @@
 #include <maskpilot/domain/task.h>
 #include <memory>
 namespace maskpilot::media_process {
-using ProcessTree = process::OwnedProcessGroup;
+class MediaOriginGateway;
+class ProcessTree final {
+    std::unique_ptr<MediaOriginGateway> gateway_;
+    process::OwnedProcessGroup group_;
+
+  public:
+    ProcessTree();
+    ~ProcessTree();
+    void prepare(QProcess& process);
+    void stop(QProcess& process);
+    DownloadSpec route(const DownloadSpec& specification);
+};
 QString pathString(const std::filesystem::path&);
 QStringList commonArguments();
 void validateRequest(const DownloadSpec&);

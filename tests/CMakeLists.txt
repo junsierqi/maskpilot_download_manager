@@ -3,6 +3,9 @@ target_sources(maskpilot_tests PRIVATE unit/http_layout_test.cpp)
 target_sources(maskpilot_tests PRIVATE unit/browser_recovery_test.cpp)
 target_sources(maskpilot_tests PRIVATE unit/browser_recovery_ui_test.cpp)
 target_sources(maskpilot_tests PRIVATE unit/completion_scan_test.cpp)
+target_sources(maskpilot_tests PRIVATE integration/media_auth_test.cpp)
+find_package(OpenSSL REQUIRED)
+target_link_libraries(maskpilot_tests PRIVATE OpenSSL::Crypto)
 target_sources(maskpilot_tests PRIVATE unit/completion_scan_ui_test.cpp)
 add_dependencies(maskpilot_tests maskpilot)
 target_compile_definitions(maskpilot_tests PRIVATE MASKPILOT_TEST_DESKTOP="$<TARGET_FILE:maskpilot>")
@@ -29,6 +32,17 @@ target_link_libraries(maskpilot_tests PRIVATE maskpilot_application maskpilot_in
 include(GoogleTest)
 gtest_discover_tests(maskpilot_tests DISCOVERY_MODE PRE_TEST WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
+find_program(MASKPILOT_TEST_MEDIA_MUXER ffmpeg)
+set(MASKPILOT_TEST_MEDIA_PARSER "${PROJECT_SOURCE_DIR}/out/tools/yt-dlp.exe" CACHE FILEPATH "Optional media test parser")
+if(EXISTS "${MASKPILOT_TEST_MEDIA_PARSER}" AND MASKPILOT_TEST_MEDIA_MUXER)
+  set_source_files_properties(integration/media_auth_test.cpp PROPERTIES COMPILE_DEFINITIONS
+    "MASKPILOT_AUTH_TEST_PARSER=\"${MASKPILOT_TEST_MEDIA_PARSER}\";MASKPILOT_AUTH_TEST_MUXER=\"${MASKPILOT_TEST_MEDIA_MUXER}\"")
+  add_test(NAME authenticated_media_product_path COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/integration/media_auth_test.py
+    --exercise $<TARGET_FILE:maskpilot_cli> --parser ${MASKPILOT_TEST_MEDIA_PARSER}
+    --muxer ${MASKPILOT_TEST_MEDIA_MUXER})
+  set_tests_properties(authenticated_media_product_path PROPERTIES TIMEOUT 300)
+endif()
 add_test(NAME local_http_product_path COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/support/http_fixture.py --exercise $<TARGET_FILE:maskpilot_cli>)
 set_tests_properties(local_http_product_path PROPERTIES TIMEOUT 120)
 add_test(NAME browser_recovery_product_path COMMAND ${Python3_EXECUTABLE}

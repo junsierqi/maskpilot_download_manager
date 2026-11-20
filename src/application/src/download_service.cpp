@@ -1269,7 +1269,8 @@ std::future<DownloadSpec> DownloadService::resolveMediaInspection(MediaInspectio
         candidate.spec = std::move(request.specification);
         candidate.spec.kind = TransferKind::Media;
         candidate.spec.mediaSelection = {};
-        candidate.originAuthenticationRequired = requiresOriginAuthentication(candidate.spec);
+        candidate.originAuthenticationRequired =
+            candidate.originAuthenticationRequired || requiresOriginAuthentication(candidate.spec);
         if (const auto message = validateSpec(candidate.spec); !message.empty())
             throw std::invalid_argument(message);
         return p->contexts->resolve(candidate);

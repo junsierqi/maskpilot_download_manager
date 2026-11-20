@@ -242,6 +242,9 @@ struct DownloadBridge::Impl {
                 !QFileInfo(pathText(spec.mediaMuxer)).isExecutable())
                 throw std::invalid_argument("Media components are missing.");
         }
+        if (spec.kind == TransferKind::Media && requiresOriginAuthentication(spec))
+            throw std::invalid_argument(
+                "Authorize authenticated media explicitly in the desktop request dialog.");
         if (!validateSpec(spec).empty())
             invalid();
         return spec;

@@ -1,4 +1,5 @@
 #include "media_process.h"
+#include "media_origin_gateway.h"
 #include <QDir>
 #include <QFileInfo>
 #include <QProcessEnvironment>
@@ -11,6 +12,18 @@
 #include <windows.h>
 #endif
 namespace maskpilot::media_process {
+ProcessTree::ProcessTree() = default;
+ProcessTree::~ProcessTree() = default;
+void ProcessTree::prepare(QProcess& process) { group_.prepare(process); }
+void ProcessTree::stop(QProcess& process) { group_.stop(process); }
+DownloadSpec ProcessTree::route(const DownloadSpec& specification) {
+    if (!requiresOriginAuthentication(specification))
+        return specification;
+    if (gateway_)
+        throw std::logic_error("Media origin routing is already active.");
+    gateway_ = std::make_unique<MediaOriginGateway>(specification);
+    return gateway_->routedRequest();
+}
 QString pathString(const std::filesystem::path& path) { return QString::fromStdWString(path.wstring()); }
 QStringList commonArguments() {
     return {"--ignore-config",
@@ -39,8 +52,6 @@ void validateRequest(const DownloadSpec& spec) {
         throw std::invalid_argument(error);
     if (auto error = validateOriginAuthentication(copy, true); !error.empty())
         throw std::invalid_argument(error);
-    if (!copy.cookie.empty() || !copy.authorization.empty() || !copy.headers.empty())
-        throw std::invalid_argument("Origin authentication is unavailable for media extraction.");
     if (auto error = validateProxy(copy, true); !error.empty())
         throw std::invalid_argument(error);
 }
@@ -93,6 +104,14 @@ QByteArray privateInput(const DownloadSpec& spec) {
     QByteArray config = "--proxy " + quoted(proxy) + "\n";
     if (!spec.userAgent.empty())
         config += "--user-agent " + quoted(QByteArray::fromStdString(spec.userAgent)) + "\n";
+    const auto header = [&](const std::string& name, const std::string& value) {
+        if (!value.empty())
+            config += "--add-headers " + quoted(QByteArray::fromStdString(name + ":" + value)) + "\n";
+    };
+    header("Cookie", spec.cookie);
+    header("Authorization", spec.authorization);
+    for (const auto& [name, value] : spec.headers)
+        header(name, value);
     if (!spec.referrer.empty()) {
         auto referrer = QUrl(QString::fromUtf8(spec.referrer));
         referrer.setPath("/");
@@ -108,7 +127,7 @@ QByteArray privateInput(const DownloadSpec& spec) {
 }
 bool launch(QProcess& process, ProcessTree& tree, const DownloadSpec& spec, const QStringList& arguments,
             const std::filesystem::path& work, const std::function<bool()>& stopped) {
-    const auto input = privateInput(spec);
+    validateRequest(spec);
     if (stopped())
         return false;
     if (!QFileInfo(pathString(spec.mediaDownloader)).isExecutable())
@@ -140,6 +159,7 @@ bool launch(QProcess& process, ProcessTree& tree, const DownloadSpec& spec, cons
                            QDir::toNativeSeparators(probe.canonicalFilePath()));
     environment.insert("MASKPILOT_MEDIA_WORK_DIR", QDir::toNativeSeparators(canonicalWork));
     process.setProcessEnvironment(environment);
+    const auto input = privateInput(tree.route(spec));
     process.setProgram(pathString(spec.mediaDownloader));
     auto guardedArguments = arguments;
     guardedArguments << "--ffmpeg-location" << pathString(guard);

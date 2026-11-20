@@ -49,7 +49,8 @@ TEST(MediaArguments, IsolatesSecretsAndPassesUrlPrivately) {
     task.spec.authorization = "secret-auth";
     task.spec.mediaMuxer = L"C:/Program Files/processor.exe";
     auto args = maskpilot::mediaArguments(task, std::filesystem::temp_directory_path(), 12345);
-    EXPECT_FALSE(maskpilot::validateSpec(task.spec).empty());
+    task.spec.destination = std::filesystem::temp_directory_path() / L"authenticated-media.mkv";
+    EXPECT_TRUE(maskpilot::validateSpec(task.spec).empty());
     EXPECT_FALSE(args.contains(QString::fromStdString(task.spec.url)));
     EXPECT_TRUE(args.contains("--config-locations"));
     EXPECT_TRUE(args.contains("ffmpeg_i:-protocol_whitelist pipe"));

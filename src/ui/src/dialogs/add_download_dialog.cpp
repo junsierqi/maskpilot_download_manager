@@ -404,14 +404,15 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
     };
     tool(impl_->downloader, t("Media parser", "媒体解析组件"), "mediaDownloader", "yt-dlp");
     tool(impl_->muxer, t("Media processor", "媒体处理组件"), "mediaMuxer", "ffmpeg");
-    auto* note = new QLabel(
-        t("Missing components? Open Tools → Media support. Inspect public URLs for actual formats. "
-          "Proxy login is supported; source Cookie/Authorization requires a direct file task. "
-          "Resuming media safely restarts its output.",
-          "缺少组件时，可从“工具 → "
-          "媒体支持”安装。可探测公开地址的实际格式，支持代理登录；来源 Cookie／Authorization "
-          "请使用直接文件任务。"
-          "继续媒体任务时会安全地重新下载。"));
+    auto* note =
+        new QLabel(t("Missing components? Open Tools → Media support. Inspect URLs for actual formats. "
+                     "Source Cookie/Authorization and custom headers apply only to this source origin; "
+                     "authenticated media from other origins is refused. Credentials remain in memory. "
+                     "Resuming media safely restarts its output.",
+                     "缺少组件时，可从“工具 → "
+                     "媒体支持”安装。可探测实际格式，支持代理登录。来源 Cookie／Authorization 和自定义头"
+                     "仅用于当前来源的同协议、主机和端口；带登录材料时拒绝其他来源。凭据仅保留在内存中。"
+                     "继续媒体任务时会安全地重新下载。"));
     note->setWordWrap(true);
     mediaForm->addRow(note);
     auto* mediaScroll = new QScrollArea;

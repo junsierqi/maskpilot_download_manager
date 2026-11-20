@@ -23,13 +23,15 @@ bool requiresOriginAuthentication(const DownloadSpec& spec) {
 std::string validateOriginAuthentication(const DownloadSpec& spec, bool requireMaterial) {
     if (!requireMaterial || !requiresOriginAuthentication(spec))
         return {};
-    if (spec.kind == TransferKind::Media || spec.kind == TransferKind::BitTorrent || isTorrentUrl(spec.url))
-        return "Origin authentication is unsupported for media and torrent tasks. Choose a public source "
+    if (spec.kind == TransferKind::BitTorrent || isTorrentUrl(spec.url))
+        return "Origin authentication is unsupported for torrent tasks. Choose a public source "
                "explicitly.";
     if (isFtpUrl(spec.url)) {
         if (spec.ftpUsername.empty())
             return "FTP authentication is required. Reenter the FTP username and password before resuming.";
     } else if (spec.cookie.empty() && spec.authorization.empty() && spec.headers.empty()) {
+        if (spec.kind == TransferKind::Media)
+            return "Origin authentication is required for media. Reenter its source credentials.";
         return "Source authentication is required. Reenter the URL-bound request credentials or explicitly "
                "allow anonymous access.";
     }
@@ -136,10 +138,6 @@ std::string validateSpec(const DownloadSpec& spec) {
     } catch (const std::system_error&) {
         return "FTP CA bundle path contains invalid Unicode.";
     }
-    if ((spec.kind == maskpilot::TransferKind::Media) &&
-        (!spec.cookie.empty() || !spec.authorization.empty() || !spec.headers.empty()))
-        return "Origin-bound login headers are supported for direct file downloads only. For media, use a "
-               "public URL or download the direct file without media mode.";
     if (spec.mediaFormat.size() > 1000 || spec.mediaFormat.find_first_of("\r\n\0", 0, 3) != std::string::npos)
         return "Invalid media format selection.";
     if (!(spec.url.starts_with("https://") || spec.url.starts_with("http://") || ftp || torrent))
