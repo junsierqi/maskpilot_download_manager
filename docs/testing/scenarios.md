@@ -12,6 +12,20 @@
 
 ## 功能回归
 
+配置前在同一个 Python 环境执行 `python -m pip install -r tests/requirements.txt`，并确认 `ffmpeg -version`、`ffprobe -version` 可运行。SFTP 的本地服务器和 TLS 夹具只使用测试依赖；原生直播用媒体工具生成与核验夹具。可选登录点播测试需要受信任的解析／合并组件；使用 `ctest --test-dir <build> -N -R authenticated_media_product_path` 核对是否注册，未注册不能报告为通过。
+
+以下命令中的 `<build>` 应替换为当前独立构建目录，不能将旧构建结果算作本轮验收：
+
+| 增量能力 | 实际产品路径与边界 |
+|---|---|
+| 独立同源登录媒体 | `ctest --test-dir <build> -R 'MediaAuthenticated|authenticated_media_product_path' --output-on-failure --no-tests=error`；本地 MP4／HLS／DASH、真实 Qt、认证代理、秘密不落库及跨源拒绝；不验证真实登录网站 |
+| 明确 POST 下载 | `ctest --test-dir <build> -R 'HttpPost|http_post_product_path' --output-on-failure --no-tests=error`；单次请求、正文／方法校验、取消、不可自动重试与实际文件；浏览器 POST 正文仍归浏览器处理 |
+| SFTP | `ctest --test-dir <build> -R 'Sftp|sftp_product_path' --output-on-failure --no-tests=error`；真实本地 SSH 服务、主机指纹拒绝、密码／加密私钥、代理、续传／重下、额度与扫描，不自动接受未知主机 |
+| 有界原生直播 | `ctest --test-dir <build> -R 'Live|live_recording_product_path' --output-on-failure --no-tests=error`；实际 TS-HLS／HTTP-FLV、同源登录／代理、时长／大小／手动结束、暂停重录、扫描／额度；序号回退、空媒体标签和无媒体内容不发布，正常空标签填充仍可播放 |
+| 共享摘要生命周期 | `ctest --test-dir <build> -R '^Checksums\.' --output-on-failure --no-tests=error`；Windows 原生提供程序、独立已知向量、空／Unicode／1 MiB 文件、8 线程重复计算及取消／读错后恢复 |
+
+当前全工程审计证据及未完成需求见 [仓库审计](repository-audit.md)。
+
 离线升级运行 `powershell -NoProfile -ExecutionPolicy Bypass -File tests/system/package_update_test.ps1 -SourceRoot .`。受控临时目录覆盖旧／新包替换、移除旧文件、回滚与清理、摘要／ZIP 路径／大小写冲突、修改与未知文件、实际进程占用、阶段故障及进程终止恢复。内部故障回调为 fixture-only；ZIP、文件锁、原子替换和恢复使用真实 Windows 文件操作。测试载荷不代表程序或数据库兼容性，实际包与旧数据库升级另验。
 
 另覆盖 64 KiB 写入后的异常、独占临时文件清理及已存在临时文件保留。实际子进程在完整检查点后被终止时验证自动恢复；在暂存流真正截断时验证保留现场与原负载，只有测试器明确修复其自有截断文件后才继续恢复。后一场景不记为自动修复通过，也不推断任意断电／磁盘故障均可自动恢复。

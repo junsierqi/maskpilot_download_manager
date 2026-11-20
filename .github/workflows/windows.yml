@@ -18,6 +18,29 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
+      - name: Prepare native test prerequisites
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          python -m pip install -r tests/requirements.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Python test dependency installation failed.' }
+          $fixtureRoot = Join-Path $env:RUNNER_TEMP ('maskpilot-media-tests-' + [Guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Path $fixtureRoot | Out-Null
+          $archive = Join-Path $fixtureRoot 'media-tools.zip'
+          curl.exe --fail --location --silent --show-error --connect-timeout 30 --max-time 900 --output $archive 'https://github.com/GyanD/codexffmpeg/releases/download/8.1.1/ffmpeg-8.1.1-full_build.zip'
+          if ($LASTEXITCODE -ne 0) { throw 'Media test archive download failed.' }
+          $expected = '49b28c5f16addd40239a66949973458769b7056fb7752c30ac0d53389d09a552'
+          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ne $expected) {
+            throw 'Media test archive checksum mismatch.'
+          }
+          Expand-Archive -LiteralPath $archive -DestinationPath $fixtureRoot
+          $fixtureBin = Join-Path $fixtureRoot 'ffmpeg-8.1.1-full_build/bin'
+          foreach ($tool in @('ffmpeg.exe', 'ffprobe.exe')) {
+            & (Join-Path $fixtureBin $tool) -version
+            if ($LASTEXITCODE -ne 0) { throw "Media test prerequisite failed: $tool" }
+          }
+          $fixtureBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       - name: Build and test
         shell: pwsh
         run: |
