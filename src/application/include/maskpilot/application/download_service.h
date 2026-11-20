@@ -60,6 +60,7 @@ class DownloadService {
     std::future<std::string> selectTorrentFiles(const std::string& id, std::vector<int> indices,
                                                 bool allFiles = false);
     void stopSeeding(const std::string& id);
+    void finishRecording(const std::string& id);
     // Validate/capture an entire imported list without changing tasks or blocking the coordinator.
     std::future<std::vector<DownloadSpec>> prepareImport(std::vector<DownloadSpec> specs);
     void setPriority(const std::string& id, int priority);

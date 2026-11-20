@@ -84,7 +84,7 @@ TEST(ResponseContentTypeStorage, MigratesActualVersionElevenAndKeepsOriginalBack
         EXPECT_EQ(loaded[0].spec.maxStoredBytes, 4096);
         EXPECT_TRUE(loaded[0].spec.sameOriginRedirectOnly);
     }
-    EXPECT_EQ(metadataVersion(openMetadata(path).get()), 17);
+    EXPECT_EQ(metadataVersion(openMetadata(path).get()), 18);
     int backups = 0;
     for (const auto& entry : std::filesystem::directory_iterator(temporary.path)) {
         if (entry.path().filename().string().find(".before-v12-") != std::string::npos) {

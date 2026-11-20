@@ -1,5 +1,13 @@
 # Task list interchange
 
+Version 2 additionally accepts these optional, strictly typed public options:
+
+- `httpMethod: "POST"` and `postContentType` describe an explicit single-attempt native HTTP(S) submission. Missing method means GET. The body and submission confirmation are excluded; imported POST tasks require newly supplied and confirmed content, including an explicitly empty body. No automatic replay or byte resume.
+- `sftp` contains `authentication` (0 password, 1 private key), `hostKeySha256` (trusted SHA-256 Base64 fingerprint, optionally prefixed `SHA256:`), and `privateKeyFile` (explicit absolute local key path). SFTP source URLs require a valid pin. Username, password, key contents and key passphrase are excluded; reenter login before starting. Public-key mode never discovers ambient keys or agents.
+- `live` contains mandatory `format` (0 clear MPEG-TS HLS, 1 HTTP-FLV), `durationSeconds` (integer 1–172800), and `maxBytes` (integer 1048576–1099511627776). It selects standalone native live recording; destination must use `.ts` or `.flv` respectively. It cannot be combined with media selection, POST or non-HTTP sources. Import keeps public bounds and pauses the task; starting records the current feed rather than resuming old content.
+
+These nested objects reject unknown keys and fractional/out-of-range values. They are unavailable in version 1. Live, SFTP and POST configuration never carries browser context authority, restored credentials or helper execution permission.
+
 Project association (`projectId`, `projectRevision`) belongs to trusted task metadata in schema 13. It is not exported, imported or accepted in browser drafts. Plain request replay cannot claim a project child, and another project or revision cannot reuse its request binding. Import produces independent paused downloads; it does not reconstruct project manifests, publication receipts or ownership.
 
 `responseUrl` and `responseContentType` are observed output from the current native HTTP attempt. They are never exported, imported or accepted as request authority; supplying them (including database-style snake_case names) is rejected. Schema 12 keeps unknown or ambiguous observed content types empty. Downloaded filenames do not establish a content type.

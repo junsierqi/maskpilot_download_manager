@@ -63,8 +63,13 @@ void validateTransferConstraints(const Task& task) {
         (isSftpUrl(spec.url) && (task.ownerId != "standalone" || spec.kind == TransferKind::Media ||
                                  spec.kind == TransferKind::BitTorrent)) ||
         (spec.kind == TransferKind::Sftp && !isSftpUrl(spec.url)) || static_cast<int>(spec.kind) < 0 ||
-        static_cast<int>(spec.kind) > 4)
+        static_cast<int>(spec.kind) > 5)
         throw std::invalid_argument("Invalid persistent SFTP configuration.");
+    if (!validateLiveRecording(spec.live).empty() ||
+        (spec.kind != TransferKind::Live && spec.live != LiveRecordingOptions{}) ||
+        (spec.kind == TransferKind::Live &&
+         (task.ownerId != "standalone" || !task.projectId.empty() || !validateSpec(spec).empty())))
+        throw std::invalid_argument("Invalid persistent live recording configuration.");
     if (!validateHttpRequest(spec.httpRequest).empty() ||
         (spec.httpRequest.method == HttpMethod::Post &&
          (sourceKind(spec) != TransferKind::Http || task.ownerId != "standalone" || !task.projectId.empty())))
@@ -252,12 +257,12 @@ class Backend {
             int schemaVersion = 0;
             {
                 Statement version(db_, "PRAGMA user_version");
-                if (sqlite3_step(version.value) != SQLITE_ROW || sqlite3_column_int(version.value, 0) > 17 ||
+                if (sqlite3_step(version.value) != SQLITE_ROW || sqlite3_column_int(version.value, 0) > 18 ||
                     sqlite3_column_int(version.value, 0) < 0)
                     throw std::runtime_error("Database was created by a newer version.");
                 schemaVersion = sqlite3_column_int(version.value, 0);
             }
-            if (schemaVersion > 0 && schemaVersion < 17) {
+            if (schemaVersion > 0 && schemaVersion < 18) {
                 auto backupPath = path;
                 backupPath += L".before-v" + std::to_wstring(schemaVersion + 1) + L"-" +
                               std::filesystem::path(newTaskId()).wstring() + L".db";
@@ -431,6 +436,13 @@ ALTER TABLE tasks ADD COLUMN sftp_host_key_sha256 TEXT NOT NULL DEFAULT '';
 ALTER TABLE tasks ADD COLUMN sftp_private_key TEXT NOT NULL DEFAULT '';
 PRAGMA user_version=17;
 COMMIT;)sql");
+            if (schemaVersion < 18)
+                execute(R"sql(BEGIN IMMEDIATE;
+ALTER TABLE tasks ADD COLUMN live_format INTEGER NOT NULL DEFAULT 0 CHECK(live_format IN(0,1));
+ALTER TABLE tasks ADD COLUMN live_duration INTEGER NOT NULL DEFAULT 3600;
+ALTER TABLE tasks ADD COLUMN live_max_bytes INTEGER NOT NULL DEFAULT 1073741824;
+PRAGMA user_version=18;
+COMMIT;)sql");
             Statement installation(
                 db_, "INSERT OR IGNORE INTO store_metadata(key,value) VALUES('installation_id',?)");
             installation.text(1, newTaskId());
@@ -576,6 +588,16 @@ COMMIT;)sql");
             t.spec.sftp.hostKeySha256 = text(63);
             const auto keyPath = text(64);
             t.spec.sftp.privateKeyFile = std::filesystem::path(std::u8string(keyPath.begin(), keyPath.end()));
+            for (int column : {65, 66, 67})
+                if (sqlite3_column_type(q.value, column) != SQLITE_INTEGER)
+                    throw std::runtime_error("Saved live fields have invalid types.");
+            const auto liveFormat = sqlite3_column_int64(q.value, 65);
+            const auto liveDuration = sqlite3_column_int64(q.value, 66);
+            if (liveFormat < 0 || liveFormat > 1 || liveDuration < 1 || liveDuration > 172800)
+                throw std::runtime_error("Saved live fields are outside their bounds.");
+            t.spec.live.format = static_cast<LiveFormat>(liveFormat);
+            t.spec.live.durationSeconds = static_cast<int>(liveDuration);
+            t.spec.live.maxBytes = sqlite3_column_int64(q.value, 67);
             if (const auto message = validateCompletionScanRecord(t); !message.empty())
                 throw std::runtime_error(message);
             validateTransferConstraints(t);
@@ -610,8 +632,8 @@ speed_limit,scheduled_at,stop_at,state,downloaded,total,created_at,updated_at,re
 media,audio_only,media_format,media_downloader,media_muxer,ftp_tls,ftp_active,ftp_ca,kind,bt_all,bt_selection,
 bt_seed,bt_upload_limit,bt_metadata,bt_published,bt_uploaded,proxy_auth_required,owner_id,request_id,
 context_revision,proxy_credential_ref,origin_auth_required,request_name,queue_id,run_intent,
-media_selection_mode,media_primary_format,media_audio_format,media_container,max_stored_bytes,same_origin_redirect_only,response_url,response_content_type,project_id,project_revision,scan_required,scan_state,scan_at,http_method,post_content_type,sftp_authentication,sftp_host_key_sha256,sftp_private_key)
-VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+media_selection_mode,media_primary_format,media_audio_format,media_container,max_stored_bytes,same_origin_redirect_only,response_url,response_content_type,project_id,project_revision,scan_required,scan_state,scan_at,http_method,post_content_type,sftp_authentication,sftp_host_key_sha256,sftp_private_key,live_format,live_duration,live_max_bytes)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(id) DO UPDATE SET
 url=excluded.url,destination=excluded.destination,category=excluded.category,referrer=excluded.referrer,
 user_agent=excluded.user_agent,proxy=excluded.proxy,expected_sha256=excluded.expected_sha256,
@@ -634,7 +656,8 @@ response_content_type=excluded.response_content_type,scan_required=excluded.scan
 scan_state=excluded.scan_state,scan_at=excluded.scan_at,
 http_method=excluded.http_method,post_content_type=excluded.post_content_type,
 sftp_authentication=excluded.sftp_authentication,sftp_host_key_sha256=excluded.sftp_host_key_sha256,
-sftp_private_key=excluded.sftp_private_key
+sftp_private_key=excluded.sftp_private_key,live_format=excluded.live_format,
+live_duration=excluded.live_duration,live_max_bytes=excluded.live_max_bytes
 WHERE tasks.owner_id=excluded.owner_id AND tasks.project_id=excluded.project_id AND tasks.project_revision=excluded.project_revision)sql");
         q.text(1, t.id);
         q.text(2, t.spec.url);
@@ -709,6 +732,9 @@ WHERE tasks.owner_id=excluded.owner_id AND tasks.project_id=excluded.project_id 
         q.text(64, t.spec.sftp.hostKeySha256.empty() ? std::string{}
                                                      : canonicalSftpHostKey(t.spec.sftp.hostKeySha256));
         q.text(65, utf8(t.spec.sftp.privateKeyFile));
+        q.number(66, static_cast<int>(t.spec.live.format));
+        q.number(67, t.spec.live.durationSeconds);
+        q.number(68, t.spec.live.maxBytes);
         if (sqlite3_step(q.value) != SQLITE_DONE || sqlite3_changes(db_) != 1)
             throw std::runtime_error("Cannot save task ownership or request identity.");
     }

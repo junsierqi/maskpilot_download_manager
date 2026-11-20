@@ -23,6 +23,7 @@ std::unique_ptr<ITaskRepository> makeSqliteRepository(const std::filesystem::pat
 std::unique_ptr<ITransferTransport> makeCurlTransfer();
 std::unique_ptr<ITransferTransport> makeFtpTransfer();
 std::unique_ptr<ITransferTransport> makeSftpTransfer();
+std::unique_ptr<ITransferTransport> makeLiveTransfer();
 std::unique_ptr<ITransferTransport> makeUnifiedTransfer();
 // Keep one factory per service so all BT workers share its lazily created session.
 TransportFactory makeUnifiedTransferFactory(TransportFactory torrent = {});

@@ -226,7 +226,9 @@ def failures(client, root):
         result = call(client, '--bt-no-discovery',
                       'magnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
                       root / 'torrent', data, timeout=15)
-        assert result.returncode != 0 and b'HTTP' in result.stderr + result.stdout
+        assert result.returncode != 0
+        assert b'BT and finite media tasks cannot use native payload budgets.' in result.stderr + result.stdout
+        assert rows(data, 'SELECT state FROM tasks') == [(13,)]
         assert not (root / 'torrent').exists() and usage(data) == (0, 0)
         print('PASS actual unified CLI rejects strict-budget torrent before launch')
     finally:
@@ -249,7 +251,7 @@ def migration_case(client, root):
                    (run_id, uuid.uuid4().hex, 'default', 86400, 1, 100, 90))
         db.commit()
     call(client, '--resume', uuid.uuid4().hex, data)
-    assert rows(data, 'PRAGMA user_version')[0][0] == 17
+    assert rows(data, 'PRAGMA user_version')[0][0] == 18
     assert rows(data, 'SELECT payload_window_hours FROM download_queues')[0][0] == 0
     assert rows(data, 'SELECT closed_utc FROM queue_traffic_runs WHERE id=?', (run_id,))[0][0] == 172800
     assert rows(data, 'SELECT charged,observed FROM queue_traffic_usage WHERE period=86400')[0] == (90, 90)

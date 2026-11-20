@@ -53,7 +53,10 @@ bool readOptions(maskpilot::DownloadSpec& spec, int argc, char** argv, int start
     bool inspection = false;
     for (int n = start; n < argc; ++n) {
         const std::string option = argv[n];
-        if (option == "--media")
+        if (option == "--live-hls" || option == "--live-flv") {
+            spec.kind = maskpilot::TransferKind::Live;
+            spec.live.format = option == "--live-hls" ? maskpilot::LiveFormat::HlsTs : maskpilot::LiveFormat::Flv;
+        } else if (option == "--media")
             spec.kind = maskpilot::TransferKind::Media;
         else if (option == "--inspect-media") {
             spec.kind = maskpilot::TransferKind::Media;
@@ -95,7 +98,16 @@ bool readOptions(maskpilot::DownloadSpec& spec, int argc, char** argv, int start
             const std::string value = argv[n];
             if (option.starts_with("--media-"))
                 spec.kind = maskpilot::TransferKind::Media;
-            if (option == "--media-parser" || option == "--media-muxer") {
+            if (option == "--live-duration") {
+                const auto duration = integerValue(value);
+                if (duration < 1 || duration > 172800)
+                    throw std::invalid_argument("Live duration must be 1..172800 seconds.");
+                spec.live.durationSeconds = static_cast<int>(duration);
+            } else if (option == "--source-cookie-env" || option == "--source-authorization-env") {
+                (option == "--source-cookie-env" ? spec.cookie : spec.authorization) = credentialFromEnvironment(value);
+            } else if (option == "--live-max-bytes") {
+                spec.live.maxBytes = integerValue(value);
+            } else if (option == "--media-parser" || option == "--media-muxer") {
                 (option == "--media-parser" ? spec.mediaDownloader : spec.mediaMuxer) =
                     std::filesystem::path(std::u8string(value.begin(), value.end()));
             } else if (option == "--media-format-id")
@@ -320,7 +332,9 @@ int runClient(int argc, char** argv) {
             << "Trusted prefix options before URL/--resume/--project: --scan-program EXE\n"
                "  --scan-arg VALUE (repeat, including one literal {file}) --scan-timeout SECONDS\n"
                "  --waive-scan --resume TASK_ID DATA explicitly waives that stopped task's requirement.\n";
-        std::cout << "Media: --media --inspect-media --media-parser EXE --media-muxer EXE\n"
+        std::cout << "Live: --live-hls|--live-flv --live-duration SECONDS --live-max-bytes BYTES\n"
+                     "      --source-cookie-env NAME --source-authorization-env NAME (memory only)\n"
+                     "Media: --media --inspect-media --media-parser EXE --media-muxer EXE\n"
                      "       --media-mode auto|muxed|video-audio|audio|video --media-format-id ID\n"
                      "       --media-audio-id ID --media-container auto|mkv|mp4|webm|m4a|mp3|opus|flac\n";
         return argc == 1 ? 0 : 2;
@@ -427,7 +441,13 @@ int runClient(int argc, char** argv) {
             id = service.add(spec).get();
         }
         std::cout << "TASK_ID " << id << std::endl;
-        for (int i = 0; i < 1800; ++i) {
+        bool liveTask = false;
+        for (const auto& task : service.snapshot())
+            if (task.id == id && task.spec.kind == maskpilot::TransferKind::Live)
+                liveTask = true;
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(180);
+        // Live owns its bounded recording clock; allow large final copies and the scanner to finish.
+        while (liveTask || std::chrono::steady_clock::now() < deadline) {
             if (const auto message = service.lastError(); !message.empty()) {
                 std::cerr << message << '\n';
                 return 1;

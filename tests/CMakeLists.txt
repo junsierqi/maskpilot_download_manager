@@ -38,7 +38,11 @@ execute_process(COMMAND ${Python3_EXECUTABLE} -c "import paramiko"
 if(NOT sftp_fixture_result EQUAL 0)
   message(FATAL_ERROR "SFTP tests require: ${Python3_EXECUTABLE} -m pip install -r ${CMAKE_CURRENT_SOURCE_DIR}/requirements.txt")
 endif()
-target_sources(maskpilot_tests PRIVATE integration/sftp_test.cpp)
+target_sources(maskpilot_tests PRIVATE integration/sftp_test.cpp integration/live_test.cpp)
+add_test(NAME live_recording_product_path COMMAND ${Python3_EXECUTABLE}
+  ${CMAKE_CURRENT_SOURCE_DIR}/integration/live_test.py --exercise $<TARGET_FILE:maskpilot_cli>
+  --scanner $<TARGET_FILE:maskpilot_scan_probe>)
+set_tests_properties(live_recording_product_path PROPERTIES TIMEOUT 180)
 target_link_libraries(maskpilot_tests PRIVATE CURL::libcurl)
 set_source_files_properties(integration/sftp_test.cpp PROPERTIES COMPILE_DEFINITIONS
   "MASKPILOT_SFTP_TEST_PYTHON=\"${Python3_EXECUTABLE}\";MASKPILOT_SFTP_TEST_FIXTURE=\"${CMAKE_CURRENT_SOURCE_DIR}/support/sftp_fixture.py\"")

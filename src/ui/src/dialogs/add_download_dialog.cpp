@@ -50,6 +50,10 @@ struct AddDownloadDialog::Impl {
     QPlainTextEdit* postBody;
     QCheckBox* postConfirmed;
     QCheckBox* media;
+    QCheckBox* live;
+    QComboBox* liveFormat;
+    QSpinBox *liveDuration, *liveSize;
+    std::int64_t exactLiveBytes = 1024LL * 1024 * 1024;
     ui::MediaSelectionWidget* selection;
     std::string mediaTaskId;
     std::int64_t maxStoredBytes = 0;
@@ -524,6 +528,44 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
     mediaScroll->setFrameShape(QFrame::NoFrame);
     mediaScroll->setWidget(mediaTab);
     tabs->addTab(mediaScroll, t("Media", "媒体"));
+    auto* liveTab = new QWidget;
+    auto* liveForm = new QFormLayout(liveTab);
+    liveForm->setSpacing(12);
+    impl_->live = new QCheckBox(t("Record a direct live stream", "录制直播直链"));
+    impl_->live->setObjectName("liveRecording");
+    liveForm->addRow(impl_->live);
+    impl_->liveFormat = new QComboBox;
+    impl_->liveFormat->setObjectName("liveFormat");
+    impl_->liveFormat->addItems({"HLS → MPEG-TS (.ts)", "HTTP-FLV (.flv)"});
+    liveForm->addRow(t("Stream format", "直播格式"), impl_->liveFormat);
+    impl_->liveDuration = new QSpinBox;
+    impl_->liveDuration->setObjectName("liveDuration");
+    impl_->liveDuration->setRange(1, 172800);
+    impl_->liveDuration->setValue(3600);
+    impl_->liveDuration->setSuffix(t(" seconds", " 秒"));
+    liveForm->addRow(t("Maximum duration", "最长录制时长"), impl_->liveDuration);
+    impl_->liveSize = new QSpinBox;
+    impl_->liveSize->setObjectName("liveMaxMiB");
+    impl_->liveSize->setRange(1, 1048576);
+    impl_->liveSize->setValue(1024);
+    impl_->liveSize->setSuffix(" MiB");
+    liveForm->addRow(t("Maximum file size", "最大文件大小"), impl_->liveSize);
+    connect(impl_->liveSize, &QSpinBox::valueChanged, this,
+            [this](int mib) { impl_->exactLiveBytes = static_cast<std::int64_t>(mib) * 1024 * 1024; });
+    auto* liveNote = new QLabel(
+        t("Use a direct clear MPEG-TS HLS playlist or HTTP-FLV URL. Saves the source container; no media "
+          "components needed. Right-click an active task → Finish and save recording. Duration/size limits "
+          "also save complete media. Pause/cancel never saves the final file; resume starts a new recording "
+          "from the current feed. Login and all redirects/segments must stay on the source origin. "
+          "Encrypted, separate-audio, fMP4, low-latency or discontinuous HLS is refused.",
+          "填写未加密 MPEG-TS HLS 播放列表或 HTTP-FLV 直链，按原容器保存，无需媒体组件。"
+          "右键活动任务可“结束并保存录制”；达到时长或大小上限也会保存完整媒体。"
+          "暂停／取消不会生成最终文件，继续任务会从当前直播重新录制。"
+          "登录、跳转和分片必须保持同协议、主机和端口。"
+          "暂不支持加密、独立音轨、fMP4、低延迟或含不连续标记的 HLS。"));
+    liveNote->setWordWrap(true);
+    liveForm->addRow(liveNote);
+    tabs->addTab(liveTab, t("Live recording", "直播录制"));
     tabs->setObjectName("downloadOptionsTabs");
     for (auto* field :
          {impl_->url, impl_->referrer, impl_->agent, impl_->cookie, impl_->authorization, impl_->proxy,
@@ -549,8 +591,11 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
             impl_->sftpPassword->clear();
             impl_->sftpKeyPassphrase->clear();
         }
+        if ((ftp || sftp || torrent) && impl_->live->isChecked())
+            impl_->live->setChecked(false);
         tabs->setTabEnabled(torrentIndex, torrent);
-        const bool http = !ftp && !sftp && !torrent && !impl_->media->isChecked();
+        const bool http =
+            !ftp && !sftp && !torrent && !impl_->media->isChecked() && !impl_->live->isChecked();
         tabs->setTabEnabled(requestIndex, http);
         impl_->postConfirmed->setChecked(false);
         if (!http) {
@@ -558,6 +603,7 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
             impl_->postBody->clear();
         }
         impl_->media->setEnabled(!ftp && !sftp && !torrent);
+        impl_->live->setEnabled(!ftp && !sftp && !torrent);
         impl_->connections->setEnabled(!ftp && !sftp && !torrent);
         impl_->referrer->setEnabled(!ftp && !sftp && !torrent);
         impl_->cookie->setEnabled(!ftp && !sftp && !torrent);
@@ -568,6 +614,30 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
     connect(impl_->url, &QLineEdit::textChanged, this,
             [updateProtocol](const QString&) { updateProtocol(); });
     connect(impl_->media, &QCheckBox::toggled, this, [updateProtocol] { updateProtocol(); });
+    connect(impl_->media, &QCheckBox::toggled, this, [this](bool enabled) {
+        if (enabled)
+            impl_->live->setChecked(false);
+    });
+    auto updateLive = [this] {
+        const bool enabled = impl_->live->isChecked();
+        for (QWidget* widget :
+             {static_cast<QWidget*>(impl_->liveFormat), static_cast<QWidget*>(impl_->liveDuration),
+              static_cast<QWidget*>(impl_->liveSize)})
+            widget->setEnabled(enabled);
+        if (!enabled)
+            return;
+        impl_->media->setChecked(false);
+        QFileInfo file(impl_->destination->text());
+        if (!file.fileName().isEmpty())
+            impl_->destination->setText(file.dir().filePath(
+                file.completeBaseName() + (impl_->liveFormat->currentIndex() == 0 ? ".ts" : ".flv")));
+    };
+    connect(impl_->live, &QCheckBox::toggled, this, [updateLive, updateProtocol] {
+        updateLive();
+        updateProtocol();
+    });
+    connect(impl_->liveFormat, &QComboBox::currentIndexChanged, this, [updateLive] { updateLive(); });
+    updateLive();
     for (auto* field : {impl_->cookie, impl_->authorization, impl_->referrer, impl_->agent, impl_->proxy,
                         impl_->proxyUsername, impl_->proxyPassword})
         connect(field, &QLineEdit::textChanged, this, [this] { impl_->postConfirmed->setChecked(false); });
@@ -674,6 +744,13 @@ DownloadSpec AddDownloadDialog::specification() const {
     s.mediaFormat = impl_->selection->legacyFormat();
     if (s.kind == TransferKind::Media)
         s.mediaSelection = impl_->selection->selection();
+    if (impl_->live->isChecked()) {
+        s.kind = TransferKind::Live;
+        s.audioOnly = false;
+        s.live.format = static_cast<LiveFormat>(impl_->liveFormat->currentIndex());
+        s.live.durationSeconds = impl_->liveDuration->value();
+        s.live.maxBytes = impl_->exactLiveBytes;
+    }
     s.mediaDownloader = nativePath(impl_->downloader->text());
     s.mediaMuxer = nativePath(impl_->muxer->text());
     for (const auto& line : impl_->headers->toPlainText().split('\n', Qt::SkipEmptyParts)) {
@@ -784,6 +861,11 @@ void AddDownloadDialog::setSpecification(const DownloadSpec& spec) {
         headers << QString::fromStdString(name + ": " + value);
     impl_->headers->setPlainText(headers.join('\n'));
     impl_->media->setChecked(spec.kind == TransferKind::Media);
+    impl_->liveFormat->setCurrentIndex(static_cast<int>(spec.live.format));
+    impl_->liveDuration->setValue(spec.live.durationSeconds);
+    impl_->liveSize->setValue(static_cast<int>((spec.live.maxBytes + 1048575) / 1048576));
+    impl_->exactLiveBytes = spec.live.maxBytes;
+    impl_->live->setChecked(spec.kind == TransferKind::Live);
     if (!spec.mediaDownloader.empty())
         impl_->downloader->setText(QString::fromStdWString(spec.mediaDownloader.wstring()));
     if (!spec.mediaMuxer.empty())

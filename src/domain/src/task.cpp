@@ -62,6 +62,8 @@ bool isTorrentUrl(const std::string& url) {
     return url.starts_with("magnet:?") || url.starts_with("torrent:");
 }
 TransferKind sourceKind(const DownloadSpec& spec) {
+    if (spec.kind == TransferKind::Live)
+        return TransferKind::Live;
     if (spec.kind == TransferKind::Media)
         return TransferKind::Media;
     if (isTorrentUrl(spec.url))
@@ -71,6 +73,23 @@ TransferKind sourceKind(const DownloadSpec& spec) {
     return isFtpUrl(spec.url) ? TransferKind::Ftp : TransferKind::Http;
 }
 std::string validateSpec(const DownloadSpec& spec) {
+    if (auto error = validateLiveRecording(spec.live); !error.empty())
+        return error;
+    if (spec.kind == TransferKind::Live) {
+        if (!(spec.url.starts_with("http://") || spec.url.starts_with("https://")))
+            return "Live recording requires an HTTP or HTTPS stream.";
+        if (spec.audioOnly || spec.mediaSelection.mode != MediaSelectionMode::Automatic ||
+            spec.mediaSelection.container != MediaContainer::Automatic)
+            return "Live recording uses the original TS or FLV container, without media format selection.";
+        auto extension = spec.destination.extension().native();
+        std::transform(extension.begin(), extension.end(), extension.begin(), [](auto c) {
+            return c >= 'A' && c <= 'Z' ? static_cast<decltype(c)>(c + ('a' - 'A')) : c;
+        });
+        const auto expected = std::filesystem::path(spec.live.format == LiveFormat::HlsTs ? ".ts" : ".flv");
+        if (extension != expected.native())
+            return "Choose a .ts destination for HLS or .flv for HTTP-FLV recording.";
+    } else if (spec.live != LiveRecordingOptions{})
+        return "Live options require live recording mode.";
     if (auto error = validateHttpRequest(spec.httpRequest); !error.empty())
         return error;
     if (spec.httpRequest.method == HttpMethod::Post &&
@@ -98,7 +117,7 @@ std::string validateSpec(const DownloadSpec& spec) {
                  !spec.headers.empty() || !spec.referrer.empty()))
         return "SFTP cannot use media mode or HTTP request credentials and headers.";
     const bool torrent = isTorrentUrl(spec.url);
-    if (static_cast<int>(spec.kind) < 0 || static_cast<int>(spec.kind) > 4)
+    if (static_cast<int>(spec.kind) < 0 || static_cast<int>(spec.kind) > 5)
         return "Invalid transfer kind.";
     if (spec.kind == TransferKind::BitTorrent && !torrent)
         return "BitTorrent tasks require a magnet link or local torrent source.";

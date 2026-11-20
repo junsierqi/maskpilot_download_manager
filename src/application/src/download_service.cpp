@@ -28,6 +28,8 @@ bool sameCallerConstraints(const DownloadSpec& a, const DownloadSpec& b) {
         a.maxStoredBytes != b.maxStoredBytes || a.sameOriginRedirectOnly != b.sameOriginRedirectOnly ||
         a.proxyAuthenticationRequired != b.proxyAuthenticationRequired)
         return false;
+    if (a.live != b.live)
+        return false;
     return a.kind != TransferKind::Media ||
            (a.audioOnly == b.audioOnly && a.mediaFormat == b.mediaFormat &&
             a.mediaSelection.mode == b.mediaSelection.mode &&
@@ -183,7 +185,7 @@ struct DownloadService::Impl {
             (spec.kind == TransferKind::BitTorrent || spec.kind == TransferKind::Media);
         if (unsupportedBudget && spec.kind == TransferKind::BitTorrent && spec.url.starts_with("torrent:"))
             throw std::invalid_argument("Choose an unbudgeted queue before importing a local torrent. Native "
-                                        "budgets support HTTP/FTP only.");
+                                        "budgets exclude BT and finite media.");
         if (!unsupportedBudget)
             loadTorrentSource(spec, factory);
         if (!unsupportedBudget && spec.kind == TransferKind::BitTorrent) {
@@ -220,7 +222,7 @@ struct DownloadService::Impl {
             task.state = TaskState::AwaitingSelection;
         if (unsupportedBudget) {
             task.state = TaskState::NeedsAttention;
-            task.error = "Native payload budgets support native HTTP/FTP tasks only. Move this task to an "
+            task.error = "BT and finite media tasks cannot use native payload budgets. Move this task to an "
                          "unbudgeted queue.";
         }
         if (rememberProxy)
@@ -440,7 +442,8 @@ struct DownloadService::Impl {
             // Enumerate existing bounded names instead of issuing 1,026 probes per history row.
             for (auto it = std::filesystem::directory_iterator(folder, ignored);
                  !ignored && it != std::filesystem::directory_iterator{}; it.increment(ignored))
-                if (ownedRecoveryArtifact(it->path())) {
+                if (ownedRecoveryArtifact(it->path()) || (task.spec.kind == TransferKind::Live &&
+                                                          it->path().filename() == L"live-recording.tmp")) {
                     std::error_code removeError;
                     std::filesystem::remove(it->path(), removeError);
                 }
@@ -745,7 +748,7 @@ struct DownloadService::Impl {
             if (policy.dailyPayloadBudget > 0) {
                 if (task->spec.kind == TransferKind::BitTorrent || task->spec.kind == TransferKind::Media) {
                     task->state = TaskState::NeedsAttention;
-                    task->error = "Native payload budgets support native HTTP/FTP tasks only. Move this task "
+                    task->error = "BT and finite media tasks cannot use native payload budgets. Move this task "
                                   "to an unbudgeted queue.";
                     save(*task);
                     continue;
@@ -920,7 +923,7 @@ struct DownloadService::Impl {
                     (task.spec.kind == TransferKind::BitTorrent || task.spec.kind == TransferKind::Media);
                 if (unsupportedBudget && !isTerminal(task.state)) {
                     task.state = TaskState::NeedsAttention;
-                    task.error = "Native payload budgets support native HTTP/FTP tasks only. Move this task "
+                    task.error = "BT and finite media tasks cannot use native payload budgets. Move this task "
                                  "to an unbudgeted queue.";
                     save(task);
                 }
@@ -1539,6 +1542,14 @@ std::future<std::string> DownloadService::selectTorrentFiles(const std::string& 
         }
     });
     return result;
+}
+void DownloadService::finishRecording(const std::string& id) {
+    impl_->post([p = impl_.get(), id] {
+        const auto it = p->tasks.find(id);
+        if (it != p->tasks.end() && it->second.spec.kind == TransferKind::Live &&
+            isActive(it->second.state) && p->jobs.contains(id))
+            p->jobs.at(id)->control->finish = true;
+    });
 }
 void DownloadService::stopSeeding(const std::string& id) {
     impl_->post([p = impl_.get(), id] {

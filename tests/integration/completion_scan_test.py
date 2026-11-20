@@ -229,7 +229,7 @@ def migration_case(client, root, origin):
         db.execute('INSERT INTO tasks(' + ','.join(columns) + ') VALUES(' + ','.join('?' for _ in values) + ')', values)
         db.commit()
     call(client, '--resume', uuid.uuid4().hex, data)
-    assert rows(data, 'PRAGMA user_version')[0]['user_version'] == 17
+    assert rows(data, 'PRAGMA user_version')[0]['user_version'] == 18
     saved = task(data, identifier)
     assert saved['destination'] == str(destination) and saved['scan_required'] == saved['scan_state'] == saved['scan_at'] == 0
     backups = list(data.glob('tasks.db.before-v15-*.db')); assert len(backups) == 1

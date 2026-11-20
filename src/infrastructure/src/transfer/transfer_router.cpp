@@ -31,6 +31,9 @@ class UnifiedTransfer final : public ITransferTransport {
         case TransferKind::Media:
             adapter = makeMediaTransfer();
             break;
+        case TransferKind::Live:
+            adapter = makeLiveTransfer();
+            break;
         case TransferKind::Sftp:
             adapter = makeSftpTransfer();
             break;

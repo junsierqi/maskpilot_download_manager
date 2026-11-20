@@ -480,7 +480,7 @@ TEST(Storage, MigratesPreviousSchemaWithoutChangingExistingProtocolsOrFiles) {
                                "post_content_type",
                                "sftp_authentication",
                                "sftp_host_key_sha256",
-                               "sftp_private_key"}) {
+                               "sftp_private_key", "live_format", "live_duration", "live_max_bytes"}) {
         const auto sql = std::string("ALTER TABLE tasks DROP COLUMN ") + column;
         ASSERT_EQ(sqlite3_exec(connection, sql.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
     }

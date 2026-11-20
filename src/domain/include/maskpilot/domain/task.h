@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <maskpilot/domain/http_request.h>
+#include <maskpilot/domain/live.h>
 #include <maskpilot/domain/media.h>
 #include <maskpilot/domain/queue.h>
 #include <maskpilot/domain/sftp.h>
@@ -13,7 +14,7 @@
 #include <vector>
 
 namespace maskpilot {
-enum class TransferKind { Http, Ftp, Media, BitTorrent, Sftp };
+enum class TransferKind { Http, Ftp, Media, BitTorrent, Sftp, Live };
 enum class TaskState {
     Queued,
     Scheduled,
@@ -38,6 +39,7 @@ enum class TaskState {
 struct DownloadSpec {
     HttpRequest httpRequest;
     SftpOptions sftp;
+    LiveRecordingOptions live;
     std::string url;
     std::filesystem::path destination;
     std::string category = "General";

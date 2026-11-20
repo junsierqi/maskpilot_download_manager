@@ -103,6 +103,13 @@ QByteArray encodeTaskList(const std::vector<Task>& tasks) {
                            {"ftpTls", spec.ftpExplicitTls},
                            {"ftpActive", spec.ftpActiveMode},
                            {"ftpCa", pathText(spec.ftpCaBundle)}};
+        if (!validateLiveRecording(spec.live).empty() ||
+            (spec.kind != TransferKind::Live && spec.live != LiveRecordingOptions{}))
+            invalid();
+        if (spec.kind == TransferKind::Live)
+            object.insert("live", QJsonObject{{"format", static_cast<int>(spec.live.format)},
+                {"durationSeconds", spec.live.durationSeconds},
+                {"maxBytes", static_cast<double>(spec.live.maxBytes)}});
         if (isSftpUrl(spec.url))
             object.insert("sftp",
                           QJsonObject{{"authentication", static_cast<int>(spec.sftp.authentication)},
@@ -198,7 +205,7 @@ DecodedTaskList decodeTaskList(const QByteArray& bytes,
                       "sameOriginRedirectOnly",
                       "httpMethod",
                       "postContentType",
-                      "sftp"});
+                      "sftp", "live"});
         if (version != 2 && (object.contains("maxStoredBytes") || object.contains("sameOriginRedirectOnly")))
             invalid();
         if (version != 2 && (object.contains("httpMethod") || object.contains("postContentType")))
@@ -253,6 +260,23 @@ DecodedTaskList decodeTaskList(const QByteArray& bytes,
             ++result.contextBoundCount;
         spec.expectedSha256 = string(object, "sha256").toStdString();
         spec.kind = boolean(object, "media") ? TransferKind::Media : TransferKind::Http;
+        spec.live = {};
+        if (object.contains("live")) {
+            if (version != 2 || spec.kind == TransferKind::Media || !object["live"].isObject())
+                invalid();
+            const auto live = object["live"].toObject();
+            keys(live, {"format", "durationSeconds", "maxBytes"});
+            if (!live.contains("format") || !live.contains("durationSeconds") || !live.contains("maxBytes"))
+                invalid();
+            spec.kind = TransferKind::Live;
+            spec.live.format = static_cast<LiveFormat>(integer(live, "format", -1, 0, 1));
+            spec.live.durationSeconds = integer(live, "durationSeconds", 0, 1, 172800);
+            const auto n = live["maxBytes"].toDouble(-1);
+            if (!live["maxBytes"].isDouble() || !std::isfinite(n) || std::floor(n) != n ||
+                n < 1048576 || n > 1099511627776.0)
+                invalid();
+            spec.live.maxBytes = static_cast<std::int64_t>(n);
+        }
         spec.audioOnly = boolean(object, "audioOnly");
         spec.mediaSelection = {};
         if (object.contains("mediaSelection")) {

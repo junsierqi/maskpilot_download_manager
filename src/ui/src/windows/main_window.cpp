@@ -552,6 +552,12 @@ MainWindow::MainWindow(DownloadService& service, QWidget* parent)
             p.t("Pause active tasks before moving the selection.", "请先暂停选中的活动任务再移动。"));
         menu.addSeparator();
         auto task = tasks.front();
+        if (task.spec.kind == TransferKind::Live) {
+            auto* finish = menu.addAction(p.t("Finish and save recording", "结束并保存录制"), this,
+                [&p, task] { p.service.finishRecording(task.id); });
+            finish->setObjectName("finishRecordingAction");
+            finish->setEnabled(task.state == TaskState::Downloading || task.state == TaskState::Probing);
+        }
         menu.addAction(p.t("Finish seeding", "结束做种"), this,
                        [&p, task] { p.service.stopSeeding(task.id); })
             ->setEnabled(task.state == TaskState::Seeding);

@@ -158,6 +158,8 @@ class TaskModel final : public QAbstractTableModel {
             auto protocol = source.scheme().toUpper();
             if (task.spec.kind == TransferKind::Media)
                 protocol = chinese ? QStringLiteral("媒体") : QStringLiteral("MEDIA");
+            else if (task.spec.kind == TransferKind::Live)
+                protocol = chinese ? QStringLiteral("直播录制") : QStringLiteral("LIVE");
             else if (task.spec.ftpExplicitTls)
                 protocol = QStringLiteral("FTPS");
             return scope + " · " + protocol + (source.host().isEmpty() ? QString() : " · " + source.host());

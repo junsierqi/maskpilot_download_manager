@@ -170,6 +170,9 @@ TEST(Sftp, MigratesActualSchema16WithOriginalBackupAndOrdinaryDefaults) {
     const auto bytes = path.u8string();
     ASSERT_EQ(sqlite3_open(reinterpret_cast<const char*>(bytes.c_str()), &database), SQLITE_OK);
     ASSERT_EQ(sqlite3_exec(database,
+                           "ALTER TABLE tasks DROP COLUMN live_format;"
+                           "ALTER TABLE tasks DROP COLUMN live_duration;"
+                           "ALTER TABLE tasks DROP COLUMN live_max_bytes;"
                            "ALTER TABLE tasks DROP COLUMN sftp_authentication;"
                            "ALTER TABLE tasks DROP COLUMN sftp_host_key_sha256;"
                            "ALTER TABLE tasks DROP COLUMN sftp_private_key; PRAGMA user_version=16;",

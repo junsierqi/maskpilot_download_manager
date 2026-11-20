@@ -13,6 +13,8 @@ add_library(maskpilot_infrastructure
     src/persistence/sqlite_repository.cpp
     src/security/credential_vault.cpp
     src/bridge/download_bridge.cpp
+    src/media/live_playlist.cpp
+    src/media/live_transfer.cpp
     src/media/media_tools.cpp
     src/media/media_process.cpp
     src/media/media_origin_gateway.cpp

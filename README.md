@@ -1,10 +1,27 @@
 # MaskPilot
 
-基于 C++20 和 Qt 6 Widgets 的 Windows 下载管理器。HTTP/HTTPS、FTP/FTPS、媒体适配器及独立 BT 引擎负责传输、恢复、校验和安全落盘；桌面、命令行与浏览器共用任务调度和持久化层。
+基于 C++20 和 Qt 6 Widgets 的 Windows 下载管理器。HTTP/HTTPS、FTP/FTPS、SFTP、直播录制、媒体适配器及独立 BT 引擎负责传输、恢复、校验和安全落盘；桌面、命令行与浏览器共用任务调度和持久化层。
 
 **当前开发分支**在既有下载功能上增加浏览器辅助链接／登录恢复、周期站点同步、原生正文滚动额度和可选完成后扫描。冻结的 0.2.0／0.3.0 包保持独立；旧包的长期测试证据不代表当前开发代码。本轮以本地验证和候选包为目标，在线更新与正式发行延后。实际支持范围及剩余差距见 [功能与缺口](docs/product/feature-matrix.md)。
 
 ## 使用
+
+### 直播录制
+
+新建下载后打开“直播录制”页，选择直接 HLS 或 HTTP-FLV 地址。HLS 保存为 `.ts`，HTTP-FLV 保存为 `.flv`，无需媒体组件。默认最长 1 小时、最大 1 GiB，可设 1 秒～48 小时、1 MiB～1 TiB。右键活动任务选择“结束并保存录制”，或等待来源正常结束／达到上限；只保存完整分片或 FLV 标签，不转码。
+
+暂停、取消、网络失败、缺失分片和不支持的格式不会生成最终文件。继续任务从当前直播重录，不拼接旧缓存或补回已错过内容。HLS 初次从列表末尾最多三个分片开始，按序号去重。支持未加密 MPEG-TS 简单主列表／媒体列表；加密／DRM、fMP4、字节范围、低延迟、不连续标记、独立音轨、DASH 直播、RTMP 及网页直播解析明确不支持。
+
+所有跳转、列表与分片须保持初始协议、主机和有效端口。高级页可填写 Cookie／Authorization，仅保留在内存，重启需重新输入。支持选定代理、动态限速、原生正文额度、最终摘要、发布前扫描和无覆盖发布。额度耗尽转策略等待，恢复后重录，已用量不返还。正文计量包含收到但未组成最终完整单位的媒体字节，不含播放列表或网络封装。
+
+```powershell
+maskpilot_cli.exe "https://example.test/live/index.m3u8" "D:\Downloads\record.ts" ".\live-data" --live-hls --live-duration 1800 --live-max-bytes 1073741824
+maskpilot_cli.exe "https://example.test/live/feed.flv" "D:\Downloads\record.flv" ".\flv-data" --live-flv --source-cookie-env LIVE_COOKIE --source-authorization-env LIVE_AUTH
+```
+
+凭据环境变量按需提供，勿将真实凭据写入脚本。运行直播验收：`ctest --test-dir out/build/windows-msvc-protocols -R 'Live|live_recording_product_path' --output-on-failure`。真实视频测试要求测试 PATH 中有 `ffmpeg`／`ffprobe`，它们不参与原生直播传输。
+
+### 文件与站点下载
 
 静态站点项目处理公开、同来源 HTTP(S) 页面，使用 libxml2 和 CSS 分词器重写本地引用。实际响应类型用于分类；缺失、冲突或不安全的类型不按文件名猜测。支持 UTF-8、UTF-16、Latin-1／ASCII，移除脚本、表单、嵌入框架及外部自动加载引用，并设置限制内容安全策略；不还原动态应用、登录会话或受保护内容。
 
