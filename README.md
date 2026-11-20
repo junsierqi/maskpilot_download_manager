@@ -1,6 +1,6 @@
 # MaskPilot
 
-基于 C++20 和 Qt 6 Widgets 的 Windows 下载管理器。HTTP/HTTPS、FTP/FTPS、SFTP、直播录制、媒体适配器及独立 BT 引擎负责传输、恢复、校验和安全落盘；桌面、命令行与浏览器共用任务调度和持久化层。
+基于 C++20 和 Qt 6 Widgets 的 Windows／Linux 下载管理器。HTTP/HTTPS、FTP/FTPS、SFTP、直播录制、媒体适配器及独立 BT 引擎负责传输、恢复、校验和安全落盘；桌面、命令行与浏览器共用任务调度和持久化层。Linux 的具体系统、运行库和验收边界见 [Linux 构建与验收](docs/testing/linux-acceptance.md)，不能将其视为所有发行版兼容。
 
 **当前开发分支**在既有下载功能上增加浏览器辅助链接／登录恢复、周期站点同步、原生正文滚动额度和可选完成后扫描。冻结的 0.2.0／0.3.0 包保持独立；旧包的长期测试证据不代表当前开发代码。本轮以本地验证和候选包为目标，在线更新与正式发行延后。实际支持范围及剩余差距见 [功能与缺口](docs/product/feature-matrix.md)。
 
@@ -72,7 +72,7 @@ $expectedHash = '填写独立取得的64位十六进制SHA256'
 
 开发分支提供单独的“代理”页，地址中禁止嵌入账号密码。直接文件支持 HTTP／HTTPS／SOCKS5 代理，SOCKS5 的目标主机名由代理解析；HTTPS 代理校验证书与主机名。留空表示明确直连，指定代理后不受环境中的 `NO_PROXY` 绕过规则影响。
 
-代理账号密码默认仅存内存。可在代理页明确勾选“记住代理凭据”，由当前 Windows 用户的系统凭据库保存，不提供明文回退。任务库与导出清单不保存密码。未保存的凭据在重启或导入后须通过“更新请求”补充，缺少所需凭据时不会开始传输。右键“忘记代理凭据”会清除安全保存及当前会话的代理账号密码，并保留必须认证的标记。认证协商仍遵循代理服务器的协议。
+代理账号密码默认仅存内存。可在代理页明确勾选“记住代理凭据”，由当前用户的系统凭据库保存（Windows 凭据管理器／Linux 已解锁的 Secret Service），不提供明文回退。任务库与导出清单不保存密码。未保存的凭据在重启或导入后须通过“更新请求”补充，缺少所需凭据时不会开始传输。右键“忘记代理凭据”会清除安全保存及当前会话的代理账号密码，并保留必须认证的标记。认证协商仍遵循代理服务器的协议。
 
 BT 支持 HTTP CONNECT 与 SOCKS5 代理；不同路由或凭据使用隔离会话。代理 BT 使用 TCP，关闭 DHT、本地发现、自动端口映射和 uTP，不支持 UDP Tracker 或 HTTPS 代理。代理主机本身可能需要本机 DNS；不承诺匿名性。主动 FTP 不能与代理组合。媒体支持认证 HTTP／SOCKS5 代理，代理秘密和原始来源地址经私密标准输入传递，不放进解析组件启动参数。
 
@@ -204,11 +204,13 @@ maskpilot_cli.exe --scan-program 'C:/Tools/scanner.exe' --scan-arg '--check' --s
 
 ## 媒体
 
-工具菜单提供“媒体组件”，可下载校验过的解析／合并组件，也可在新建任务中选择已有可执行文件。组件可选，默认安装包不捆绑。新建媒体任务可先探测该地址的实际视频／音频格式，再选择精确格式 ID 和兼容的输出容器；自动模式仍提供画质上限预设。支持 MKV／MP4／WebM 及音频 M4A／MP3／Opus／FLAC，具体取决于源格式和本地组件。来源或网络配置改变会使探测结果失效；开始下载前重新核实所选格式，失效时明确失败。
+工具菜单提供“媒体组件”，可选择已有的可信可执行文件；Windows 还可下载校验过的解析／合并组件，Linux 使用系统安装或用户指定的原生组件。组件可选，默认安装包不捆绑。新建媒体任务可先探测该地址的实际视频／音频格式，再选择精确格式 ID 和兼容的输出容器；自动模式仍提供画质上限预设。支持 MKV／MP4／WebM 及音频 M4A／MP3／Opus／FLAC，具体取决于源格式和本地组件。来源或网络配置改变会使探测结果失效；开始下载前重新核实所选格式，失效时明确失败。
 
 探测在后台执行，可取消；只显示有界的格式信息。解析器使用原生网络下载，本程序自带的 `media_guard/` 启动器将 FFmpeg／ffprobe 限于任务专属目录内的普通媒体文件，阻止外部下载回退和伪装播放列表的网络读取。它不构成对任意不可信可执行文件的沙箱；组件路径须指向可信程序。媒体暂停后恢复、重试或更改带宽会重新下载。独立媒体登录限于上述同源授权；直播及 DRM 不支持。网站适配取决于组件和站点当前行为，详见 [支持矩阵](docs/product/support-matrix.md)。
 
 ## 从源码构建
+
+### Windows
 
 Windows x64，Visual Studio 2022 C++ 桌面工具、Windows SDK、CMake ≥3.25、Ninja、Qt **6.11.3 MSVC x64**、vcpkg、Python 3、Node ≥22。设好环境变量，仓库脚本会初始化编译器环境：
 
@@ -231,9 +233,23 @@ npm.cmd --prefix browser_extension test
 
 Release 编译前会实测编译器的相对源码路径映射，私有 PDB 留在构建目录。打包审计本机路径、PE 调试记录和文件清单；Qt／微软运行库还须与 SDK／工具链原件哈希一致且签名有效。供应商原有的构建诊断标识保留并单独记录，不修改签名二进制。依赖补丁及许可证随包提供。
 
-固定依赖由 vcpkg 清单获取；生成文件全部放在 `out/`。更换 Qt 版本时同步更新依赖源码清单和哈希，打包脚本会拒绝版本不一致。安装包包含所用 Qt 模块源码与许可证；原始工程代码采用 [MIT](LICENSE)，实际依赖见 [NOTICES](third_party/NOTICES.md)。
+Windows 固定依赖由 vcpkg 清单获取；生成文件全部放在 `out/`。更换 Windows Qt 版本时同步更新依赖源码清单和哈希，打包脚本会拒绝版本不一致。Windows 安装包包含所用 Qt 模块源码与许可证；原始工程代码采用 [MIT](LICENSE)，Windows 实际依赖见 [NOTICES](third_party/NOTICES.md)。Linux 使用系统运行库，候选包另有实际构建信息与 BT 许可证，不沿用 Windows 版本清单。
 
 脚本选取已安装的最新 MSVC 工具集。更换 Qt 安装位置或编译工具集后，在初始化的编译环境中执行 `cmake --fresh --preset windows-msvc-release` 再编译；打包会检查构建使用的 Qt、编译器及 Release 配置，并拒绝检测构建。
+
+### Linux
+
+当前验收用户态为 Ubuntu 26.04 x64；完整辅助进程保护要求内核 6.9+，源码要求 Qt ≥6.8、libxml2 ≥2.14 和具备 HTTP/HTTPS/FTP/FTPS/SFTP 的 curl。普通用户准备原生 SDK 和测试依赖后运行：
+
+```sh
+python3 -m venv out/python-linux
+out/python-linux/bin/python -m pip install -r tests/requirements.txt yt-dlp==2026.10.26
+export PATH="$PWD/out/python-linux/bin:$PATH"
+export PYTHON="$PWD/out/python-linux/bin/python"
+sh scripts/verify-linux.sh
+```
+
+入口完成构建、扩展、私有钥匙串中的完整 CTest 及实际媒体专项。构建预设为 `linux-gcc-release`；本地包使用 `python scripts/package_linux.py --build-directory out/build/linux-gcc-release --output-directory out/package/MaskPilot-0.3.0-linux-x64-local`。输出已存在即拒绝。所需系统运行库、离线源码、浏览器配置及当前资格限制见 [Linux 指南](docs/testing/linux-acceptance.md)。正式发行仍延后。
 
 ## 工程与验证
 

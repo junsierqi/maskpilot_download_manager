@@ -1,0 +1,39 @@
+name: Linux
+on: [push, pull_request]
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    container:
+      image: ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db
+    steps:
+      - name: Install native SDK in the job container
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ca-certificates git build-essential cmake ninja-build pkg-config \
+            qt6-base-dev qt6-svg-dev libcurl4-openssl-dev libssh2-1-dev \
+            libtorrent-rasterbar-dev libxml2-dev libsqlite3-dev libgtest-dev libssl-dev openssl \
+            libsecret-1-dev gnome-keyring dbus-x11 python3-venv ffmpeg nodejs npm tini \
+            xvfb xauth fonts-noto-cjk
+      - uses: actions/checkout@v4
+      - name: Verify as an isolated non-root user
+        run: |
+          useradd --create-home --uid 10001 builder
+          chown -R 10001:10001 "$GITHUB_WORKSPACE"
+          runuser -u builder -- sh -c '
+            set -eu
+            python3 -m venv out/python-linux
+            out/python-linux/bin/python -m pip install -r tests/requirements.txt yt-dlp==2026.10.26
+            mkdir -p out/qa
+            export PATH="$PWD/out/python-linux/bin:/usr/local/bin:/usr/bin:/bin"
+            export PYTHON="$PWD/out/python-linux/bin/python"
+            trap "tail -n 100 out/qa/linux-ci.log" EXIT
+            tini -s -- sh scripts/verify-linux.sh > out/qa/linux-ci.log 2>&1
+          '
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-qualification-logs
+          path: |
+            out/qa/linux-ci.log
+            out/build/linux-gcc-release/Testing/Temporary/*.log

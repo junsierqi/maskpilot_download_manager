@@ -1,6 +1,12 @@
 # 验证场景
 
-## 发布资格基线
+## Linux 原生验证
+
+以普通用户运行 `sh scripts/verify-linux.sh`，使用 `linux-gcc-release` 预设、独立 HOME／会话总线／加密测试钥匙串，完成原生构建、扩展、完整 CTest 和真实媒体专项。`linux_package_product_path` 验证实际安装字节、完整许可证、内部库链接、禁止覆盖输出以及移出构建目录后的 Qt／浏览器桥接／BT CLI；它清除开发运行库路径，不冒充干净系统认证。
+
+Linux 内核／SDK／运行库要求、完整日志和未验收范围见 [Linux 指南](linux-acceptance.md)。旧 Windows 发布资格清单和长期测试不能替代 Linux 结果；也不能将一次 300 秒检查称作 8 小时验收。
+
+## 发布资格基线（Windows）
 
 `python scripts/release_manifest.py create --root . --build-directory <build> --output <新基线.json>` 为 Release 构建建立不可覆盖的本地资格清单，记录原生源码、程序、依赖、媒体启动器、版本和环境。实际外部组件与 Qt 插件使用重复的 `--external 名称=绝对路径` 加入。`verify --root . --build-directory <build> --manifest <基线.json>` 核对完整文件集合及哈希；这类私有测试基线包含本机路径，不放进发行包，也不证明发布者身份。
 
