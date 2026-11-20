@@ -188,6 +188,22 @@ void configure(Easy& easy, const DownloadSpec& spec, Headers& headers, TransferC
         });
     curl_easy_setopt(easy.handle, CURLOPT_XFERINFODATA, &control);
     network::configureProxy(easy.handle, spec);
+    if (spec.httpRequest.method == HttpMethod::Post) {
+        // Complete proxy authentication before the state-changing source request is sent.
+        // HTTP proxies must permit CONNECT to the source port; never fall back to direct access.
+        curl_easy_setopt(easy.handle, CURLOPT_HTTPPROXYTUNNEL, 1L);
+        curl_easy_setopt(easy.handle, CURLOPT_SUPPRESS_CONNECT_HEADERS, 1L);
+        curl_easy_setopt(easy.handle, CURLOPT_HEADEROPT, static_cast<long>(CURLHEADER_SEPARATE));
+        // Keep this buffer alive through completion. No implicit HTTP2 stream replay or reused connection.
+        curl_easy_setopt(easy.handle, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
+        curl_easy_setopt(easy.handle, CURLOPT_FRESH_CONNECT, 1L);
+        curl_easy_setopt(easy.handle, CURLOPT_FORBID_REUSE, 1L);
+        curl_easy_setopt(easy.handle, CURLOPT_POSTFIELDS, spec.httpRequest.body.c_str());
+        curl_easy_setopt(easy.handle, CURLOPT_POSTFIELDSIZE_LARGE,
+                         static_cast<curl_off_t>(spec.httpRequest.body.size()));
+        easy.header("Content-Type: " + spec.httpRequest.contentType);
+        easy.header("Expect:");
+    }
     if (!spec.referrer.empty())
         curl_easy_setopt(easy.handle, CURLOPT_REFERER, spec.referrer.c_str());
     if (!spec.cookie.empty())
@@ -359,7 +375,7 @@ struct Sink {
     std::filesystem::path part, offsetPath;
     std::int64_t begin = 0, end = -1, written = 0, total = -1, partOffset = 0, maxStoredBytes = 0;
     bool storedLimitExceeded = false;
-    bool ranged = false, validated = false, finished = false;
+    bool post = false, ranged = false, validated = false, finished = false;
     std::string expectedEtag, error;
     Clock::time_point checkpointAt = Clock::now();
     ~Sink() {
@@ -400,7 +416,7 @@ struct Sink {
                 error = "Remote file identity changed. Create a new task to restart safely.";
                 return false;
             }
-        } else if (headers.status != 200) {
+        } else if (post ? (headers.status < 200 || headers.status >= 300) : headers.status != 200) {
             error = "HTTP response was not successful (" + std::to_string(headers.status) + ").";
             return false;
         }
@@ -427,7 +443,7 @@ struct Sink {
                     return 0;
             }
             if (sink.headers.status >= 300 && sink.headers.status < 400)
-                return length;
+                return sink.post ? 0 : length;
             if (!sink.validate())
                 return 0;
             if (sink.end >= 0 && static_cast<std::uint64_t>(length) >
@@ -468,6 +484,7 @@ class CurlTransfer final : public ITransferTransport {
             makeFtpTransfer()->run(task, work, control, callback);
             return;
         }
+        const bool post = task.spec.httpRequest.method == HttpMethod::Post;
         TransferEvent event;
         ResponseContentType contentType;
         auto deliver = [&] {
@@ -478,7 +495,7 @@ class CurlTransfer final : public ITransferTransport {
         auto emit = [&](TransferOutcome result, std::string error = {}, bool retry = false) {
             event.outcome = result;
             event.error = std::move(error);
-            event.retryable = retry;
+            event.retryable = retry && !post;
             deliver();
         };
         deliver();
@@ -500,7 +517,30 @@ class CurlTransfer final : public ITransferTransport {
                 task.originAuthenticationRequired || requiresOriginAuthentication(spec);
             if (const auto error = validateOriginAuthentication(spec, true); !error.empty())
                 throw std::invalid_argument(error);
-            remote = probe(spec, control, requiresOriginAuthentication(spec));
+            if (const auto error = validateHttpRequest(spec.httpRequest, true); !error.empty())
+                throw std::invalid_argument(error);
+            if (const auto error = validateSpec(spec); !error.empty())
+                throw std::invalid_argument(error);
+            if (post) {
+                if (task.ownerId != "standalone" || !task.projectId.empty())
+                    throw std::invalid_argument("POST requires a standalone task.");
+                if (std::filesystem::exists(spec.destination))
+                    throw std::invalid_argument("Destination already exists. POST was not submitted.");
+                std::filesystem::create_directories(spec.destination.parent_path());
+                auto stage = spec.destination;
+                stage += L".maskpilot-" + std::filesystem::path(task.id).wstring() + L".tmp";
+                // Check the actual publication directory before a server operation can be created.
+                // Append mode preserves any prior owned stage; the new response replaces it at assembly.
+                auto* preflight = openFile(stage, L"ab");
+                if (!preflight)
+                    throw std::invalid_argument(
+                        "Destination staging file is unavailable. POST was not submitted.");
+                fclose(preflight);
+                remote.status = 200;
+                remote.effectiveSpec = std::move(spec);
+                remote.effectiveUrl = remote.effectiveSpec.url;
+            } else
+                remote = probe(spec, control, requiresOriginAuthentication(spec));
         } catch (const std::exception& e) {
             if (!stopped())
                 emit(TransferOutcome::Attention, e.what());
@@ -524,7 +564,8 @@ class CurlTransfer final : public ITransferTransport {
             emit(TransferOutcome::Attention, "Server response URL is invalid.");
             return;
         }
-        event.responseUrl = remote.effectiveUrl;
+        if (!post)
+            event.responseUrl = remote.effectiveUrl;
         contentType.seed(remote.status, remote.contentType, remote.contentTypeInvalid);
         if (task.spec.maxStoredBytes > 0 && remote.total > task.spec.maxStoredBytes) {
             emit(TransferOutcome::Attention, "Resource exceeds this task's stored-byte limit.");
@@ -547,6 +588,9 @@ class CurlTransfer final : public ITransferTransport {
         std::vector<http::Extent> ranges;
         std::map<int, std::int64_t> offsets;
         std::string failure;
+        long postStatus = 0;
+        std::string postLocation;
+        bool postRedirectReady = false;
         bool integrityFailure = false, retryable = false;
         try {
             std::filesystem::create_directories(work);
@@ -693,6 +737,7 @@ class CurlTransfer final : public ITransferTransport {
                 sink->total = remote.total;
                 sink->maxStoredBytes = task.spec.maxStoredBytes;
                 sink->ranged = resumable;
+                sink->post = post;
                 sink->expectedEtag = remote.etag;
                 sink->file = openFile(sink->part, L"ab");
                 if (!sink->file)
@@ -778,6 +823,13 @@ class CurlTransfer final : public ITransferTransport {
                     if (!sink)
                         throw std::runtime_error("Transfer completion had no owned extent.");
                     const int id = sink->extentId;
+                    if (post) {
+                        postStatus = sink->headers.status;
+                        postLocation = sink->headers.get("location");
+                        postRedirectReady = sink->headers.complete && !sink->headers.conflict;
+                        if (sink->headers.complete)
+                            event.responseUrl = remote.effectiveUrl;
+                    }
                     if (!control.pause && !control.cancel && failure.empty()) {
                         const bool valid = sink->validate();
                         if (!sink->error.empty()) {
@@ -878,7 +930,33 @@ class CurlTransfer final : public ITransferTransport {
         }
         if (stopped())
             return;
+        if (post && postStatus >= 300 && postStatus < 400) {
+            try {
+                if (!postRedirectReady || (postStatus != 301 && postStatus != 302 && postStatus != 303))
+                    throw std::invalid_argument("POST redirect would repeat submission and was refused.");
+                const auto target = resolveUrl(remote.effectiveUrl, postLocation);
+                if (postLocation.empty() || target.empty() || origin(target) != origin(remote.effectiveUrl))
+                    throw std::invalid_argument("POST redirect leaves the authorized source origin.");
+                auto next = task;
+                next.spec.url = target;
+                next.spec.httpRequest = {};
+                next.spec.connections = 1;
+                next.spec.sameOriginRedirectOnly = true;
+                // A redirected result is retrieved as GET. The original POST is never repeated.
+                run(next, work, control, [&](TransferEvent result) {
+                    result.retryable = false;
+                    result.resumable = false;
+                    callback(std::move(result));
+                });
+            } catch (const std::exception&) {
+                emit(TransferOutcome::Attention, "POST redirect was refused. Submission may have reached the "
+                                                 "server; review before retrying.");
+            }
+            return;
+        }
         if (!failure.empty()) {
+            if (post)
+                failure += " POST may have reached the server; confirm a new submission before retrying.";
             emit(integrityFailure ? TransferOutcome::Attention : TransferOutcome::Failed, failure, retryable);
             return;
         }

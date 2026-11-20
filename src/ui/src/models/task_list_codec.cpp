@@ -74,6 +74,8 @@ QByteArray encodeTaskList(const std::vector<Task>& tasks) {
     qsizetype estimatedBytes = 0;
     for (const auto& task : tasks) {
         const auto& spec = task.spec;
+        if (!validateHttpRequest(spec.httpRequest).empty())
+            invalid();
         if (!validateMediaSelection(spec.mediaSelection, spec.audioOnly).empty())
             invalid();
         if (spec.maxStoredBytes < 0 || spec.maxStoredBytes > 9007199254740991LL ||
@@ -99,6 +101,10 @@ QByteArray encodeTaskList(const std::vector<Task>& tasks) {
                            {"ftpTls", spec.ftpExplicitTls},
                            {"ftpActive", spec.ftpActiveMode},
                            {"ftpCa", pathText(spec.ftpCaBundle)}};
+        if (spec.httpRequest.method == HttpMethod::Post) {
+            object.insert("httpMethod", "POST");
+            object.insert("postContentType", text(spec.httpRequest.contentType));
+        }
         if (spec.maxStoredBytes)
             object.insert("maxStoredBytes", static_cast<double>(spec.maxStoredBytes));
         if (spec.sameOriginRedirectOnly)
@@ -164,17 +170,47 @@ DecodedTaskList decodeTaskList(const QByteArray& bytes,
         const auto object = entry.toObject();
         if (object.contains("responseContentType") || object.contains("response_content_type"))
             invalid();
-        keys(object, {"url", "destination", "category", "connections", "proxy", "proxyAuthenticationRequired",
-                      "originAuthenticationRequired", "contextBound", "media", "audioOnly", "mediaFormat",
-                      "sha256", "ftpTls", "ftpActive", "ftpCa", "torrent", "mediaSelection", "maxStoredBytes",
-                      "sameOriginRedirectOnly"});
+        keys(object, {"url",
+                      "destination",
+                      "category",
+                      "connections",
+                      "proxy",
+                      "proxyAuthenticationRequired",
+                      "originAuthenticationRequired",
+                      "contextBound",
+                      "media",
+                      "audioOnly",
+                      "mediaFormat",
+                      "sha256",
+                      "ftpTls",
+                      "ftpActive",
+                      "ftpCa",
+                      "torrent",
+                      "mediaSelection",
+                      "maxStoredBytes",
+                      "sameOriginRedirectOnly",
+                      "httpMethod",
+                      "postContentType"});
         if (version != 2 && (object.contains("maxStoredBytes") || object.contains("sameOriginRedirectOnly")))
+            invalid();
+        if (version != 2 && (object.contains("httpMethod") || object.contains("postContentType")))
+            invalid();
+        const auto method = string(object, "httpMethod", "GET");
+        if (method != "GET" && method != "POST")
+            invalid();
+        if (method == "GET" && object.contains("postContentType"))
             invalid();
         const auto url = string(object, "url");
         if (url.isEmpty() || url.size() > 32768)
             invalid();
         auto spec = defaults(url);
         spec.url = url.toStdString();
+        spec.httpRequest = {};
+        if (method == "POST") {
+            spec.httpRequest.method = HttpMethod::Post;
+            spec.httpRequest.contentType =
+                string(object, "postContentType", "application/x-www-form-urlencoded").toStdString();
+        }
         spec.maxStoredBytes = storedBytes(object);
         spec.sameOriginRedirectOnly = boolean(object, "sameOriginRedirectOnly");
         spec.cookie.clear();
@@ -212,6 +248,8 @@ DecodedTaskList decodeTaskList(const QByteArray& bytes,
                 static_cast<MediaContainer>(integer(selection, "container", 0, 0, 7));
             spec.mediaSelection.primaryFormat = string(selection, "primaryFormat").toStdString();
             spec.mediaSelection.audioFormat = string(selection, "audioFormat").toStdString();
+            if (!validateHttpRequest(spec.httpRequest).empty())
+                invalid();
             if (!validateMediaSelection(spec.mediaSelection, spec.audioOnly).empty())
                 invalid();
         }

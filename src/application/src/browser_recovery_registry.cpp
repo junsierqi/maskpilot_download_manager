@@ -17,8 +17,9 @@ bool bounded(const std::string& value, std::size_t maximum) {
 } // namespace
 void BrowserRecoveryRegistry::eligible(const Task& task) {
     if (task.ownerId != "standalone" || !task.projectId.empty() || task.spec.kind != TransferKind::Http ||
-        sourceKind(task.spec) != TransferKind::Http || task.runIntent != RunIntent::Paused ||
-        isActive(task.state) || isTerminal(task.state) || !validateSpec(task.spec).empty())
+        sourceKind(task.spec) != TransferKind::Http || task.spec.httpRequest.method != HttpMethod::Get ||
+        task.runIntent != RunIntent::Paused || isActive(task.state) || isTerminal(task.state) ||
+        !validateSpec(task.spec).empty())
         denied();
 }
 BrowserRecoverySession BrowserRecoveryRegistry::begin(const Task& task, std::int64_t now) {

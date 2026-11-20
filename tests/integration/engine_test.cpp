@@ -475,7 +475,9 @@ TEST(Storage, MigratesPreviousSchemaWithoutChangingExistingProtocolsOrFiles) {
                                "project_revision",
                                "scan_required",
                                "scan_state",
-                               "scan_at"}) {
+                               "scan_at",
+                               "http_method",
+                               "post_content_type"}) {
         const auto sql = std::string("ALTER TABLE tasks DROP COLUMN ") + column;
         ASSERT_EQ(sqlite3_exec(connection, sql.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
     }

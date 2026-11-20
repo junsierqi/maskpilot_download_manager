@@ -611,7 +611,8 @@ MainWindow::MainWindow(DownloadService& service, QWidget* parent)
                        })
             ->setEnabled(task.ownerId == "standalone" && !isActive(task.state) && !isTerminal(task.state));
         if (task.ownerId == "standalone") {
-            if (task.spec.kind == TransferKind::Http && task.projectId.empty()) {
+            if (task.spec.kind == TransferKind::Http && task.spec.httpRequest.method == HttpMethod::Get &&
+                task.projectId.empty()) {
                 auto* recover = menu.addAction(
                     p.t("Recover link / sign-in in browser…", "在浏览器恢复链接／登录…"), this,
                     [this, &p, task] {

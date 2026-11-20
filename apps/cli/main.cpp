@@ -31,17 +31,17 @@ std::int64_t integerValue(const std::string& text) {
 }
 std::string credentialFromEnvironment(const std::string& name) {
 #ifdef _WIN32
-    char* raw = nullptr;
+    wchar_t* raw = nullptr;
     std::size_t size = 0;
-    const auto result = _dupenv_s(&raw, &size, name.c_str());
-    const std::unique_ptr<char, decltype(&std::free)> secret(raw, std::free);
+    const auto result = _wdupenv_s(&raw, &size, QString::fromStdString(name).toStdWString().c_str());
+    const std::unique_ptr<wchar_t, decltype(&std::free)> secret(raw, std::free);
     if (result != 0 || !raw)
-        throw std::invalid_argument("Proxy credential environment variable is unavailable.");
-    return raw;
+        throw std::invalid_argument("Request credential environment variable is unavailable.");
+    return QString::fromWCharArray(raw).toUtf8().toStdString();
 #else
     const auto* secret = std::getenv(name.c_str());
     if (!secret)
-        throw std::invalid_argument("Proxy credential environment variable is unavailable.");
+        throw std::invalid_argument("Request credential environment variable is unavailable.");
     return secret;
 #endif
 }
@@ -63,7 +63,13 @@ bool readOptions(maskpilot::DownloadSpec& spec, int argc, char** argv, int start
             spec.originAuthenticationRequired = false;
         else if (option == "--proxy-auth-required")
             spec.proxyAuthenticationRequired = true;
-        else if (option == "--same-origin-redirects")
+        else if (option == "--post")
+            spec.httpRequest.method = maskpilot::HttpMethod::Post;
+        else if (option == "--confirm-empty-post") {
+            spec.httpRequest.method = maskpilot::HttpMethod::Post;
+            spec.httpRequest.body.clear();
+            spec.httpRequest.bodyProvided = true;
+        } else if (option == "--same-origin-redirects")
             spec.sameOriginRedirectOnly = true;
         else if (option == "--ftp-explicit-tls")
             spec.ftpExplicitTls = true;
@@ -126,6 +132,18 @@ bool readOptions(maskpilot::DownloadSpec& spec, int argc, char** argv, int start
                     spec.mediaSelection.container = Container::Flac;
                 else
                     throw std::invalid_argument("Unknown media output container.");
+            } else if (option == "--post-body-env") {
+                if (value.empty() || value.size() > 128 ||
+                    !std::all_of(value.begin(), value.end(), [](unsigned char c) {
+                        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+                               c == '_';
+                    }))
+                    throw std::invalid_argument("Invalid POST body environment variable name.");
+                spec.httpRequest.method = maskpilot::HttpMethod::Post;
+                spec.httpRequest.body = credentialFromEnvironment(value);
+                spec.httpRequest.bodyProvided = true;
+            } else if (option == "--post-content-type") {
+                spec.httpRequest.contentType = value;
             } else if (option == "--max-stored-bytes") {
                 spec.maxStoredBytes = integerValue(value);
                 if (spec.maxStoredBytes < 0 || spec.maxStoredBytes > 9007199254740991LL)
@@ -271,6 +289,8 @@ int runClient(int argc, char** argv) {
                      "This verification client pauses unfinished transfers after 180 seconds.\n";
         std::cout << "HTTP: --max-stored-bytes N (0 unlimited) --same-origin-redirects\n";
         std::cout
+            << "POST options: --post --post-body-env NAME --post-content-type MIME\n"
+               "  --confirm-empty-post confirms an empty body. Each run needs new confirmation.\n"
             << "Trusted prefix options before URL/--resume/--project: --scan-program EXE\n"
                "  --scan-arg VALUE (repeat, including one literal {file}) --scan-timeout SECONDS\n"
                "  --waive-scan --resume TASK_ID DATA explicitly waives that stopped task's requirement.\n";
@@ -316,6 +336,8 @@ int runClient(int argc, char** argv) {
                     maskpilot::isTorrentUrl(argv[4]))
                     throw std::invalid_argument("Create a new task when changing a torrent source.");
                 spec.url = argv[4];
+                spec.httpRequest.body.clear();
+                spec.httpRequest.bodyProvided = false;
                 start = 5;
                 spec.cookie.clear();
                 spec.authorization.clear();

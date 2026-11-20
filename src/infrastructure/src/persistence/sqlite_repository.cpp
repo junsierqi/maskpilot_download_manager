@@ -59,6 +59,10 @@ void validateTaskContext(const Task& task) {
 }
 void validateTransferConstraints(const Task& task) {
     const auto& spec = task.spec;
+    if (!validateHttpRequest(spec.httpRequest).empty() ||
+        (spec.httpRequest.method == HttpMethod::Post &&
+         (sourceKind(spec) != TransferKind::Http || task.ownerId != "standalone" || !task.projectId.empty())))
+        throw std::invalid_argument("Invalid persistent HTTP request metadata.");
     if (task.projectId.empty()
             ? task.projectRevision != 0
             : (!isOpaqueId(task.projectId) || task.projectRevision < 1 || task.projectRevision > 1000000 ||
@@ -242,12 +246,12 @@ class Backend {
             int schemaVersion = 0;
             {
                 Statement version(db_, "PRAGMA user_version");
-                if (sqlite3_step(version.value) != SQLITE_ROW || sqlite3_column_int(version.value, 0) > 15 ||
+                if (sqlite3_step(version.value) != SQLITE_ROW || sqlite3_column_int(version.value, 0) > 16 ||
                     sqlite3_column_int(version.value, 0) < 0)
                     throw std::runtime_error("Database was created by a newer version.");
                 schemaVersion = sqlite3_column_int(version.value, 0);
             }
-            if (schemaVersion > 0 && schemaVersion < 15) {
+            if (schemaVersion > 0 && schemaVersion < 16) {
                 auto backupPath = path;
                 backupPath += L".before-v" + std::to_wstring(schemaVersion + 1) + L"-" +
                               std::filesystem::path(newTaskId()).wstring() + L".db";
@@ -408,6 +412,12 @@ ALTER TABLE tasks ADD COLUMN scan_state INTEGER NOT NULL DEFAULT 0 CHECK(scan_st
 ALTER TABLE tasks ADD COLUMN scan_at INTEGER NOT NULL DEFAULT 0 CHECK(scan_at BETWEEN 0 AND 253402300799);
 PRAGMA user_version=15;
 COMMIT;)sql");
+            if (schemaVersion < 16)
+                execute(R"sql(BEGIN IMMEDIATE;
+ALTER TABLE tasks ADD COLUMN http_method INTEGER NOT NULL DEFAULT 0 CHECK(http_method IN(0,1));
+ALTER TABLE tasks ADD COLUMN post_content_type TEXT NOT NULL DEFAULT 'application/x-www-form-urlencoded';
+PRAGMA user_version=16;
+COMMIT;)sql");
             Statement installation(
                 db_, "INSERT OR IGNORE INTO store_metadata(key,value) VALUES('installation_id',?)");
             installation.text(1, newTaskId());
@@ -540,6 +550,11 @@ COMMIT;)sql");
             t.scanRequired = sqlite3_column_int(q.value, 57) != 0;
             t.scanState = static_cast<ScanState>(sqlite3_column_int(q.value, 58));
             t.scanAt = sqlite3_column_int64(q.value, 59);
+            if (sqlite3_column_type(q.value, 60) != SQLITE_INTEGER || sqlite3_column_int64(q.value, 60) < 0 ||
+                sqlite3_column_int64(q.value, 60) > 1 || sqlite3_column_type(q.value, 61) != SQLITE_TEXT)
+                throw std::runtime_error("Saved HTTP request fields have invalid types.");
+            t.spec.httpRequest.method = static_cast<HttpMethod>(sqlite3_column_int(q.value, 60));
+            t.spec.httpRequest.contentType = text(61);
             if (const auto message = validateCompletionScanRecord(t); !message.empty())
                 throw std::runtime_error(message);
             validateTransferConstraints(t);
@@ -574,8 +589,8 @@ speed_limit,scheduled_at,stop_at,state,downloaded,total,created_at,updated_at,re
 media,audio_only,media_format,media_downloader,media_muxer,ftp_tls,ftp_active,ftp_ca,kind,bt_all,bt_selection,
 bt_seed,bt_upload_limit,bt_metadata,bt_published,bt_uploaded,proxy_auth_required,owner_id,request_id,
 context_revision,proxy_credential_ref,origin_auth_required,request_name,queue_id,run_intent,
-media_selection_mode,media_primary_format,media_audio_format,media_container,max_stored_bytes,same_origin_redirect_only,response_url,response_content_type,project_id,project_revision,scan_required,scan_state,scan_at)
-VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+media_selection_mode,media_primary_format,media_audio_format,media_container,max_stored_bytes,same_origin_redirect_only,response_url,response_content_type,project_id,project_revision,scan_required,scan_state,scan_at,http_method,post_content_type)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(id) DO UPDATE SET
 url=excluded.url,destination=excluded.destination,category=excluded.category,referrer=excluded.referrer,
 user_agent=excluded.user_agent,proxy=excluded.proxy,expected_sha256=excluded.expected_sha256,
@@ -595,7 +610,8 @@ queue_id=excluded.queue_id,run_intent=excluded.run_intent,media_selection_mode=e
 media_primary_format=excluded.media_primary_format,media_audio_format=excluded.media_audio_format,media_container=excluded.media_container,
 max_stored_bytes=excluded.max_stored_bytes,same_origin_redirect_only=excluded.same_origin_redirect_only,response_url=excluded.response_url,
 response_content_type=excluded.response_content_type,scan_required=excluded.scan_required,
-scan_state=excluded.scan_state,scan_at=excluded.scan_at
+scan_state=excluded.scan_state,scan_at=excluded.scan_at,
+http_method=excluded.http_method,post_content_type=excluded.post_content_type
 WHERE tasks.owner_id=excluded.owner_id AND tasks.project_id=excluded.project_id AND tasks.project_revision=excluded.project_revision)sql");
         q.text(1, t.id);
         q.text(2, t.spec.url);
@@ -664,6 +680,8 @@ WHERE tasks.owner_id=excluded.owner_id AND tasks.project_id=excluded.project_id 
         q.number(58, t.scanRequired);
         q.number(59, static_cast<int>(t.scanState));
         q.number(60, t.scanAt);
+        q.number(61, static_cast<int>(t.spec.httpRequest.method));
+        q.text(62, t.spec.httpRequest.contentType);
         if (sqlite3_step(q.value) != SQLITE_DONE || sqlite3_changes(db_) != 1)
             throw std::runtime_error("Cannot save task ownership or request identity.");
     }

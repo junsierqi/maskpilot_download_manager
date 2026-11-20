@@ -112,6 +112,20 @@ maskpilot_cli https://example.test/docs C:/Downloads/page.html C:/Downloads/stat
 `--max-stored-bytes 0` 保持默认不限大小；正数在已知总长和实际写入时检查。`--same-origin-redirects` 只允许原始协议、主机和有效端口相同的重定向；实际响应地址作为任务观察结果保存。它们仅适用于原生 HTTP，不是线路流量或磁盘配额。已有分片不会因降低上限被删除，但超限文件不能发布。站点项目通过这些约束管理普通下载子任务，操作流程见上文“静态站点项目”。
 在命令前加 `--bt-no-discovery` 可关闭 DHT、局域网发现和自动端口映射；显式 Tracker 与 Peer 仍启用，这不是禁止联网的开关。
 
+## POST 文件下载
+
+HTTP／HTTPS 代理必须允许 CONNECT 到来源端口，代理认证在 POST 提交前完成；代理或隧道失败不回退直连。SOCKS5 保留代理侧解析与认证。
+
+桌面“添加下载 → 请求”可选择 POST，填写已经编码的表单、JSON 或其他正文及内容类型，并明确确认单次提交。请求体最多 1 MiB，只在内存中使用，不写入任务库、导出列表或设置；修改来源、代理、登录材料或正文会撤销确认。命令行可从环境变量读取 UTF-8 正文：
+
+```powershell
+$env:DOWNLOAD_REQUEST = '{"format":"zip"}'
+maskpilot_cli https://example.test/export C:/Downloads/export.zip C:/Downloads/state --post-body-env DOWNLOAD_REQUEST --post-content-type application/json
+Remove-Item Env:DOWNLOAD_REQUEST
+```
+
+`--confirm-empty-post` 明确提交空正文；`--post` 仅标记请求方法。POST 不做前置请求探测、分段、断点续传或自动重试；同源 301／302／303 仅转为无正文 GET，307／308 和跨源跳转拒绝。暂停、失败、重启或重新下载后须重新输入正文并确认，原提交可能已经在服务器生效，取消下载不能撤销服务器操作。已有目标文件会在提交前拒绝；结果仍通过摘要、大小上限及可选扫描后发布。导入任务保持暂停且不含正文。仅支持独立 HTTP(S) 文件任务，浏览器表单正文自动接管、媒体、站点项目和上下文授权不支持 POST。
+
 ## 浏览器
 
 安装脚本注册当前用户 Chrome／Edge／Firefox 通道。便携版可运行：

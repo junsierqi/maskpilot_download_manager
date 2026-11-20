@@ -384,6 +384,10 @@ DownloadSpec ContextRegistry::resolve(const Task& task) const {
     if (!impl_->enabled(task.ownerId))
         throw std::invalid_argument("Download context is disabled or unavailable.");
     auto spec = task.spec;
+    if (const auto error = validateHttpRequest(spec.httpRequest, true); !error.empty())
+        throw std::invalid_argument(error);
+    if (task.ownerId != "standalone" && spec.httpRequest.method != HttpMethod::Get)
+        throw std::invalid_argument("Context grants authorize GET downloads only.");
     if (task.ownerId != "standalone") {
         spec.proxyUsername.clear();
         spec.proxyPassword.clear();

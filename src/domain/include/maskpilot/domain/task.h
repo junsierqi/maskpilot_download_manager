@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <filesystem>
+#include <maskpilot/domain/http_request.h>
 #include <maskpilot/domain/media.h>
 #include <maskpilot/domain/queue.h>
 #include <maskpilot/domain/torrent.h>
@@ -34,6 +35,7 @@ enum class TaskState {
     Count
 };
 struct DownloadSpec {
+    HttpRequest httpRequest;
     std::string url;
     std::filesystem::path destination;
     std::string category = "General";

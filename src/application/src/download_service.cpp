@@ -24,7 +24,7 @@ bool sameCallerConstraints(const DownloadSpec& a, const DownloadSpec& b) {
         std::equal(
             a.expectedSha256.begin(), a.expectedSha256.end(), b.expectedSha256.begin(),
             [&](unsigned char first, unsigned char second) { return lowerHex(first) == lowerHex(second); });
-    if (!sameHash || a.maxStoredBytes != b.maxStoredBytes ||
+    if (!sameHash || a.httpRequest != b.httpRequest || a.maxStoredBytes != b.maxStoredBytes ||
         a.sameOriginRedirectOnly != b.sameOriginRedirectOnly ||
         a.proxyAuthenticationRequired != b.proxyAuthenticationRequired)
         return false;
@@ -198,6 +198,8 @@ struct DownloadService::Impl {
                        return !isTerminal(pair.second.state) && pair.second.spec.destination == path;
                    });
         };
+        if (spec.httpRequest.method == HttpMethod::Post && reserved(spec.destination))
+            throw std::invalid_argument("Choose an unused destination before submitting POST.");
         for (int n = 1; reserved(spec.destination); ++n) {
             if (n > 10000)
                 throw std::runtime_error("Too many conflicting file names.");
@@ -279,7 +281,8 @@ struct DownloadService::Impl {
             throw std::invalid_argument(validationError);
         spec.kind = sourceKind(spec);
         if (!old.projectId.empty() &&
-            (spec.kind != TransferKind::Http || spec.maxStoredBytes <= 0 || !spec.sameOriginRedirectOnly))
+            (spec.kind != TransferKind::Http || spec.httpRequest.method != HttpMethod::Get ||
+             spec.maxStoredBytes <= 0 || !spec.sameOriginRedirectOnly))
             throw std::invalid_argument("Project child HTTP bounds cannot be removed.");
         if (spec.kind == TransferKind::BitTorrent)
             validateSelection(spec, old.torrent);
@@ -590,7 +593,12 @@ struct DownloadService::Impl {
             task.state = TaskState::AwaitingSelection;
             break;
         case TransferOutcome::Failed:
-            if (event.retryable && task.retries < task.spec.maxRetries && !stopping) {
+            if (task.spec.httpRequest.method == HttpMethod::Post) {
+                task.state = TaskState::NeedsAttention;
+                if (task.error.find("POST may have reached the server") == std::string::npos)
+                    task.error +=
+                        " POST may have reached the server. Confirm a new submission before retrying.";
+            } else if (event.retryable && task.retries < task.spec.maxRetries && !stopping) {
                 ++task.retries;
                 task.retryAt =
                     queueRegistry->now() + std::max(event.retryAfter, std::min(60, 1 << task.retries));
@@ -771,6 +779,13 @@ struct DownloadService::Impl {
                     continue;
                 }
             }
+            if (const auto requestError = validateHttpRequest(task->spec.httpRequest, true);
+                !requestError.empty()) {
+                task->state = TaskState::NeedsAttention;
+                task->error = requestError;
+                save(*task);
+                continue;
+            }
             DownloadSpec resolved;
             try {
                 resolved = contexts->resolve(*task);
@@ -826,6 +841,9 @@ struct DownloadService::Impl {
                     break;
                 }
             }
+            // Consume submission authority before durable dispatch; only the worker snapshot keeps it.
+            task->spec.httpRequest.body.clear();
+            task->spec.httpRequest.bodyProvided = false;
             task->state = TaskState::Probing;
             task->error.clear();
             if (scanning.options.enabled && !publishedTorrent && task->scanState != ScanState::Waived)
@@ -1085,7 +1103,8 @@ std::future<std::string> DownloadService::addProjectChild(DownloadSpec spec, std
                            queueId = std::move(queueId)]() mutable {
         if (!isOpaqueId(projectId) || projectRevision < 1 || projectRevision > 1000000 ||
             !isOpaqueId(requestId) || sourceKind(spec) != TransferKind::Http || spec.maxStoredBytes <= 0 ||
-            !spec.sameOriginRedirectOnly || requiresOriginAuthentication(spec))
+            !spec.sameOriginRedirectOnly || spec.httpRequest.method != HttpMethod::Get ||
+            requiresOriginAuthentication(spec))
             throw std::invalid_argument("Invalid public project child request.");
         spec.startPaused = true;
         Task task;
@@ -1203,10 +1222,10 @@ std::future<ScopedTaskPage> DownloadService::listScoped(std::string token, std::
                 break;
             }
             const auto filename = task.spec.destination.filename().u8string();
-            page.tasks.push_back({id, std::string(filename.begin(), filename.end()), task.state,
-                                  task.downloaded, task.total,
-                                  owner == "standalone" && task.projectId.empty() &&
-                                      task.spec.kind == TransferKind::Http && !isTerminal(task.state)});
+            page.tasks.push_back(
+                {id, std::string(filename.begin(), filename.end()), task.state, task.downloaded, task.total,
+                 owner == "standalone" && task.projectId.empty() && task.spec.kind == TransferKind::Http &&
+                     task.spec.httpRequest.method == HttpMethod::Get && !isTerminal(task.state)});
         }
         return page;
     });
@@ -1368,6 +1387,8 @@ void DownloadService::updateUrl(const std::string& id, std::string url) {
             return; // A different torrent is a different task, never a refreshed file URL.
         auto spec = it->second.spec;
         spec.url = url;
+        spec.httpRequest.body.clear();
+        spec.httpRequest.bodyProvided = false;
         if (!it->second.projectId.empty() && sourceKind(spec) != TransferKind::Http)
             return;
         spec.cookie.clear();

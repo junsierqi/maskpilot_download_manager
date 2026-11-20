@@ -34,7 +34,12 @@ void MainWindow::Impl::details() {
         text->setPlainText(
             t("File: ", "文件：") + pathString(it->spec.destination) + "\n\n" + t("Source: ", "来源：") +
             safe.toDisplayString() + "\n" + t("Status: ", "状态：") + stateText(it->state, chinese) + "\n" +
-            t("Transferred: ", "已下载：") + bytes(it->downloaded) + " / " + bytes(it->total) + "\n" +
+            t("Request: ", "请求：") +
+            (it->spec.httpRequest.method == HttpMethod::Post
+                 ? t("POST; body is never saved; each submission requires confirmation",
+                     "POST；请求体从不保存，每次提交需要确认")
+                 : QStringLiteral("GET")) +
+            "\n" + t("Transferred: ", "已下载：") + bytes(it->downloaded) + " / " + bytes(it->total) + "\n" +
             t("Connections: ", "连接数：") + QString::number(it->spec.connections) + "\n" +
             t("Resume identity: ", "续传身份验证：") +
             (it->resumable ? t("Validated", "已验证") : t("Not available", "不可用")) + "\n" +
@@ -98,7 +103,8 @@ ImportReview reviewImport(QWidget* parent, const std::vector<DownloadSpec>& spec
     auto* tree = new QTreeWidget(&dialog);
     tree->setObjectName("taskImportPreviewTasks");
     tree->setHeaderLabels({t("Source", "来源"), t("Destination", "目标"), t("Proxy route", "代理路径"),
-                           t("Source login", "来源登录"), t("Proxy login", "代理登录")});
+                           t("Source login", "来源登录"), t("Proxy login", "代理登录"),
+                           t("Request", "请求")});
     for (std::size_t n = completed; n < specs.size(); ++n) {
         const auto& spec = specs[n];
         const auto sourceAuth = requiresOriginAuthentication(spec)
@@ -109,7 +115,10 @@ ImportReview reviewImport(QWidget* parent, const std::vector<DownloadSpec>& spec
                                    spec.proxy.empty() ? t("Direct", "直连") : qs(spec.proxy), sourceAuth,
                                    spec.proxyAuthenticationRequired
                                        ? t("Required; reenter credentials", "需要；请重新输入凭据")
-                                       : t("Not required", "不需要")});
+                                       : t("Not required", "不需要"),
+                                   spec.httpRequest.method == HttpMethod::Post
+                                       ? t("POST; reenter body and confirm", "POST；重新输入请求体并确认")
+                                       : QStringLiteral("GET")});
     }
     tree->setRootIsDecorated(false);
     tree->header()->setSectionResizeMode(QHeaderView::ResizeToContents);

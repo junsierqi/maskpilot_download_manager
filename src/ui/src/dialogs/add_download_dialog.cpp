@@ -46,6 +46,9 @@ struct AddDownloadDialog::Impl {
     QCheckBox *paused, *schedule, *stop;
     QDateTimeEdit *startTime, *stopTime;
     QPlainTextEdit* headers;
+    QComboBox *httpMethod, *postContentType;
+    QPlainTextEdit* postBody;
+    QCheckBox* postConfirmed;
     QCheckBox* media;
     ui::MediaSelectionWidget* selection;
     std::string mediaTaskId;
@@ -259,6 +262,51 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
     impl_->headers->setMaximumHeight(70);
     options->addRow(t("Extra headers", "附加请求头"), impl_->headers);
     tabs->addTab(advanced, t("Advanced", "高级"));
+    auto* requestTab = new QWidget;
+    auto* requestForm = new QFormLayout(requestTab);
+    impl_->httpMethod = new QComboBox;
+    impl_->httpMethod->setObjectName("httpMethod");
+    impl_->httpMethod->addItems({"GET", "POST"});
+    impl_->postContentType = new QComboBox;
+    impl_->postContentType->setObjectName("postContentType");
+    impl_->postContentType->setEditable(true);
+    impl_->postContentType->addItems({"application/x-www-form-urlencoded", "application/json",
+                                      "text/plain; charset=utf-8", "application/octet-stream"});
+    impl_->postBody = new QPlainTextEdit;
+    impl_->postBody->setObjectName("postBody");
+    impl_->postBody->setPlaceholderText(
+        t("Encoded request body; maximum 1 MiB. Never saved.", "已编码的请求体，最多 1 MiB，不会保存。"));
+    impl_->postConfirmed = new QCheckBox(
+        t("Confirm one POST submission (an empty body is allowed)", "确认提交一次 POST（允许空请求体）"));
+    impl_->postConfirmed->setObjectName("postConfirmed");
+    auto* postNotice = new QLabel(
+        t("POST may create a server operation. No probing, segmented transfer or automatic retry. "
+          "After pause, failure or restart, review the server result and explicitly submit again if needed.",
+          "POST "
+          "可能在服务器创建操作，不进行探测、分段或自动重试。暂停、失败或重启后，请先检查服务器结果，再按需明"
+          "确重新提交。"));
+    postNotice->setWordWrap(true);
+    requestForm->addRow(t("Method", "请求方法"), impl_->httpMethod);
+    requestForm->addRow(t("Content type", "内容类型"), impl_->postContentType);
+    requestForm->addRow(t("Body", "请求体"), impl_->postBody);
+    requestForm->addRow(impl_->postConfirmed);
+    requestForm->addRow(postNotice);
+    const auto requestIndex = tabs->addTab(requestTab, t("Request", "请求"));
+    auto updateRequestMethod = [this] {
+        const bool post = impl_->httpMethod->currentIndex() == 1;
+        impl_->postContentType->setEnabled(post);
+        impl_->postBody->setEnabled(post);
+        impl_->postConfirmed->setEnabled(post);
+        impl_->postConfirmed->setChecked(false);
+        if (!post)
+            impl_->postBody->clear();
+    };
+    connect(impl_->httpMethod, &QComboBox::currentIndexChanged, this, updateRequestMethod);
+    connect(impl_->postContentType, &QComboBox::currentTextChanged, this,
+            [this] { impl_->postConfirmed->setChecked(false); });
+    connect(impl_->postBody, &QPlainTextEdit::textChanged, this,
+            [this] { impl_->postConfirmed->setChecked(false); });
+    updateRequestMethod();
     auto* proxyTab = new QWidget;
     auto* proxyForm = new QFormLayout(proxyTab);
     proxyForm->setSpacing(12);
@@ -434,11 +482,18 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
     connect(impl_->queue, &QComboBox::currentIndexChanged, impl_->selection,
             &ui::MediaSelectionWidget::invalidate);
     connect(impl_->media, &QCheckBox::toggled, impl_->selection, &QWidget::setEnabled);
-    auto updateProtocol = [this, tabs, ftpIndex, torrentIndex] {
+    auto updateProtocol = [this, tabs, ftpIndex, torrentIndex, requestIndex] {
         const bool ftp = isFtpUrl(impl_->url->text().trimmed().toStdString());
         const bool torrent = isTorrentUrl(impl_->url->text().trimmed().toStdString());
         tabs->setTabEnabled(ftpIndex, ftp);
         tabs->setTabEnabled(torrentIndex, torrent);
+        const bool http = !ftp && !torrent && !impl_->media->isChecked();
+        tabs->setTabEnabled(requestIndex, http);
+        impl_->postConfirmed->setChecked(false);
+        if (!http) {
+            impl_->httpMethod->setCurrentIndex(0);
+            impl_->postBody->clear();
+        }
         impl_->media->setEnabled(!ftp && !torrent);
         impl_->connections->setEnabled(!ftp && !torrent);
         impl_->referrer->setEnabled(!ftp && !torrent);
@@ -449,6 +504,14 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
     };
     connect(impl_->url, &QLineEdit::textChanged, this,
             [updateProtocol](const QString&) { updateProtocol(); });
+    connect(impl_->media, &QCheckBox::toggled, this, [updateProtocol] { updateProtocol(); });
+    for (auto* field : {impl_->cookie, impl_->authorization, impl_->referrer, impl_->agent, impl_->proxy,
+                        impl_->proxyUsername, impl_->proxyPassword})
+        connect(field, &QLineEdit::textChanged, this, [this] { impl_->postConfirmed->setChecked(false); });
+    connect(impl_->headers, &QPlainTextEdit::textChanged, this,
+            [this] { impl_->postConfirmed->setChecked(false); });
+    for (auto* flag : {impl_->originAuthenticationRequired, impl_->proxyAuthenticationRequired})
+        connect(flag, &QCheckBox::toggled, this, [this] { impl_->postConfirmed->setChecked(false); });
     updateProtocol();
     const auto updateSourceRequirement = [this] {
         const auto source = impl_->url->text().toStdString();
@@ -493,6 +556,8 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
     connect(buttons, &QDialogButtonBox::accepted, this, [this, t] {
         auto spec = specification();
         auto error = validateSpec(spec);
+        if (error.empty() && !spec.startPaused)
+            error = validateHttpRequest(spec.httpRequest, true);
         if (impl_->stop->isChecked() && spec.stopAt <= std::max<std::int64_t>(unixTime(), spec.scheduledAt))
             error = "Stop time must be after the start time.";
         if (!error.empty()) {
@@ -588,6 +653,12 @@ DownloadSpec AddDownloadDialog::specification() const {
     s.originAuthenticationRequired = s.originAuthenticationRequired || hasOriginMaterial(s);
     if (s.kind != TransferKind::Media)
         s.mediaSelection = {};
+    if (sourceKind(s) == TransferKind::Http && impl_->httpMethod->currentIndex() == 1) {
+        s.httpRequest.method = HttpMethod::Post;
+        s.httpRequest.contentType = impl_->postContentType->currentText().trimmed().toStdString();
+        s.httpRequest.body = impl_->postBody->toPlainText().toUtf8().toStdString();
+        s.httpRequest.bodyProvided = impl_->postConfirmed->isChecked();
+    }
     return s;
 }
 void AddDownloadDialog::setSpecification(const DownloadSpec& spec) {
@@ -642,6 +713,10 @@ void AddDownloadDialog::setSpecification(const DownloadSpec& spec) {
     impl_->originAuthenticationRequired->setEnabled(!isTorrentUrl(spec.url) && !hasOriginMaterial(spec));
     impl_->updateStorage();
     impl_->selection->setSelection(spec.mediaSelection, spec.audioOnly, spec.mediaFormat);
+    impl_->httpMethod->setCurrentIndex(spec.httpRequest.method == HttpMethod::Post ? 1 : 0);
+    impl_->postContentType->setCurrentText(QString::fromStdString(spec.httpRequest.contentType));
+    impl_->postBody->setPlainText(QString::fromUtf8(spec.httpRequest.body));
+    impl_->postConfirmed->setChecked(spec.httpRequest.bodyProvided);
 }
 bool AddDownloadDialog::rememberProxyCredentials() const { return impl_->rememberProxy->isChecked(); }
 void AddDownloadDialog::setStoredProxyCredentials(bool stored) {

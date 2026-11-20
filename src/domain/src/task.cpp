@@ -65,6 +65,12 @@ TransferKind sourceKind(const DownloadSpec& spec) {
     return isFtpUrl(spec.url) ? TransferKind::Ftp : TransferKind::Http;
 }
 std::string validateSpec(const DownloadSpec& spec) {
+    if (auto error = validateHttpRequest(spec.httpRequest); !error.empty())
+        return error;
+    if (spec.httpRequest.method == HttpMethod::Post &&
+        (sourceKind(spec) != TransferKind::Http ||
+         !(spec.url.starts_with("http://") || spec.url.starts_with("https://"))))
+        return "POST requires a native HTTP or HTTPS file source.";
     if (spec.maxStoredBytes < 0 || spec.maxStoredBytes > 9007199254740991LL)
         return "Stored file size limit is outside the supported range.";
     if ((spec.maxStoredBytes != 0 || spec.sameOriginRedirectOnly) &&
@@ -205,7 +211,8 @@ std::string validateSpec(const DownloadSpec& spec) {
                        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         if (lower == "range" || lower == "if-range" || lower == "host" || lower == "accept-encoding" ||
             lower == "content-length" || lower == "transfer-encoding" || lower == "proxy-authorization" ||
-            lower == "proxy-connection")
+            lower == "proxy-connection" ||
+            (spec.httpRequest.method == HttpMethod::Post && lower == "content-type"))
             return "This header is controlled by the download engine.";
     }
     return {};
