@@ -103,6 +103,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *arguments):
         pass
 
+    def do_POST(self):
+        name = urlsplit(self.path).path.lstrip('/')
+        body = self.rfile.read(int(self.headers.get('Content-Length', '0')))
+        self.server.requests.append({'path': name, 'method': 'POST', 'bodyValid': body == b'owned=post',
+                                     'range': False, 'authenticated': True, 'cookieNames': []})
+        if name != 'posted' or body != b'owned=post':
+            self.send_error(405)
+            return
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/octet-stream')
+        self.send_header('Content-Length', str(len(PAYLOAD)))
+        self.send_header('Content-Disposition', 'attachment; filename="posted.bin"')
+        self.end_headers()
+        with contextlib.suppress(OSError):
+            self.wfile.write(PAYLOAD)
+
     def do_GET(self):
         parsed = urlsplit(self.path)
         name = parsed.path.lstrip('/')
@@ -118,12 +134,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         if name == 'page':
             target = parse_qs(parsed.query).get('target', [''])[0]
-            if target not in ('captured', 'standard', 'container', 'fallback', 'private', 'partitioned'):
+            if target not in ('captured', 'standard', 'container', 'fallback', 'private', 'partitioned', 'posted'):
                 self.send_error(400)
                 return
             body = ('<!doctype html><meta charset="utf-8"><title>Owned Firefox download</title>'
                     '<h1>Browser handoff fixture</h1><a id="download" href="/' + target + '" download="' +
                     target + '.bin">Download owned fixture</a>').encode()
+            if target == 'posted':
+                body = (b'<!doctype html><meta charset="utf-8"><form method="post" action="/posted">'
+                        b'<input name="owned" value="post"><button id="download" type="submit">Export</button></form>')
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.send_header('Content-Length', str(len(body)))
@@ -133,7 +152,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         cookie = self.headers.get('Cookie', '')
         authenticated = (name not in self.server.cookies or
                          cookie == 'owned_session=' + self.server.cookies[name])
-        self.server.requests.append({'path': name, 'range': bool(self.headers.get('Range')),
+        self.server.requests.append({'path': name, 'method': 'GET', 'range': bool(self.headers.get('Range')),
                                      'authenticated': authenticated,
                                      'cookieNames': [part.split('=', 1)[0].strip() for part in cookie.split(';') if part]})
         if not authenticated:
@@ -327,8 +346,15 @@ def exercise(build, extension, firefox, evidence_directory=None):
 
                     def capture(name, store=None):
                         browser_id = browser_click(name, store)
-                        task = until(lambda: next((row for row in rows(data) if row['url'] == origin.url(name)
-                                                   and row['state'] == 9), None), 'automatic Firefox handoff')
+                        try:
+                            task = until(lambda: next((row for row in rows(data) if row['url'] == origin.url(name)
+                                                       and row['state'] == 9), None), 'automatic Firefox handoff')
+                        except AssertionError:
+                            evidence['methodDiagnostics'] = driver.evaluate('return {'
+                                'permissions:await browser.permissions.getAll(),lastError:(await browser.storage.local.get("lastError")).lastError,'
+                                'downloads:(await browser.downloads.search({})).map(x=>({url:x.url,finalUrl:x.finalUrl,'
+                                'startTime:x.startTime,incognito:x.incognito,cookieStoreId:x.cookieStoreId,state:x.state}))};')
+                            raise
                         completed(task['id'])
                         entry = until(lambda: driver.evaluate('return (await browser.downloads.search({id:arguments[0]}))[0];',
                                                                [browser_id]), 'browser handoff state')
@@ -337,6 +363,16 @@ def exercise(build, extension, firefox, evidence_directory=None):
 
                     driver.evaluate('await browser.storage.local.set({autoCapture:true,includeCookies:false});')
                     capture('captured')
+                    posted_baseline = {row['id'] for row in rows(data)}
+                    posted_id = browser_click('posted')
+                    posted = until(lambda: _complete_browser(driver, posted_id), 'browser-owned POST form response')
+                    assert hashlib.sha256(Path(posted['filename']).read_bytes()).hexdigest() == HASH
+                    time.sleep(.3)
+                    assert {row['id'] for row in rows(data)} == posted_baseline
+                    posted_hits = [entry for entry in origin.requests if entry['path'] == 'posted']
+                    assert len(posted_hits) == 1 and posted_hits[0]['method'] == 'POST' and posted_hits[0]['bodyValid']
+                    print('PASS actual Firefox POST form remains browser-owned with one submission and exact payload')
+                    evidence['assertions'].append('Actual POST form remains browser-owned without GET duplicate')
                     evidence['assertions'].append('Actual Firefox download automatically captured')
                     print('PASS actual Firefox automatic capture reaches durable native download')
                     container = driver.evaluate('return await browser.contextualIdentities.create({name:"Owned fixture",color:"blue",icon:"circle"});')

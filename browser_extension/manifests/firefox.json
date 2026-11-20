@@ -3,7 +3,7 @@
   "name": "MaskPilot 下载助手",
   "version": "0.3.0",
   "description": "将下载交给 MaskPilot，按需显示页面资源。自动接管和页面面板默认关闭。",
-  "permissions": ["activeTab", "scripting", "storage", "contextMenus", "downloads", "nativeMessaging", "cookies", "contextualIdentities"],
+  "permissions": ["activeTab", "scripting", "storage", "contextMenus", "downloads", "nativeMessaging", "cookies", "contextualIdentities", "webRequest"],
   "host_permissions": ["http://*/*", "https://*/*"],
   "background": {"scripts": ["background.js"], "type": "module"},
   "action": {"default_title": "MaskPilot 下载助手", "default_popup": "popup.html"},

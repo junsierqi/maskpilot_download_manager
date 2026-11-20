@@ -9,14 +9,14 @@ import {fileURLToPath} from 'node:url';
 
 const scriptDirectory=path.dirname(fileURLToPath(import.meta.url));
 const repo=path.resolve(scriptDirectory,'../..');
-const {values}=parseArgs({options:{'build-directory':{type:'string',default:'out/build/windows-msvc-release'},browser:{type:'string'},'allow-unsandboxed-fixture':{type:'boolean',default:false}}});
+const {values}=parseArgs({options:{'build-directory':{type:'string',default:'out/build/windows-msvc-release'},browser:{type:'string'},'allow-unsandboxed-fixture':{type:'boolean',default:false},'evidence-directory':{type:'string'}}});
 const build=path.resolve(repo,values['build-directory']);
 const desktop=path.join(build,'maskpilot.exe');
 const hostBuild=path.join(build,'maskpilot_native_host.exe');
 const extension=existsSync(path.join(build,'browser_extension/manifest.json'))?path.join(build,'browser_extension'):path.resolve(repo,'browser_extension/dist');
 const chromium=values.browser||process.env.MASKPILOT_TEST_BROWSER;
 assert(chromium,'Supply --browser <Chromium executable> or MASKPILOT_TEST_BROWSER. Use a test browser that permits loading unpacked extensions.');
-const root=path.resolve(repo,'out/qa/browser-'+Date.now());mkdirSync(root,{recursive:true});
+const root=path.resolve(repo,values['evidence-directory']||'out/qa/browser-'+Date.now());assert(!existsSync(root),'Evidence directory must be new');mkdirSync(root,{recursive:true});
 const id='epdfgbhpbpkpephcfmemmadlblpodnfo';
 const origin=`chrome-extension://${id}/`;
 const hostName='com.maskpilot.downloads';
@@ -56,9 +56,20 @@ const server=createServer((request,response)=>{
   const url=new URL(request.url,'http://localhost');
   if(url.pathname==='/page'){
     const route=url.searchParams.get('route')||'captured';
-    const links=route==='panel'?'<a id="download" href="/manual?panel=one">First owned file</a><br><a id="download2" href="/manual?panel=two">Second owned file</a>':`<a id="download" href="/${route}" download="${route}.bin">Download synthetic file</a>`;
+    const links=route==='posted'?'<form method="post" action="/posted"><input name="owned" value="post"><button id="download" type="submit">Submit owned export</button></form>':route==='panel'?'<a id="download" href="/manual?panel=one">First owned file</a><br><a id="download2" href="/manual?panel=two">Second owned file</a>':`<a id="download" href="/${route}" download="${route}.bin">Download synthetic file</a>`;
     const html=`<!doctype html><meta charset="utf-8"><title>MaskPilot isolated browser fixture</title><h1>Native download handoff</h1>${links}`;
     response.writeHead(200,{'Content-Type':'text/html','Content-Length':Buffer.byteLength(html)});response.end(html);return;
+  }
+  if(url.pathname==='/posted'){
+    let body='';
+    request.on('data',chunk=>{body+=chunk;if(body.length>4096)request.destroy();});
+    request.on('end',()=>{
+      evidence.httpRequests.push({url:'/posted',method:request.method,bodyValid:body==='owned=post',at:Date.now()});
+      if(request.method!=='POST'||body!=='owned=post'){response.writeHead(405);response.end();return;}
+      response.writeHead(200,{'Content-Type':'application/octet-stream','Content-Length':String(payload.length),
+        'Content-Disposition':'attachment; filename="posted.bin"'});response.end(payload);
+    });
+    return;
   }
   if(!['/manual','/captured','/fallback','/protected'].includes(url.pathname)){response.writeHead(404);response.end();return;}
   const requestInfo={url:url.pathname,range:request.headers.range||'',at:Date.now()};
@@ -123,6 +134,16 @@ try {
   page=await openPage(`${base}/page?route=captured`);await page.evaluate("document.getElementById('download').click();true");
   const captured=await until(()=>rows().find(row=>row.url===`${base}/captured`&&row.state===9),'automatic handoff completion');assert.equal(createHash('sha256').update(readFileSync(captured.destination)).digest('hex'),hash);
   const cancelled=await until(()=>evidence.events.find(event=>event.type==='final-progress'&&event.state==='canceled'&&event.persistedTasks?.some(row=>row.id===captured.id)),'browser cancellation after persistence');assert(cancelled.persistedTasks.some(row=>row.id===captured.id));log('Real browser download cancelled only after native task persisted',{taskId:captured.id,browserGuid:cancelled.guid,sha256:hash});
+  const postedBaseline=new Set(rows().map(row=>row.id));
+  page=await openPage(`${base}/page?route=posted`);await page.evaluate("document.getElementById('download').click();true");
+  const posted=await until(async()=>{const items=await worker.evaluate('chrome.downloads.search({})');
+    return items.find(item=>item.url===`${base}/posted`&&item.state==='complete');},'browser-owned POST form response');
+  await delay(300);
+  assert.deepEqual(new Set(rows().map(row=>row.id)),postedBaseline,'POST must not create native GET task');
+  assert.equal(createHash('sha256').update(readFileSync(posted.filename)).digest('hex'),hash);
+  const postedHits=evidence.httpRequests.filter(entry=>entry.url==='/posted');
+  assert.equal(postedHits.length,1);assert.equal(postedHits[0].method,'POST');assert(postedHits[0].bodyValid);
+  log('Actual POST form stays browser-owned with one submission and exact payload',{browserDownloadId:posted.id,sha256:hash});
   // Positive, explicitly opted-in authentication test. No disabled-cookie handoff is attempted.
   const protectedUrl=`${base}/protected`;
   const otherHostUrl=`${base.replace('127.0.0.1','localhost')}/protected`;

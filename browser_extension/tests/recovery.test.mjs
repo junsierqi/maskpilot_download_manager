@@ -6,7 +6,7 @@ const TASK = 'a'.repeat(32), TOKEN = 'b'.repeat(32), SECRET = 'fresh-cookie-neve
 function fixture({firefox = false} = {}) {
   const state = {now: 1_800_000_000_000, session: {}, calls: [], cookies: true, nativeSaved: false,
     nativeSaves: 0, failApply: false, lostAck: false, failCancel: false, failResume: false, failAppliedStore: false,
-    invalidated: false, pausedState: 'Paused', nextTab: 2};
+    invalidated: false, observedGet: true, pausedState: 'Paused', nextTab: 2};
   const copy = value => structuredClone(value);
   const tabs = new Map([[1, {id: 1, windowId: 1, url: 'https://example.test/start', incognito: false,
     ...(firefox ? {cookieStoreId: 'firefox-default'} : {})}]]);
@@ -69,7 +69,7 @@ function fixture({firefox = false} = {}) {
       }
     }
   };
-  const deps = {api, firefox, now: () => state.now, includeCookies: async () => state.cookies,
+  const deps = {api, firefox, isGetDownload: async () => state.observedGet, now: () => state.now, includeCookies: async () => state.cookies,
     userAgent: () => 'owned-UA', send: async (command, fields = {}) => {
       state.calls.push('native:' + command);
       assert(!['add', 'prepare', 'cancel', 'resume', 'remove'].includes(command), 'Old task cannot use new-task rollback or plain-ID resume');
@@ -230,4 +230,54 @@ test('new recovery cannot silently replace an unfinished selection session', asy
   assert.deepEqual(state.calls, before);
   await controller.cancel();
   assert(state.calls.includes('native:recovery.cancel'));
+});
+
+
+test('POST or unknown selected records are left browser-owned before pause or native mutation', async () => {
+  const {state, controller} = fixture({firefox: true});
+  await controller.begin(TASK);
+  state.observedGet = false;
+  assert.deepEqual(await controller.downloads(), []);
+  const before = state.calls.length;
+  await assert.rejects(controller.useDownload(7), /GET/);
+  assert(!state.calls.slice(before).some(value => value.startsWith('pause-browser:') ||
+    value === 'native:recovery.apply' || value.startsWith('cancel-browser:')));
+  assert.equal(state.nativeSaved, false);
+});
+
+test('applied receipt and rollback remain usable after method memory is lost', async () => {
+  const applied = fixture();
+  await applied.controller.begin(TASK);
+  applied.state.failResume = true;
+  await applied.controller.useDownload(7);
+  assert.equal(applied.state.session.browserRecovery.phase, 'applied');
+  applied.state.observedGet = false;
+  applied.state.failResume = false;
+  await new BrowserRecoveryController(applied.deps).continue();
+  assert.equal(applied.state.session.browserRecovery, undefined);
+
+  const rollback = fixture();
+  await rollback.controller.begin(TASK);
+  rollback.state.failApply = true;
+  const send = rollback.deps.send;
+  rollback.deps.send = async (...args) => {
+    if (args[0] === 'recovery.apply') rollback.state.observedGet = false;
+    return send(...args);
+  };
+  await assert.rejects(rollback.controller.useDownload(7));
+  assert.equal(rollback.downloads.get(7).paused, false);
+  assert(rollback.state.calls.includes('restore-browser:7'));
+});
+
+
+test('a full page of unknown methods uses one bounded observation window and preserves every browser record', async () => {
+  const {controller, deps, downloads, state} = fixture();
+  await controller.begin(TASK);
+  for (let n = 8; n < 27; ++n) downloads.set(n, {...downloads.get(7), id: n});
+  const began = Date.now();
+  deps.isGetDownload = async () => { await new Promise(resolve => setTimeout(resolve, 40)); return false; };
+  const before = state.calls.length;
+  assert.deepEqual(await controller.downloads(), []);
+  assert(Date.now() - began < 500, 'Unknown records caused serial observation delays');
+  assert(!state.calls.slice(before).some(value => value.startsWith('pause-browser:') || value.startsWith('cancel-browser:')));
 });

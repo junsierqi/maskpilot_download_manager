@@ -4,9 +4,11 @@ import {browserApi as api, isFirefox} from './browser_api.js';
 import {cookieContext, cookieHeader, type CookieContext} from './browser_context.js';
 import {PanelAuthority, type PageContext, type PanelModel} from './panel_authority.js';
 import {BrowserRecoveryController} from './browser_recovery.js';
+import {observeDownloadMethods} from './download_methods.js';
 
 const inFlight = new Set<number>();
 const authority = new PanelAuthority();
+const isGetDownload = observeDownloadMethods(api, isFirefox);
 interface Preferences {autoCapture: boolean; includeCookies: boolean; pagePanel: boolean;}
 interface PageState {scan: number; context?: PageContext; cookies?: CookieContext;}
 const pages = new Map<number, PageState>();
@@ -28,6 +30,7 @@ async function command(command: Command, fields: Partial<NativeRequest> = {}): P
   return native({...fields, version: 1, requestId: newRequestId(), command});
 }
 const recovery = new BrowserRecoveryController({api, firefox: isFirefox, send: command,
+  isGetDownload,
   includeCookies: async () => (await preferences()).includeCookies, userAgent: () => navigator.userAgent});
 async function addFields(url: string, context: CookieContext, filename?: string, referrer?: string,
   media = false): Promise<Partial<NativeRequest>> {
@@ -128,6 +131,15 @@ api.downloads.onCreated.addListener(item => {
     if (inFlight.has(item.id) || item.byExtensionId === api.runtime.id || item.state !== 'in_progress') return;
     if (!(await preferences()).autoCapture || await recovery.hasPending()) return;
     const url = safeHttpUrl(item.finalUrl || item.url);
+    const context = cookieContext(item, isFirefox);
+    if (context.incognito || /private/i.test(context.storeId ?? '')) {
+      await report('暂不接管隐私窗口中的下载，请保留浏览器文件。');
+      return;
+    }
+    if (!(await isGetDownload(item))) {
+      await report('POST 或请求方法无法确认的下载已保留在浏览器；需要 POST 时，请在桌面“请求”页明确配置。');
+      return;
+    }
     inFlight.add(item.id);
     try {
       const result = await handoffDownload({

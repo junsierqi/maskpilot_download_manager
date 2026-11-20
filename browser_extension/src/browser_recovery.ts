@@ -1,5 +1,6 @@
 import {cookieContext, cookieHeader, type CookieContext} from './browser_context.js';
 import {isRecord, safeHttpUrl, type Command, type NativeRequest, type NativeResponse} from './protocol.js';
+import type {MethodDownload} from './download_methods.js';
 
 const STORAGE_KEY = 'browserRecovery';
 const identifier = /^[a-f0-9]{32}$/;
@@ -32,6 +33,7 @@ interface Dependencies {
   send(command: Command, fields?: Partial<NativeRequest>): Promise<NativeResponse>;
   includeCookies(): Promise<boolean>;
   userAgent(): string;
+  isGetDownload(item: MethodDownload): Promise<boolean>;
   now?(): number;
 }
 type Tab = chrome.tabs.Tab & {cookieStoreId?: string};
@@ -103,7 +105,7 @@ export class BrowserRecoveryController {
     if (!this.matches(flow, this.context(tab))) throw new Error('来源页的 Cookie 容器已改变，请重新开始。');
     return tab;
   }
-  private async item(flow: Flow, id: number): Promise<Download> {
+  private async item(flow: Flow, id: number, requireGet = true): Promise<Download> {
     if (!Number.isSafeInteger(id) || id < 0) throw new Error('浏览器下载编号无效。');
     const items: Download[] = await this.deps.api.downloads.search({id});
     const item = items.find(value => value.id === id);
@@ -111,11 +113,13 @@ export class BrowserRecoveryController {
         !this.matches(flow, this.context(item)))
       throw new Error('所选下载不属于此次恢复或当前 Cookie 容器。');
     safeHttpUrl(item.finalUrl || item.url);
+    if (requireGet && !(await this.deps.isGetDownload(item)))
+      throw new Error('仅可选择明确观察到 GET 的下载；POST 或方法未知的记录请保留在浏览器。');
     return item;
   }
   private async restoreBrowser(flow: Flow): Promise<void> {
     if (flow.downloadId === undefined || flow.wasPaused !== false) return;
-    const item = await this.item(flow, flow.downloadId);
+    const item = await this.item(flow, flow.downloadId, false);
     if (item.paused && item.state !== 'complete') await this.deps.api.downloads.resume(item.id);
   }
   private async material(flow: Flow, url: string, source: CookieContext, referrer?: string): Promise<Partial<NativeRequest>> {
@@ -182,20 +186,21 @@ export class BrowserRecoveryController {
     await this.tab(flow);
     const items: Download[] = await this.deps.api.downloads.search({startedAfter: new Date(flow.startedAt - 1000).toISOString(),
       orderBy: ['-startTime'], limit: 20});
-    const result: RecoveryDownload[] = [];
-    for (const item of items.slice(0, 20)) {
+    // Observation waits are independent; a full page of unknown records must not take 20 wait windows.
+    const checked = await Promise.all(items.slice(0, 20).map(async item => {
       try {
         if ((item.state !== 'in_progress' && !item.paused) || item.byExtensionId === this.deps.api.runtime.id ||
-            !this.matches(flow, this.context(item))) continue;
-        result.push({id: item.id, name: item.filename.split(/[\\/]/).at(-1) || '浏览器下载',
-          url: safeHttpUrl(item.finalUrl || item.url), paused: item.paused});
-      } catch { /* Unsupported record remains in the browser. */ }
-    }
-    return result;
+            !this.matches(flow, this.context(item))) return;
+        if (!(await this.deps.isGetDownload(item))) return;
+        return {id: item.id, name: item.filename.split(/[\\/]/).at(-1) || '浏览器下载',
+          url: safeHttpUrl(item.finalUrl || item.url), paused: item.paused};
+      } catch { return; /* Unsupported record remains in the browser. */ }
+    }));
+    return checked.filter((item): item is RecoveryDownload => item !== undefined);
   }
   private async finish(flow: Flow): Promise<{message: string}> {
     if (flow.downloadId !== undefined) {
-      const item = await this.item(flow, flow.downloadId);
+      const item = await this.item(flow, flow.downloadId, false);
       if (item.state === 'complete') throw new Error('浏览器副本已完成；请在桌面核对文件后处理原任务。');
       if (safeHttpUrl(item.finalUrl || item.url) !== flow.selectedUrl) throw new Error('浏览器下载地址已改变，请取消后重新开始。');
       // Already cancelled records have no partial data; never restart those browser copies.

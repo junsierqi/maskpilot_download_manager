@@ -11,7 +11,8 @@
     "contextMenus",
     "downloads",
     "nativeMessaging",
-    "cookies"
+    "cookies",
+    "webRequest"
   ],
   "host_permissions": [
     "http://*/*",
