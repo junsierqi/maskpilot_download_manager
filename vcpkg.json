@@ -2,7 +2,7 @@
   "name": "maskpilot",
   "version-string": "0.3.0",
   "dependencies": [
-    { "name": "curl", "default-features": false, "features": ["ssl", "http2"] },
+    { "name": "curl", "default-features": false, "features": ["ssl", "http2", "ssh"] },
     { "name": "libtorrent", "default-features": false },
     { "name": "libxml2", "default-features": false },
     "sqlite3",

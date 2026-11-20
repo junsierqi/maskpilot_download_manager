@@ -30,6 +30,10 @@ std::int64_t integerValue(const std::string& text) {
     return value;
 }
 std::string credentialFromEnvironment(const std::string& name) {
+    if (name.empty() || name.size() > 128 || !std::all_of(name.begin(), name.end(), [](unsigned char c) {
+            return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+        }))
+        throw std::invalid_argument("Invalid credential environment variable name.");
 #ifdef _WIN32
     wchar_t* raw = nullptr;
     std::size_t size = 0;
@@ -132,6 +136,25 @@ bool readOptions(maskpilot::DownloadSpec& spec, int argc, char** argv, int start
                     spec.mediaSelection.container = Container::Flac;
                 else
                     throw std::invalid_argument("Unknown media output container.");
+            } else if (option == "--sftp-host-key") {
+                spec.sftp.hostKeySha256 = value;
+            } else if (option == "--sftp-auth") {
+                if (value == "password")
+                    spec.sftp.authentication = maskpilot::SftpAuthentication::Password;
+                else if (value == "key")
+                    spec.sftp.authentication = maskpilot::SftpAuthentication::PrivateKey;
+                else
+                    throw std::invalid_argument("SFTP authentication must be password or key.");
+            } else if (option == "--sftp-private-key") {
+                spec.sftp.authentication = maskpilot::SftpAuthentication::PrivateKey;
+                spec.sftp.privateKeyFile = std::filesystem::path(std::u8string(value.begin(), value.end()));
+            } else if (option == "--sftp-user-env") {
+                spec.sftp.username = credentialFromEnvironment(value);
+            } else if (option == "--sftp-password-env") {
+                spec.sftp.password = credentialFromEnvironment(value);
+            } else if (option == "--sftp-key-passphrase-env") {
+                spec.sftp.authentication = maskpilot::SftpAuthentication::PrivateKey;
+                spec.sftp.keyPassphrase = credentialFromEnvironment(value);
             } else if (option == "--post-body-env") {
                 if (value.empty() || value.size() > 128 ||
                     !std::all_of(value.begin(), value.end(), [](unsigned char c) {
@@ -289,6 +312,9 @@ int runClient(int argc, char** argv) {
                      "This verification client pauses unfinished transfers after 180 seconds.\n";
         std::cout << "HTTP: --max-stored-bytes N (0 unlimited) --same-origin-redirects\n";
         std::cout
+            << "SFTP options: --sftp-host-key SHA256:BASE64 --sftp-user-env NAME\n"
+               "  --sftp-password-env NAME or --sftp-private-key FILE [--sftp-key-passphrase-env NAME]\n"
+               "  Password/key secrets are never saved; --sha256 DIGEST permits verified resume.\n"
             << "POST options: --post --post-body-env NAME --post-content-type MIME\n"
                "  --confirm-empty-post confirms an empty body. Each run needs new confirmation.\n"
             << "Trusted prefix options before URL/--resume/--project: --scan-program EXE\n"
@@ -345,6 +371,12 @@ int runClient(int argc, char** argv) {
                 spec.referrer.clear();
                 spec.ftpUsername.clear();
                 spec.ftpPassword.clear();
+                spec.sftp.username.clear();
+                spec.sftp.password.clear();
+                spec.sftp.keyPassphrase.clear();
+                if (!maskpilot::isSftpUrl(spec.url))
+                    spec.sftp = {};
+                spec.kind = maskpilot::sourceKind(spec);
                 if (!maskpilot::isFtpUrl(spec.url)) {
                     spec.ftpExplicitTls = false;
                     spec.ftpActiveMode = false;

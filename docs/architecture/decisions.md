@@ -193,3 +193,21 @@ and OpenSSL's public build-information rendering. Existing per-context resource
 denial remains in force. Signed supplier libraries are preserved byte-for-byte;
 their SDK hashes and expected valid publisher signatures define narrowly reported
 provenance exceptions. Private host paths remain forbidden in all runtime files.
+
+
+## SFTP and native remote-file transfer
+
+FTP/FTPS and SFTP use typed factories over one remote-file stream/cache/publication
+implementation. Protocol admission and connection/authentication remain explicit;
+SFTP requires a canonical SHA-256 server-key pin before credentials are sent.
+Password and explicit local private-key modes cannot fall back to agents, default
+keys or one another. Credentials and private-key contents are never persisted or
+exported; only public fingerprint/method/key-path configuration is stored.
+
+Remote size and modification time are weak validators. Reusing a durable prefix
+requires an expected final SHA-256, matching source metadata and, for SFTP, the
+same server pin. Assembly, scanner and no-replace publication remain shared.
+A single process-lifetime curl initializer selects Windows Schannel before global
+initialization, preserving the existing TLS trust backend when SSH crypto adds
+another TLS backend. Runtime protocol capability, the SSH DLL and its license
+notice are checked alongside ordinary deployment files.

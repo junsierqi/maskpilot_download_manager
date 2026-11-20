@@ -74,6 +74,8 @@ QByteArray encodeTaskList(const std::vector<Task>& tasks) {
     qsizetype estimatedBytes = 0;
     for (const auto& task : tasks) {
         const auto& spec = task.spec;
+        if (!validateSftpOptions(spec.sftp, isSftpUrl(spec.url)).empty())
+            invalid();
         if (!validateHttpRequest(spec.httpRequest).empty())
             invalid();
         if (!validateMediaSelection(spec.mediaSelection, spec.audioOnly).empty())
@@ -101,6 +103,11 @@ QByteArray encodeTaskList(const std::vector<Task>& tasks) {
                            {"ftpTls", spec.ftpExplicitTls},
                            {"ftpActive", spec.ftpActiveMode},
                            {"ftpCa", pathText(spec.ftpCaBundle)}};
+        if (isSftpUrl(spec.url))
+            object.insert("sftp",
+                          QJsonObject{{"authentication", static_cast<int>(spec.sftp.authentication)},
+                                      {"hostKeySha256", text(canonicalSftpHostKey(spec.sftp.hostKeySha256))},
+                                      {"privateKeyFile", pathText(spec.sftp.privateKeyFile)}});
         if (spec.httpRequest.method == HttpMethod::Post) {
             object.insert("httpMethod", "POST");
             object.insert("postContentType", text(spec.httpRequest.contentType));
@@ -190,7 +197,8 @@ DecodedTaskList decodeTaskList(const QByteArray& bytes,
                       "maxStoredBytes",
                       "sameOriginRedirectOnly",
                       "httpMethod",
-                      "postContentType"});
+                      "postContentType",
+                      "sftp"});
         if (version != 2 && (object.contains("maxStoredBytes") || object.contains("sameOriginRedirectOnly")))
             invalid();
         if (version != 2 && (object.contains("httpMethod") || object.contains("postContentType")))
@@ -206,6 +214,19 @@ DecodedTaskList decodeTaskList(const QByteArray& bytes,
         auto spec = defaults(url);
         spec.url = url.toStdString();
         spec.httpRequest = {};
+        spec.sftp = {};
+        if (object.contains("sftp")) {
+            if (version != 2 || !isSftpUrl(spec.url) || !object["sftp"].isObject())
+                invalid();
+            const auto ssh = object["sftp"].toObject();
+            keys(ssh, {"authentication", "hostKeySha256", "privateKeyFile"});
+            if (!ssh.contains("authentication"))
+                invalid();
+            spec.sftp.authentication =
+                static_cast<SftpAuthentication>(integer(ssh, "authentication", 0, 0, 1));
+            spec.sftp.hostKeySha256 = string(ssh, "hostKeySha256").toStdString();
+            spec.sftp.privateKeyFile = path(string(ssh, "privateKeyFile"));
+        }
         if (method == "POST") {
             spec.httpRequest.method = HttpMethod::Post;
             spec.httpRequest.contentType =
@@ -248,6 +269,8 @@ DecodedTaskList decodeTaskList(const QByteArray& bytes,
                 static_cast<MediaContainer>(integer(selection, "container", 0, 0, 7));
             spec.mediaSelection.primaryFormat = string(selection, "primaryFormat").toStdString();
             spec.mediaSelection.audioFormat = string(selection, "audioFormat").toStdString();
+            if (!validateSftpOptions(spec.sftp, isSftpUrl(spec.url)).empty())
+                invalid();
             if (!validateHttpRequest(spec.httpRequest).empty())
                 invalid();
             if (!validateMediaSelection(spec.mediaSelection, spec.audioOnly).empty())

@@ -477,7 +477,10 @@ TEST(Storage, MigratesPreviousSchemaWithoutChangingExistingProtocolsOrFiles) {
                                "scan_state",
                                "scan_at",
                                "http_method",
-                               "post_content_type"}) {
+                               "post_content_type",
+                               "sftp_authentication",
+                               "sftp_host_key_sha256",
+                               "sftp_private_key"}) {
         const auto sql = std::string("ALTER TABLE tasks DROP COLUMN ") + column;
         ASSERT_EQ(sqlite3_exec(connection, sql.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
     }

@@ -1,4 +1,5 @@
 #include "../filesystem/transfer_files.h"
+#include "curl_runtime.h"
 #include "proxy_options.h"
 #include <algorithm>
 #include <array>
@@ -13,6 +14,9 @@
 #include <mutex>
 #include <sstream>
 #include <stdexcept>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 namespace maskpilot {
 namespace {
@@ -23,7 +27,7 @@ struct Easy {
     CURL* value = curl_easy_init();
     Easy() {
         if (!value)
-            throw std::runtime_error("Cannot create FTP connection.");
+            throw std::runtime_error("Cannot create remote file connection.");
     }
     ~Easy() { curl_easy_cleanup(value); }
     Easy(const Easy&) = delete;
@@ -40,7 +44,7 @@ struct File {
             auto* previous = value;
             value = nullptr;
             if (fclose(previous) != 0)
-                throw std::runtime_error("Cannot close FTP cache file.");
+                throw std::runtime_error("Cannot close remote file cache file.");
         }
     }
 };
@@ -54,25 +58,33 @@ Result stopped(const TransferControl& control) {
 }
 bool isStopped(const TransferControl& control) { return control.cancel || control.pause; }
 
-void initializeCurl() {
-    // Keep a process-lifetime reference. HTTP may independently acquire/release its own reference.
-    static std::once_flag initialized;
-    std::call_once(initialized, [] {
-        if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK)
-            throw std::runtime_error("Cannot initialize FTP networking.");
-    });
-}
 template <typename T> void option(CURL* easy, CURLoption key, T value) {
     if (curl_easy_setopt(easy, key, value) != CURLE_OK)
-        throw std::runtime_error("Cannot configure FTP connection.");
+        throw std::runtime_error("Cannot configure remote file connection.");
 }
 std::string pathText(const std::filesystem::path& path) {
     const auto text = path.u8string();
     return {text.begin(), text.end()};
 }
+void checkPrivateKey(const std::filesystem::path& path) {
+#ifdef _WIN32
+    for (auto current = path; !current.empty(); current = current.parent_path()) {
+        const auto attributes = GetFileAttributesW(current.c_str());
+        if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_REPARSE_POINT))
+            throw std::invalid_argument("Use a regular local private key without reparse points.");
+        if (current == current.root_path())
+            break;
+    }
+#endif
+    std::error_code error;
+    if (!std::filesystem::is_regular_file(path, error) || error ||
+        std::filesystem::file_size(path, error) > 1024 * 1024 || error)
+        throw std::invalid_argument("SFTP private key is unavailable or exceeds 1 MiB.");
+}
 void configure(CURL* easy, const DownloadSpec& spec, TransferControl& control) {
     option(easy, CURLOPT_URL, spec.url.c_str());
-    option(easy, CURLOPT_PROTOCOLS_STR, "ftp,ftps");
+    const bool sftp = isSftpUrl(spec.url);
+    option(easy, CURLOPT_PROTOCOLS_STR, sftp ? "sftp" : "ftp,ftps");
     option(easy, CURLOPT_FOLLOWLOCATION, 0L);
     // Preserve native FTP semantics through HTTP proxies; never accept a proxy's HTML representation.
     option(easy, CURLOPT_HTTPPROXYTUNNEL, 1L);
@@ -85,14 +97,33 @@ void configure(CURL* easy, const DownloadSpec& spec, TransferControl& control) {
     option(easy, CURLOPT_SSL_VERIFYHOST, 2L);
     option(easy, CURLOPT_FTP_SKIP_PASV_IP, 1L);
     option(easy, CURLOPT_FILETIME, 1L);
-    if (spec.ftpExplicitTls || spec.url.starts_with("ftps://"))
-        option(easy, CURLOPT_USE_SSL, CURLUSESSL_ALL);
-    if (spec.ftpActiveMode)
-        option(easy, CURLOPT_FTPPORT, "-");
-    if (!spec.ftpUsername.empty())
-        option(easy, CURLOPT_USERNAME, spec.ftpUsername.c_str());
-    if (!spec.ftpPassword.empty())
-        option(easy, CURLOPT_PASSWORD, spec.ftpPassword.c_str());
+    if (sftp) {
+        option(easy, CURLOPT_FRESH_CONNECT, 1L);
+        option(easy, CURLOPT_FORBID_REUSE, 1L);
+        const auto fingerprint = canonicalSftpHostKey(spec.sftp.hostKeySha256);
+        option(easy, CURLOPT_SSH_HOST_PUBLIC_KEY_SHA256, fingerprint.c_str());
+        option(easy, CURLOPT_USERNAME, spec.sftp.username.c_str());
+        if (spec.sftp.authentication == SftpAuthentication::Password) {
+            option(easy, CURLOPT_SSH_AUTH_TYPES, static_cast<long>(CURLSSH_AUTH_PASSWORD));
+            option(easy, CURLOPT_PASSWORD, spec.sftp.password.c_str());
+        } else {
+            option(easy, CURLOPT_SSH_AUTH_TYPES, static_cast<long>(CURLSSH_AUTH_PUBLICKEY));
+            checkPrivateKey(spec.sftp.privateKeyFile);
+            const auto key = pathText(spec.sftp.privateKeyFile);
+            option(easy, CURLOPT_SSH_PRIVATE_KEYFILE, key.c_str());
+            option(easy, CURLOPT_SSH_PUBLIC_KEYFILE, "");
+            option(easy, CURLOPT_KEYPASSWD, spec.sftp.keyPassphrase.c_str());
+        }
+    } else {
+        if (spec.ftpExplicitTls || spec.url.starts_with("ftps://"))
+            option(easy, CURLOPT_USE_SSL, CURLUSESSL_ALL);
+        if (spec.ftpActiveMode)
+            option(easy, CURLOPT_FTPPORT, "-");
+        if (!spec.ftpUsername.empty())
+            option(easy, CURLOPT_USERNAME, spec.ftpUsername.c_str());
+        if (!spec.ftpPassword.empty())
+            option(easy, CURLOPT_PASSWORD, spec.ftpPassword.c_str());
+    }
     network::configureProxy(easy, spec);
     if (!spec.ftpCaBundle.empty()) {
         const auto ca = pathText(spec.ftpCaBundle);
@@ -112,11 +143,11 @@ CURLcode perform(CURL* easy, TransferControl& control, const std::function<void(
         CURL* easy;
         explicit Multi(CURL* handle) : easy(handle) {
             if (!value)
-                throw std::runtime_error("Cannot create FTP transfer scheduler.");
+                throw std::runtime_error("Cannot create Remote file transfer scheduler.");
             if (curl_multi_add_handle(value, easy) != CURLM_OK) {
                 curl_multi_cleanup(value);
                 value = nullptr;
-                throw std::runtime_error("Cannot schedule FTP transfer.");
+                throw std::runtime_error("Cannot schedule Remote file transfer.");
             }
         }
         ~Multi() {
@@ -132,7 +163,7 @@ CURLcode perform(CURL* easy, TransferControl& control, const std::function<void(
                static_cast<curl_off_t>(std::max<std::int64_t>(0, control.speedLimit.load())));
         int running = 0;
         if (curl_multi_perform(multi.value, &running) != CURLM_OK)
-            throw std::runtime_error("FTP transfer scheduling failed.");
+            throw std::runtime_error("Remote file transfer scheduling failed.");
         const auto now = Clock::now();
         if (progress && (running == 0 || now - last >= std::chrono::milliseconds(200))) {
             progress();
@@ -143,27 +174,30 @@ CURLcode perform(CURL* easy, TransferControl& control, const std::function<void(
             while (const auto* message = curl_multi_info_read(multi.value, &pending))
                 if (message->msg == CURLMSG_DONE && message->easy_handle == easy)
                     return message->data.result;
-            throw std::runtime_error("FTP transfer ended without a result.");
+            throw std::runtime_error("Remote file transfer ended without a result.");
         }
         int descriptors = 0;
         if (curl_multi_poll(multi.value, nullptr, 0, 100, &descriptors) != CURLM_OK)
-            throw std::runtime_error("Cannot wait for FTP connection.");
+            throw std::runtime_error("Cannot wait for Remote file connection.");
     }
 }
-Result failure(CURLcode code) {
+Result failure(CURLcode code, bool sftp) {
+    if (sftp && (code == CURLE_PEER_FAILED_VERIFICATION || code == CURLE_SSH))
+        return {TransferOutcome::Attention, "SFTP server key or SSH authentication failed. Check the trusted "
+                                            "SHA256 fingerprint and login method."};
     if (code == CURLE_LOGIN_DENIED)
-        return {TransferOutcome::Attention, "FTP login was rejected. Check the task credentials."};
+        return {TransferOutcome::Attention, "Remote file login was rejected. Check the task credentials."};
     if (code == CURLE_PEER_FAILED_VERIFICATION || code == CURLE_SSL_CACERT_BADFILE ||
         code == CURLE_SSL_CONNECT_ERROR || code == CURLE_USE_SSL_FAILED)
         return {TransferOutcome::Attention,
                 "FTPS certificate or encrypted connection failed. Encryption was not downgraded."};
     if (code == CURLE_REMOTE_FILE_NOT_FOUND || code == CURLE_FTP_COULDNT_RETR_FILE)
-        return {TransferOutcome::Attention, "FTP source is unavailable or access was denied."};
+        return {TransferOutcome::Attention, "Remote file source is unavailable or access was denied."};
     const bool retry = code == CURLE_COULDNT_CONNECT || code == CURLE_COULDNT_RESOLVE_HOST ||
                        code == CURLE_OPERATION_TIMEDOUT || code == CURLE_RECV_ERROR ||
                        code == CURLE_SEND_ERROR || code == CURLE_PARTIAL_FILE;
-    return {TransferOutcome::Failed, "FTP transfer failed (network code " + std::to_string(code) + ").",
-            retry};
+    return {TransferOutcome::Failed,
+            "Remote file transfer failed (network code " + std::to_string(code) + ").", retry};
 }
 struct Metadata {
     curl_off_t size = -1, modified = -1;
@@ -195,9 +229,15 @@ std::int64_t recoverOffset(const Task& task, const std::filesystem::path& work, 
     std::int64_t size = -1, modified = -1, offset = -1;
     bool tls = false;
     if (!(meta >> tag >> std::quoted(url) >> size >> modified >> std::quoted(hash) >> tls) ||
-        tag != "ftp-v1" || url != task.spec.url || hash != task.spec.expectedSha256 || size != remote.size ||
-        modified != remote.modified || tls != task.spec.ftpExplicitTls)
+        tag != (isSftpUrl(task.spec.url) ? "sftp-v1" : "ftp-v1") || url != task.spec.url ||
+        hash != task.spec.expectedSha256 || size != remote.size || modified != remote.modified ||
+        tls != task.spec.ftpExplicitTls)
         return 0;
+    if (isSftpUrl(task.spec.url)) {
+        std::string pin;
+        if (!(meta >> std::quoted(pin)) || pin != canonicalSftpHostKey(task.spec.sftp.hostKeySha256))
+            return 0;
+    }
     std::ifstream saved(work / "offset-0");
     if (!(saved >> offset) || offset < 0 || offset > remote.size)
         return 0;
@@ -206,11 +246,13 @@ std::int64_t recoverOffset(const Task& task, const std::filesystem::path& work, 
         return 0;
     return offset;
 }
-Result transfer(const Task& task, const std::filesystem::path& work, TransferControl& control,
-                TransferEvent& event, const std::function<void(TransferEvent)>& callback) {
-    initializeCurl();
-    if (!isFtpUrl(task.spec.url))
-        return {TransferOutcome::Attention, "This transfer requires an FTP or FTPS URL."};
+Result transfer(TransferKind expectedKind, const Task& task, const std::filesystem::path& work,
+                TransferControl& control, TransferEvent& event,
+                const std::function<void(TransferEvent)>& callback) {
+    network::initializeCurl();
+    const bool sftp = isSftpUrl(task.spec.url);
+    if (sourceKind(task.spec) != expectedKind || (!isFtpUrl(task.spec.url) && !sftp))
+        return {TransferOutcome::Attention, "The remote file adapter does not match the source protocol."};
     if (const auto error = validateSpec(task.spec); !error.empty())
         return {TransferOutcome::Attention, error};
     auto authenticatedSpec = task.spec;
@@ -224,14 +266,17 @@ Result transfer(const Task& task, const std::filesystem::path& work, TransferCon
     if (isStopped(control))
         return stopped(control);
     if (remote.code != CURLE_OK)
-        return failure(remote.code);
+        return failure(remote.code, sftp);
     event.total = remote.size;
     event.resumable = !task.spec.expectedSha256.empty() && remote.size >= 0 && remote.modified >= 0;
     std::filesystem::create_directories(work);
     auto offset = recoverOffset(task, work, remote);
     std::ostringstream identity;
-    identity << "ftp-v1 " << std::quoted(task.spec.url) << ' ' << remote.size << ' ' << remote.modified << ' '
-             << std::quoted(task.spec.expectedSha256) << ' ' << task.spec.ftpExplicitTls;
+    identity << (sftp ? "sftp-v1 " : "ftp-v1 ") << std::quoted(task.spec.url) << ' ' << remote.size << ' '
+             << remote.modified << ' ' << std::quoted(task.spec.expectedSha256) << ' '
+             << task.spec.ftpExplicitTls;
+    if (sftp)
+        identity << ' ' << std::quoted(canonicalSftpHostKey(task.spec.sftp.hostKeySha256));
     files::atomicText(work / "identity", identity.str());
     const auto part = work / "part-0";
     for (int attempt = 0; attempt < 2; ++attempt) {
@@ -240,7 +285,7 @@ Result transfer(const Task& task, const std::filesystem::path& work, TransferCon
         File output;
         output.value = files::openFile(part, offset > 0 ? L"ab" : L"wb");
         if (!output.value)
-            throw std::runtime_error("Cannot write FTP cache file.");
+            throw std::runtime_error("Cannot write remote file cache file.");
         struct Sink {
             FILE* file;
             std::int64_t bytes, limit;
@@ -314,7 +359,7 @@ Result transfer(const Task& task, const std::filesystem::path& work, TransferCon
             return stopped(control);
         if (sink.failed)
             return {TransferOutcome::Attention,
-                    "FTP output exceeded the expected length or could not be written."};
+                    "Remote file output exceeded the expected length or could not be written."};
         if (offset > 0 && attempt == 0 &&
             (code == CURLE_RANGE_ERROR || code == CURLE_BAD_DOWNLOAD_RESUME ||
              code == CURLE_FTP_COULDNT_USE_REST)) {
@@ -323,18 +368,19 @@ Result transfer(const Task& task, const std::filesystem::path& work, TransferCon
             continue;
         }
         if (code != CURLE_OK)
-            return failure(code);
+            return failure(code, sftp);
         if (remote.size >= 0 && sink.bytes != remote.size)
-            return {TransferOutcome::Failed, "FTP source ended before the expected length was received.",
-                    true};
+            return {TransferOutcome::Failed,
+                    "Remote file source ended before the expected length was received.", true};
         const auto after = probe(task.spec, control);
         if (isStopped(control))
             return stopped(control);
         if (after.code != CURLE_OK)
-            return failure(after.code);
+            return failure(after.code, sftp);
         if ((remote.size >= 0 && after.size != remote.size) ||
             (remote.modified >= 0 && after.modified != remote.modified))
-            return {TransferOutcome::Attention, "FTP source changed during transfer. Restart the task."};
+            return {TransferOutcome::Attention,
+                    "Remote file source changed during transfer. Restart the task."};
         break;
     }
     event.phase = TaskState::Verifying;
@@ -349,11 +395,11 @@ Result transfer(const Task& task, const std::filesystem::path& work, TransferCon
     {
         std::ifstream input(part, std::ios::binary);
         if (!input)
-            throw std::runtime_error("Cannot read FTP cache for publication.");
+            throw std::runtime_error("Cannot read remote file cache for publication.");
         File output;
         output.value = files::openFile(stage, L"wb");
         if (!output.value)
-            throw std::runtime_error("Cannot assemble FTP output on the destination volume.");
+            throw std::runtime_error("Cannot assemble remote file output on the destination volume.");
         std::array<char, 256 * 1024> buffer{};
         std::int64_t copied = 0;
         while (input) {
@@ -363,11 +409,11 @@ Result transfer(const Task& task, const std::filesystem::path& work, TransferCon
             const auto count = input.gcount();
             if (count && fwrite(buffer.data(), 1, static_cast<size_t>(count), output.value) !=
                              static_cast<size_t>(count))
-                throw std::runtime_error("Cannot write FTP output on the destination volume.");
+                throw std::runtime_error("Cannot write remote file output on the destination volume.");
             copied += count;
         }
         if (!input.eof() || copied != event.downloaded)
-            throw std::runtime_error("FTP cache changed during assembly.");
+            throw std::runtime_error("Remote file cache changed during assembly.");
         files::syncFile(output.value);
         output.close();
     }
@@ -376,7 +422,8 @@ Result transfer(const Task& task, const std::filesystem::path& work, TransferCon
         std::transform(expected.begin(), expected.end(), expected.begin(),
                        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         if (sha256File(stage, &control) != expected)
-            return {TransferOutcome::Attention, "FTP SHA-256 verification failed. Output was not published."};
+            return {TransferOutcome::Attention,
+                    "Remote file SHA-256 verification failed. Output was not published."};
     }
     if (control.scanBeforePublish) {
         const auto scan = control.scanBeforePublish(stage);
@@ -390,8 +437,11 @@ Result transfer(const Task& task, const std::filesystem::path& work, TransferCon
     files::publishFile(stage, task.spec.destination);
     return {TransferOutcome::Complete, {}};
 }
-class FtpTransfer final : public ITransferTransport {
+class RemoteFileTransfer final : public ITransferTransport {
+    TransferKind kind_;
+
   public:
+    explicit RemoteFileTransfer(TransferKind kind) : kind_(kind) {}
     void run(const Task& task, const std::filesystem::path& work, TransferControl& control,
              const std::function<void(TransferEvent)>& callback) override {
         TransferEvent event;
@@ -399,7 +449,7 @@ class FtpTransfer final : public ITransferTransport {
         callback(event);
         Result result{TransferOutcome::Attention, {}};
         try {
-            result = transfer(task, work, control, event, callback);
+            result = transfer(kind_, task, work, control, event, callback);
         } catch (const std::exception& error) {
             result = isStopped(control) ? stopped(control) : Result{TransferOutcome::Attention, error.what()};
         }
@@ -412,5 +462,10 @@ class FtpTransfer final : public ITransferTransport {
     }
 };
 } // namespace
-std::unique_ptr<ITransferTransport> makeFtpTransfer() { return std::make_unique<FtpTransfer>(); }
+std::unique_ptr<ITransferTransport> makeFtpTransfer() {
+    return std::make_unique<RemoteFileTransfer>(TransferKind::Ftp);
+}
+std::unique_ptr<ITransferTransport> makeSftpTransfer() {
+    return std::make_unique<RemoteFileTransfer>(TransferKind::Sftp);
+}
 } // namespace maskpilot

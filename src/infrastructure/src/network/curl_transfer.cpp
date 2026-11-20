@@ -1,4 +1,5 @@
 #include "../filesystem/transfer_files.h"
+#include "curl_runtime.h"
 #include "http_layout.h"
 #include "proxy_options.h"
 #include <algorithm>
@@ -154,13 +155,6 @@ struct Easy {
             throw std::bad_alloc();
         list = next;
     }
-};
-struct CurlGlobal {
-    CurlGlobal() {
-        if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK)
-            throw std::runtime_error("Cannot initialize networking.");
-    }
-    ~CurlGlobal() { curl_global_cleanup(); }
 };
 void configure(Easy& easy, const DownloadSpec& spec, Headers& headers, TransferControl& control) {
     curl_easy_setopt(easy.handle, CURLOPT_URL, spec.url.c_str());
@@ -479,7 +473,11 @@ class CurlTransfer final : public ITransferTransport {
   public:
     void run(const Task& task, const std::filesystem::path& work, TransferControl& control,
              const std::function<void(TransferEvent)>& callback) override {
-        static CurlGlobal global;
+        network::initializeCurl();
+        if (isSftpUrl(task.spec.url)) {
+            makeSftpTransfer()->run(task, work, control, callback);
+            return;
+        }
         if (isFtpUrl(task.spec.url)) {
             makeFtpTransfer()->run(task, work, control, callback);
             return;

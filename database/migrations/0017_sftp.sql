@@ -1,0 +1,6 @@
+BEGIN IMMEDIATE;
+ALTER TABLE tasks ADD COLUMN sftp_authentication INTEGER NOT NULL DEFAULT 0 CHECK(sftp_authentication IN(0,1));
+ALTER TABLE tasks ADD COLUMN sftp_host_key_sha256 TEXT NOT NULL DEFAULT '';
+ALTER TABLE tasks ADD COLUMN sftp_private_key TEXT NOT NULL DEFAULT '';
+PRAGMA user_version=17;
+COMMIT;

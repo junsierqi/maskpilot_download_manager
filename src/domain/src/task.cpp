@@ -15,10 +15,12 @@ bool validHttpResponseContentType(std::string_view value) {
 }
 bool hasOriginMaterial(const DownloadSpec& spec) {
     return !spec.cookie.empty() || !spec.authorization.empty() || !spec.headers.empty() ||
-           !spec.ftpUsername.empty() || !spec.ftpPassword.empty();
+           !spec.ftpUsername.empty() || !spec.ftpPassword.empty() || !spec.sftp.username.empty() ||
+           !spec.sftp.password.empty() || !spec.sftp.keyPassphrase.empty() ||
+           !spec.sftp.privateKeyFile.empty();
 }
 bool requiresOriginAuthentication(const DownloadSpec& spec) {
-    return spec.originAuthenticationRequired || hasOriginMaterial(spec);
+    return isSftpUrl(spec.url) || spec.originAuthenticationRequired || hasOriginMaterial(spec);
 }
 std::string validateOriginAuthentication(const DownloadSpec& spec, bool requireMaterial) {
     if (!requireMaterial || !requiresOriginAuthentication(spec))
@@ -26,6 +28,8 @@ std::string validateOriginAuthentication(const DownloadSpec& spec, bool requireM
     if (spec.kind == TransferKind::BitTorrent || isTorrentUrl(spec.url))
         return "Origin authentication is unsupported for torrent tasks. Choose a public source "
                "explicitly.";
+    if (isSftpUrl(spec.url))
+        return validateSftpOptions(spec.sftp, true, true);
     if (isFtpUrl(spec.url)) {
         if (spec.ftpUsername.empty())
             return "FTP authentication is required. Reenter the FTP username and password before resuming.";
@@ -62,6 +66,8 @@ TransferKind sourceKind(const DownloadSpec& spec) {
         return TransferKind::Media;
     if (isTorrentUrl(spec.url))
         return TransferKind::BitTorrent;
+    if (isSftpUrl(spec.url))
+        return TransferKind::Sftp;
     return isFtpUrl(spec.url) ? TransferKind::Ftp : TransferKind::Http;
 }
 std::string validateSpec(const DownloadSpec& spec) {
@@ -83,8 +89,16 @@ std::string validateSpec(const DownloadSpec& spec) {
                                              spec.mediaSelection.container != MediaContainer::Automatic))
         return "Explicit media selection requires media mode.";
     const bool ftp = isFtpUrl(spec.url);
+    const bool sftp = isSftpUrl(spec.url);
+    if (auto error = validateSftpOptions(spec.sftp, sftp); !error.empty())
+        return error;
+    if (spec.kind == TransferKind::Sftp && !sftp)
+        return "SFTP tasks require an sftp:// source.";
+    if (sftp && (spec.kind == TransferKind::Media || !spec.cookie.empty() || !spec.authorization.empty() ||
+                 !spec.headers.empty() || !spec.referrer.empty()))
+        return "SFTP cannot use media mode or HTTP request credentials and headers.";
     const bool torrent = isTorrentUrl(spec.url);
-    if (static_cast<int>(spec.kind) < 0 || static_cast<int>(spec.kind) > 3)
+    if (static_cast<int>(spec.kind) < 0 || static_cast<int>(spec.kind) > 4)
         return "Invalid transfer kind.";
     if (spec.kind == TransferKind::BitTorrent && !torrent)
         return "BitTorrent tasks require a magnet link or local torrent source.";
@@ -146,8 +160,8 @@ std::string validateSpec(const DownloadSpec& spec) {
     }
     if (spec.mediaFormat.size() > 1000 || spec.mediaFormat.find_first_of("\r\n\0", 0, 3) != std::string::npos)
         return "Invalid media format selection.";
-    if (!(spec.url.starts_with("https://") || spec.url.starts_with("http://") || ftp || torrent))
-        return "Use an HTTP, HTTPS, FTP, FTPS, magnet or local torrent source.";
+    if (!(spec.url.starts_with("https://") || spec.url.starts_with("http://") || ftp || sftp || torrent))
+        return "Use an HTTP, HTTPS, FTP, FTPS, SFTP, magnet or local torrent source.";
     if (spec.url.size() > 32768 || spec.url.find_first_of("\r\n\0", 0, 3) != std::string::npos)
         return "Invalid URL.";
     if (!torrent) {

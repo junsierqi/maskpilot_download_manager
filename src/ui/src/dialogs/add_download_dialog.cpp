@@ -57,6 +57,8 @@ struct AddDownloadDialog::Impl {
     QLineEdit *downloader, *muxer;
     QLineEdit *ftpUsername, *ftpPassword, *ftpCa;
     QCheckBox *ftpTls, *ftpActive;
+    QLineEdit *sftpUsername, *sftpPassword, *sftpHostKey, *sftpPrivateKey, *sftpKeyPassphrase;
+    QComboBox* sftpAuthentication;
     QCheckBox *torrentAll, *torrentSeed;
     QSpinBox* torrentUpload;
     TorrentMetadata torrentMetadata;
@@ -398,6 +400,60 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
     ftpNote->setWordWrap(true);
     ftpForm->addRow(ftpNote);
     const auto ftpIndex = tabs->addTab(ftpTab, "FTP / FTPS");
+    auto* sftpTab = new QWidget;
+    auto* sftpForm = new QFormLayout(sftpTab);
+    impl_->sftpHostKey = new QLineEdit;
+    impl_->sftpHostKey->setObjectName("sftpHostKey");
+    impl_->sftpHostKey->setPlaceholderText("SHA256:...");
+    impl_->sftpUsername = new QLineEdit;
+    impl_->sftpUsername->setObjectName("sftpUsername");
+    impl_->sftpAuthentication = new QComboBox;
+    impl_->sftpAuthentication->setObjectName("sftpAuthentication");
+    impl_->sftpAuthentication->addItems({t("Password", "密码"), t("Private key", "私钥")});
+    impl_->sftpPassword = new QLineEdit;
+    impl_->sftpPassword->setObjectName("sftpPassword");
+    impl_->sftpPassword->setEchoMode(QLineEdit::Password);
+    impl_->sftpPrivateKey = new QLineEdit;
+    impl_->sftpPrivateKey->setObjectName("sftpPrivateKey");
+    auto* keyRow = new QHBoxLayout;
+    keyRow->addWidget(impl_->sftpPrivateKey, 1);
+    auto* chooseKey = new QPushButton(t("Browse…", "浏览…"));
+    keyRow->addWidget(chooseKey);
+    connect(chooseKey, &QPushButton::clicked, this, [this, t] {
+        const auto path = QFileDialog::getOpenFileName(this, t("Local SSH private key", "本地 SSH 私钥"));
+        if (!path.isEmpty())
+            impl_->sftpPrivateKey->setText(path);
+    });
+    impl_->sftpKeyPassphrase = new QLineEdit;
+    impl_->sftpKeyPassphrase->setObjectName("sftpKeyPassphrase");
+    impl_->sftpKeyPassphrase->setEchoMode(QLineEdit::Password);
+    sftpForm->addRow(t("Server SHA-256 fingerprint", "服务器 SHA-256 指纹"), impl_->sftpHostKey);
+    sftpForm->addRow(t("Username", "用户名"), impl_->sftpUsername);
+    sftpForm->addRow(t("Authentication", "认证方式"), impl_->sftpAuthentication);
+    sftpForm->addRow(t("Password", "密码"), impl_->sftpPassword);
+    sftpForm->addRow(t("Private-key file", "私钥文件"), keyRow);
+    sftpForm->addRow(t("Key passphrase", "私钥口令"), impl_->sftpKeyPassphrase);
+    auto* sftpNotice = new QLabel(t(
+        "Obtain the server SHA-256 fingerprint from a trusted administrator or an already trusted host key. "
+        "The fingerprint is checked before login. Username, password and key passphrase stay in memory; "
+        "only the fingerprint, method and key path are saved. No SSH-agent or default-key fallback. "
+        "Resume requires an expected SHA-256 file digest; otherwise a new transfer starts from zero.",
+        "请从可信管理员或已信任的主机公钥获取服务器 SHA-256 "
+        "指纹，登录前会先核对。用户名、密码和私钥口令仅存内存；"
+        "只保存指纹、认证方式和密钥路径，不尝试 SSH 代理或默认密钥。续传需要已知的文件 "
+        "SHA-256；否则重新从头下载。"));
+    sftpNotice->setWordWrap(true);
+    sftpForm->addRow(sftpNotice);
+    auto updateSftpAuthentication = [this, chooseKey] {
+        const bool key = impl_->sftpAuthentication->currentIndex() == 1;
+        impl_->sftpPassword->setEnabled(!key);
+        impl_->sftpPrivateKey->setEnabled(key);
+        chooseKey->setEnabled(key);
+        impl_->sftpKeyPassphrase->setEnabled(key);
+    };
+    connect(impl_->sftpAuthentication, &QComboBox::currentIndexChanged, this, updateSftpAuthentication);
+    updateSftpAuthentication();
+    const auto sftpIndex = tabs->addTab(sftpTab, "SFTP");
     auto* torrentTab = new QWidget;
     auto* torrentForm = new QFormLayout(torrentTab);
     torrentForm->setSpacing(14);
@@ -482,24 +538,31 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
     connect(impl_->queue, &QComboBox::currentIndexChanged, impl_->selection,
             &ui::MediaSelectionWidget::invalidate);
     connect(impl_->media, &QCheckBox::toggled, impl_->selection, &QWidget::setEnabled);
-    auto updateProtocol = [this, tabs, ftpIndex, torrentIndex, requestIndex] {
+    auto updateProtocol = [this, tabs, ftpIndex, sftpIndex, torrentIndex, requestIndex] {
         const bool ftp = isFtpUrl(impl_->url->text().trimmed().toStdString());
+        const bool sftp = isSftpUrl(impl_->url->text().trimmed().toStdString());
         const bool torrent = isTorrentUrl(impl_->url->text().trimmed().toStdString());
         tabs->setTabEnabled(ftpIndex, ftp);
+        tabs->setTabEnabled(sftpIndex, sftp);
+        if (!sftp) {
+            impl_->sftpUsername->clear();
+            impl_->sftpPassword->clear();
+            impl_->sftpKeyPassphrase->clear();
+        }
         tabs->setTabEnabled(torrentIndex, torrent);
-        const bool http = !ftp && !torrent && !impl_->media->isChecked();
+        const bool http = !ftp && !sftp && !torrent && !impl_->media->isChecked();
         tabs->setTabEnabled(requestIndex, http);
         impl_->postConfirmed->setChecked(false);
         if (!http) {
             impl_->httpMethod->setCurrentIndex(0);
             impl_->postBody->clear();
         }
-        impl_->media->setEnabled(!ftp && !torrent);
-        impl_->connections->setEnabled(!ftp && !torrent);
-        impl_->referrer->setEnabled(!ftp && !torrent);
-        impl_->cookie->setEnabled(!ftp && !torrent);
-        impl_->authorization->setEnabled(!ftp && !torrent);
-        impl_->headers->setEnabled(!ftp && !torrent);
+        impl_->media->setEnabled(!ftp && !sftp && !torrent);
+        impl_->connections->setEnabled(!ftp && !sftp && !torrent);
+        impl_->referrer->setEnabled(!ftp && !sftp && !torrent);
+        impl_->cookie->setEnabled(!ftp && !sftp && !torrent);
+        impl_->authorization->setEnabled(!ftp && !sftp && !torrent);
+        impl_->headers->setEnabled(!ftp && !sftp && !torrent);
         impl_->checksum->setEnabled(!torrent);
     };
     connect(impl_->url, &QLineEdit::textChanged, this,
@@ -523,9 +586,9 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
                    !impl_->headers->toPlainText().trimmed().isEmpty());
         if (torrent)
             impl_->originAuthenticationRequired->setChecked(false);
-        else if (material)
+        else if (material || isSftpUrl(source))
             impl_->originAuthenticationRequired->setChecked(true);
-        impl_->originAuthenticationRequired->setEnabled(!torrent && !material);
+        impl_->originAuthenticationRequired->setEnabled(!torrent && !material && !isSftpUrl(source));
     };
     for (auto* field :
          {impl_->cookie, impl_->authorization, impl_->ftpUsername, impl_->ftpPassword, impl_->url})
@@ -650,6 +713,23 @@ DownloadSpec AddDownloadDialog::specification() const {
                 s.torrent.selectedFiles = impl_->torrentSelection;
         }
     }
+    if (isSftpUrl(s.url)) {
+        s.kind = TransferKind::Sftp;
+        s.connections = 1;
+        s.referrer.clear();
+        s.cookie.clear();
+        s.authorization.clear();
+        s.headers.clear();
+        s.sftp.hostKeySha256 = impl_->sftpHostKey->text().trimmed().toStdString();
+        s.sftp.username = impl_->sftpUsername->text().toUtf8().toStdString();
+        s.sftp.authentication = static_cast<SftpAuthentication>(impl_->sftpAuthentication->currentIndex());
+        if (s.sftp.authentication == SftpAuthentication::Password)
+            s.sftp.password = impl_->sftpPassword->text().toUtf8().toStdString();
+        else {
+            s.sftp.privateKeyFile = nativePath(impl_->sftpPrivateKey->text().trimmed());
+            s.sftp.keyPassphrase = impl_->sftpKeyPassphrase->text().toUtf8().toStdString();
+        }
+    }
     s.originAuthenticationRequired = s.originAuthenticationRequired || hasOriginMaterial(s);
     if (s.kind != TransferKind::Media)
         s.mediaSelection = {};
@@ -710,7 +790,14 @@ void AddDownloadDialog::setSpecification(const DownloadSpec& spec) {
         impl_->muxer->setText(QString::fromStdWString(spec.mediaMuxer.wstring()));
     impl_->destination->setText(QString::fromStdWString(spec.destination.wstring()));
     impl_->originAuthenticationRequired->setChecked(requiresOriginAuthentication(spec));
-    impl_->originAuthenticationRequired->setEnabled(!isTorrentUrl(spec.url) && !hasOriginMaterial(spec));
+    impl_->originAuthenticationRequired->setEnabled(!isTorrentUrl(spec.url) && !isSftpUrl(spec.url) &&
+                                                    !hasOriginMaterial(spec));
+    impl_->sftpHostKey->setText(QString::fromStdString(spec.sftp.hostKeySha256));
+    impl_->sftpUsername->setText(QString::fromUtf8(spec.sftp.username));
+    impl_->sftpAuthentication->setCurrentIndex(static_cast<int>(spec.sftp.authentication));
+    impl_->sftpPassword->setText(QString::fromUtf8(spec.sftp.password));
+    impl_->sftpPrivateKey->setText(QString::fromStdWString(spec.sftp.privateKeyFile.wstring()));
+    impl_->sftpKeyPassphrase->setText(QString::fromUtf8(spec.sftp.keyPassphrase));
     impl_->updateStorage();
     impl_->selection->setSelection(spec.mediaSelection, spec.audioOnly, spec.mediaFormat);
     impl_->httpMethod->setCurrentIndex(spec.httpRequest.method == HttpMethod::Post ? 1 : 0);

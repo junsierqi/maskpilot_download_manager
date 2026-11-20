@@ -275,7 +275,10 @@ TEST(HttpPost, MigratesSchema15WithBackupAndRejectsMalformedSavedMethod) {
     ASSERT_EQ(sqlite3_open(reinterpret_cast<const char*>(bytes.c_str()), &database), SQLITE_OK);
     ASSERT_EQ(sqlite3_exec(database,
                            "ALTER TABLE tasks DROP COLUMN http_method;"
-                           "ALTER TABLE tasks DROP COLUMN post_content_type; PRAGMA user_version=15;",
+                           "ALTER TABLE tasks DROP COLUMN post_content_type;"
+                           "ALTER TABLE tasks DROP COLUMN sftp_authentication;"
+                           "ALTER TABLE tasks DROP COLUMN sftp_host_key_sha256;"
+                           "ALTER TABLE tasks DROP COLUMN sftp_private_key; PRAGMA user_version=15;",
                            nullptr, nullptr, nullptr),
               SQLITE_OK);
     sqlite3_close(database);

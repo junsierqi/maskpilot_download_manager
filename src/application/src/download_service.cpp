@@ -24,8 +24,8 @@ bool sameCallerConstraints(const DownloadSpec& a, const DownloadSpec& b) {
         std::equal(
             a.expectedSha256.begin(), a.expectedSha256.end(), b.expectedSha256.begin(),
             [&](unsigned char first, unsigned char second) { return lowerHex(first) == lowerHex(second); });
-    if (!sameHash || a.httpRequest != b.httpRequest || a.maxStoredBytes != b.maxStoredBytes ||
-        a.sameOriginRedirectOnly != b.sameOriginRedirectOnly ||
+    if (!sameHash || a.httpRequest != b.httpRequest || a.sftp != b.sftp ||
+        a.maxStoredBytes != b.maxStoredBytes || a.sameOriginRedirectOnly != b.sameOriginRedirectOnly ||
         a.proxyAuthenticationRequired != b.proxyAuthenticationRequired)
         return false;
     return a.kind != TransferKind::Media ||
@@ -1397,6 +1397,12 @@ void DownloadService::updateUrl(const std::string& id, std::string url) {
         spec.referrer.clear();
         spec.ftpUsername.clear();
         spec.ftpPassword.clear();
+        spec.sftp.username.clear();
+        spec.sftp.password.clear();
+        spec.sftp.keyPassphrase.clear();
+        if (!isSftpUrl(url))
+            spec.sftp = {};
+        spec.kind = sourceKind(spec);
         if (!isFtpUrl(url)) {
             spec.ftpExplicitTls = false;
             spec.ftpActiveMode = false;

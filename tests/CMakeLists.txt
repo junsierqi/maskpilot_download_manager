@@ -33,6 +33,19 @@ target_link_libraries(maskpilot_tests PRIVATE maskpilot_application maskpilot_in
 include(GoogleTest)
 gtest_discover_tests(maskpilot_tests DISCOVERY_MODE PRE_TEST WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
+execute_process(COMMAND ${Python3_EXECUTABLE} -c "import paramiko"
+  RESULT_VARIABLE sftp_fixture_result OUTPUT_QUIET ERROR_QUIET)
+if(NOT sftp_fixture_result EQUAL 0)
+  message(FATAL_ERROR "SFTP tests require: ${Python3_EXECUTABLE} -m pip install -r ${CMAKE_CURRENT_SOURCE_DIR}/requirements.txt")
+endif()
+target_sources(maskpilot_tests PRIVATE integration/sftp_test.cpp)
+target_link_libraries(maskpilot_tests PRIVATE CURL::libcurl)
+set_source_files_properties(integration/sftp_test.cpp PROPERTIES COMPILE_DEFINITIONS
+  "MASKPILOT_SFTP_TEST_PYTHON=\"${Python3_EXECUTABLE}\";MASKPILOT_SFTP_TEST_FIXTURE=\"${CMAKE_CURRENT_SOURCE_DIR}/support/sftp_fixture.py\"")
+add_test(NAME sftp_product_path COMMAND ${Python3_EXECUTABLE}
+  ${CMAKE_CURRENT_SOURCE_DIR}/integration/sftp_test.py --exercise $<TARGET_FILE:maskpilot_cli>
+  --scanner $<TARGET_FILE:maskpilot_scan_probe>)
+set_tests_properties(sftp_product_path PROPERTIES TIMEOUT 240)
 add_test(NAME http_post_product_path COMMAND ${Python3_EXECUTABLE}
   ${CMAKE_CURRENT_SOURCE_DIR}/integration/http_post_test.py --exercise $<TARGET_FILE:maskpilot_cli>
   --scanner $<TARGET_FILE:maskpilot_scan_probe>)

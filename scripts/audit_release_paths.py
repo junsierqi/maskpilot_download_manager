@@ -23,7 +23,7 @@ MAX_FILES = 20000
 LOCAL_PE = frozenset(('maskpilot.exe', 'maskpilot_cli.exe', 'maskpilot_native_host.exe',
                       'media_guard/ffmpeg.exe', 'media_guard/ffprobe.exe', 'libcurl.dll',
                       'libz.dll', 'nghttp2.dll', 'sqlite3.dll', 'torrent-rasterbar.dll',
-                      'libcrypto-3-x64.dll', 'libssl-3-x64.dll', 'libxml2.dll'))
+                      'libcrypto-3-x64.dll', 'libssl-3-x64.dll', 'libxml2.dll', 'libssh2.dll'))
 QT_DLLS = ('Qt6Core.dll', 'Qt6Gui.dll', 'Qt6Widgets.dll', 'Qt6Network.dll', 'Qt6Svg.dll')
 QT_PLUGINS = ('platforms/qwindows.dll', 'platforms/qoffscreen.dll',
               'styles/qmodernwindowsstyle.dll', 'iconengines/qsvgicon.dll',

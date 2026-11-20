@@ -2,7 +2,8 @@ add_library(maskpilot_infrastructure
     src/scheduling/queue_civil_time.cpp
     src/network/curl_transfer.cpp
     src/network/http_layout.cpp
-    src/network/ftp_transfer.cpp
+    src/network/remote_file_transfer.cpp
+    src/network/curl_runtime.cpp
     src/site/site_content.cpp
     src/site/css_content.cpp
     src/site/site_project_repository.cpp

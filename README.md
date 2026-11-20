@@ -69,7 +69,7 @@ CLI 可使用 `--proxy-user-env <变量名>` 与 `--proxy-password-env <变量�
 
 每队列可启用每周运行窗口，选择开始星期、当地起止时间和明确的 IANA 时区（例如 `Asia/Shanghai`）。结束时间不晚于开始时间时跨午夜，时间相同表示从所选日期开始的 24 小时。窗口外任务保留运行意图并等待；窗口内仍遵守一次性计划、重试、环境授权和手动暂停。夏令时缺失分钟不会运行，重复分钟均按当地窗口判断；不可用时区会阻止运行，不会改用系统时区。窗口不会重复创建已完成下载；站点周期同步单独在项目窗口开启。
 
-队列的“原生正文额度”为 0 时关闭，正数时只允许 HTTP/FTP。窗口设为 0 使用 UTC 日；1～168 使用保守滚动小时。它限制原生回调获准接收的正文（包含探测、重试与重新接收的数据），已有分片、校验和合并不重复扣减。额度耗尽后保留运行意图，窗口释放后可继续；手动暂停不会自动恢复。修改额度或窗口前须暂停该队列所有活动任务。BT／磁力和媒体任务可放入普通队列；严格预算队列会在启动引擎前明确拒绝，本地种子导入需先选择普通队列。
+队列的“原生正文额度”为 0 时关闭，正数时只允许 HTTP/FTP/SFTP。窗口设为 0 使用 UTC 日；1～168 使用保守滚动小时。它限制原生回调获准接收的正文（包含探测、重试与重新接收的数据），已有分片、校验和合并不重复扣减。额度耗尽后保留运行意图，窗口释放后可继续；手动暂停不会自动恢复。修改额度或窗口前须暂停该队列所有活动任务。BT／磁力和媒体任务可放入普通队列；严格预算队列会在启动引擎前明确拒绝，本地种子导入需先选择普通队列。
 
 这不是运营商流量计：不计 TLS、协议头、套接字缓冲等开销。界面分别显示已确认接收、已扣额度及预留／未核实量；运行中确认量可能滞后。额度先持久化预留，正常结束仅返还未使用部分；崩溃后不退还无法核实的预留。删除历史、移动任务或修改配置不会抹去既有用量；回拨时钟不会重新获得旧日期额度。
 
@@ -86,6 +86,21 @@ maskpilot_cli ftp://example.test/file.zip C:/Downloads/file.zip C:/Downloads/sta
 ```
 
 有密码的登录优先使用桌面密码框；命令行参数可能出现在系统进程列表和 shell 历史中。
+
+## SFTP
+
+新建任务粘贴 `sftp://` 地址，在“SFTP”页填写可信服务器的 SHA-256 主机指纹，并选择密码或本地私钥登录。支持 `SHA256:` 前缀及无填充的常见指纹形式；指纹在发送登录信息前核对，不自动接受未知主机。私钥须是本地普通文件，支持加密密钥口令；不使用 SSH 代理、默认密钥或交互式认证。
+
+用户名、密码及私钥口令只存内存，重启后需通过“编辑请求 / 登录信息”重新输入。仅保存认证方式、主机指纹和私钥路径，不复制私钥内容。单流传输；只有提供预期文件 SHA-256，且 URL、主机指纹、长度、修改时间及缓存一致时才续传，发布前再次验证摘要，否则从头下载。支持现有队列、限速、原生正文额度及完成后扫描。HTTP／HTTPS 代理须允许 CONNECT 到 SSH 端口，SOCKS5 保留代理侧解析；不回退直连。
+
+```powershell
+$env:SFTP_LOGIN = 'example-user'
+$env:SFTP_SECRET = 'example-password'
+maskpilot_cli sftp://example.test/files/archive.zip C:/Downloads/archive.zip C:/Downloads/state --sftp-host-key 'SHA256:BASE64_FINGERPRINT' --sftp-user-env SFTP_LOGIN --sftp-password-env SFTP_SECRET
+Remove-Item Env:SFTP_LOGIN, Env:SFTP_SECRET
+```
+
+私钥方式改用 `--sftp-private-key C:/Keys/download.pem` 和可选的 `--sftp-key-passphrase-env NAME`；`--sha256 DIGEST` 启用验证后的续传。指纹示例必须替换为已核实的真实值。仅下载文件，不提供远程浏览、上传或递归同步。
 
 ## BT / 磁力
 
@@ -183,6 +198,7 @@ Windows x64，Visual Studio 2022 C++ 桌面工具、Windows SDK、CMake ≥3.25�
 ```powershell
 $env:QT_ROOT_DIR = 'C:/Qt/6.11.3/msvc2022_64'
 $env:VCPKG_ROOT = 'C:/Tools/vcpkg'
+python -m pip install -r tests/requirements.txt
 ./scripts/build.ps1 -Configuration Debug
 ./scripts/verify.ps1 -Configuration Release
 npm.cmd --prefix browser_extension ci

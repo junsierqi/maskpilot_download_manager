@@ -1,4 +1,5 @@
 #include "media_origin_gateway.h"
+#include "../network/curl_runtime.h"
 #include "../network/proxy_options.h"
 #include <QElapsedTimer>
 #include <QHostAddress>
@@ -59,11 +60,7 @@ struct MediaOriginGateway::Impl {
         : specification(spec), origin(QUrl::fromEncoded(QByteArray::fromStdString(spec.url))),
           token(QUuid::createUuid().toString(QUuid::Id128).toLatin1()),
           authentication("Basic " + (QByteArray("scope:") + token).toBase64()) {
-        static std::once_flag initialized;
-        std::call_once(initialized, [] {
-            if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK)
-                throw std::runtime_error("Cannot initialize media origin routing.");
-        });
+        network::initializeCurl();
         std::promise<quint16> ready;
         auto result = ready.get_future();
         listener = std::jthread([this, ready = std::move(ready)]() mutable {
