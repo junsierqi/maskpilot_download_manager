@@ -141,9 +141,8 @@ QWidget {
 QMainWindow, QDialog { background: #f8fafc; }
 QToolTip { background: #1e293b; color: white; border: none; padding: 6px 9px; }
 QWidget#appHeader { background: white; border-bottom: 1px solid #e2e8f0; }
-QLabel#brandTitle { color: #0f172a; font-size: 22px; font-weight: 600; }
-QLabel#brandSubtitle { color: #64748b; font-size: 11px; }
 QToolBar { background: white; border: none; padding: 8px; spacing: 6px; }
+QToolBar#taskToolbar { background: transparent; padding: 0px 0px 4px 0px; spacing: 6px; }
 QToolBar::separator { background: #e2e8f0; width: 1px; margin: 5px 6px; }
 QPushButton, QToolButton {
     background: white; border: 1px solid #cbd5e1; border-radius: 6px;
@@ -191,7 +190,7 @@ QHeaderView::section { background: #f8fafc; color: #64748b; border: none; border
 QTableCornerButton::section { background: #f8fafc; border: none; }
 QLabel#sectionTitle { color: #0f172a; font-size: 20px; font-weight: 600; }
 QLabel#taskSummary { color: #64748b; }
-QFrame#emptyStateFrame { background: white; border: 1px solid #e2e8f0; border-radius: 10px; }
+QLabel#emptyStateFrame { background: white; border: 1px solid #e2e8f0; border-radius: 10px; }
 QLabel#emptyHeading { color: #1e293b; font-size: 20px; font-weight: 600; }
 QLabel#emptyHint { color: #64748b; }
 QLabel#throughput { color: #475569; font-size: 12px; }

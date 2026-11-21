@@ -116,6 +116,8 @@ struct MainWindow::Impl {
     std::vector<Task> selected() const;
     void notify(const QString& title, const QString& text);
     void updateActions();
+    void updateColumns();
+    void columnMenu(const QPoint& point);
     void refresh();
     void completion();
     void details();
