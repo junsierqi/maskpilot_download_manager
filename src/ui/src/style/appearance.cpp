@@ -200,9 +200,11 @@ QTabWidget::pane { border: 1px solid #e2e8f0; border-radius: 6px; background: wh
 QTabBar::tab { background: #f1f5f9; color: #64748b; padding: 9px 15px; border-bottom: 2px solid transparent; }
 QTabBar::tab:selected { background: white; color: #1d4ed8; border-bottom-color: #2563eb; }
 QTabBar::tab:hover { color: #2563eb; background: #e8efff; }
+QTabBar QToolButton { padding: 0px; }
 QGroupBox { border: 1px solid #e2e8f0; border-radius: 8px; margin-top: 14px; padding: 14px 10px 10px; font-weight: 600; }
 QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0px 5px; }
 QCheckBox, QRadioButton { spacing: 7px; }
+QCheckBox { padding: 1px 0px 1px 2px; }
 QCheckBox:disabled, QRadioButton:disabled, QLabel:disabled { color: #94a3b8; }
 QProgressBar { border: none; border-radius: 4px; background: #e8edf5; text-align: center; min-height: 8px; }
 QProgressBar::chunk { background: #2563eb; border-radius: 4px; }

@@ -1,7 +1,50 @@
 #include "../dialogs/async_ui.h"
 #include "main_window_p.h"
+#include <QResizeEvent>
 #include <maskpilot/ui/site_project_dialog.h>
 namespace maskpilot {
+namespace {
+class TaskFilterBar final : public QWidget {
+    QBoxLayout* layout_;
+    QLineEdit* search_;
+
+  public:
+    TaskFilterBar(QLineEdit* search, QComboBox* profiles, QComboBox* queues) : search_(search) {
+        setObjectName("taskFilterBar");
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Maximum);
+        auto* group = new QWidget;
+        auto* filters = new QHBoxLayout(group);
+        filters->setContentsMargins(0, 0, 0, 0);
+        filters->setSpacing(10);
+        filters->addWidget(profiles);
+        filters->addWidget(queues);
+        filters->addStretch();
+        layout_ = new QBoxLayout(QBoxLayout::LeftToRight, this);
+        layout_->setContentsMargins(0, 0, 0, 0);
+        layout_->setSpacing(12);
+        layout_->addWidget(search, 1);
+        layout_->addWidget(group, 1);
+    }
+
+  protected:
+    void resizeEvent(QResizeEvent* event) override {
+        QWidget::resizeEvent(event);
+        const bool compact = width() < 720;
+        layout_->setDirection(compact ? QBoxLayout::TopToBottom : QBoxLayout::LeftToRight);
+        search_->setMinimumWidth(compact ? std::min(360, width()) : 180);
+        layout_->setAlignment(search_, compact ? Qt::Alignment(Qt::AlignLeft) : Qt::Alignment{});
+    }
+};
+
+class TaskActionBar final : public QToolBar {
+  protected:
+    void resizeEvent(QResizeEvent* event) override {
+        QToolBar::resizeEvent(event);
+        // Keep every action available in narrow windows; QAction text remains its tooltip.
+        setToolButtonStyle(width() < 720 ? Qt::ToolButtonIconOnly : Qt::ToolButtonTextBesideIcon);
+    }
+};
+} // namespace
 MainWindow::Impl::Impl(MainWindow* w, DownloadService& s)
     : window(w), service(s),
       chinese(settings.value("language", QLocale::system().language() == QLocale::Chinese ? "zh" : "en")
@@ -301,18 +344,13 @@ MainWindow::MainWindow(DownloadService& service, QWidget* parent)
     outer->setContentsMargins(0, 0, 0, 0);
     outer->setSpacing(0);
     setCentralWidget(container);
-    auto* header = new QWidget;
-    header->setObjectName("appHeader");
-    auto* headerLayout = new QHBoxLayout(header);
-    headerLayout->setContentsMargins(20, 12, 20, 12);
-    headerLayout->setSpacing(12);
     p.search = new QLineEdit;
     p.search->setObjectName("taskSearch");
     p.search->setPlaceholderText(p.t("Search downloads…", "搜索下载任务…"));
     p.search->setAccessibleName(p.t("Search downloads", "搜索下载任务"));
     p.search->setClearButtonEnabled(true);
-    p.search->setMinimumWidth(160);
-    headerLayout->addWidget(p.search, 1);
+    p.search->setMinimumWidth(180);
+    p.search->setMaximumWidth(360);
     p.contextFilter = new QComboBox;
     p.contextFilter->setObjectName("contextFilter");
     p.contextFilter->setMinimumWidth(140);
@@ -320,16 +358,15 @@ MainWindow::MainWindow(DownloadService& service, QWidget* parent)
     p.contextFilter->setAccessibleName(p.t("Download profile", "下载环境"));
     p.contextFilter->addItem(p.t("All profiles", "全部环境"), QString{});
     p.contextFilter->addItem(p.t("Standalone", "独立下载区"), "standalone");
-    headerLayout->addWidget(p.contextFilter);
     auto* newButton = new QPushButton(p.t("＋  New download", "＋  新建下载"));
     newButton->setDefault(true);
     newButton->setObjectName("newDownloadButton");
-    headerLayout->addWidget(newButton);
-    outer->addWidget(header);
-    auto* toolbar = new QToolBar;
+    auto* toolbar = new TaskActionBar;
     toolbar->setIconSize(QSize(18, 18));
     toolbar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     toolbar->setObjectName("taskToolbar");
+    toolbar->addWidget(newButton);
+    toolbar->addSeparator();
     auto addAction = [&](const QString& text, ui::Icon icon) {
         return toolbar->addAction(ui::icon(icon), text);
     };
@@ -416,13 +453,13 @@ MainWindow::MainWindow(DownloadService& service, QWidget* parent)
     p.queueFilter->setAccessibleName(p.t("Download queue", "下载队列"));
     p.queueFilter->addItem(p.t("All queues", "全部队列"), QString{});
     p.queueFilter->addItem(p.t("Default", "默认队列"), defaultQueueId);
-    section->addWidget(p.queueFilter);
     connect(p.queueFilter, &QComboBox::currentIndexChanged, this, [&p] { p.refresh(); });
     section->addStretch();
     p.summary = new QLabel;
     p.summary->setObjectName("taskSummary");
     section->addWidget(p.summary);
     contentLayout->addLayout(section);
+    contentLayout->addWidget(new TaskFilterBar(p.search, p.contextFilter, p.queueFilter));
     contentLayout->addWidget(toolbar);
     p.model = new TaskModel(this);
     p.model->chinese = p.chinese;
