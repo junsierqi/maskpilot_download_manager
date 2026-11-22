@@ -102,7 +102,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             data = (self.server.root / 'feed.flv').read_bytes()
             return self.reply(data[:13] + flv_tag(9) + data[13:] + flv_tag(9))
         if name in ('encrypted.m3u8', 'map.m3u8', 'discontinuity.m3u8', 'cross-segment.m3u8'):
-            extra = {'encrypted.m3u8': '#EXT-X-KEY:METHOD=AES-128,URI="secret.key"\n',
+            if name == 'discontinuity.m3u8':
+                return self.reply(b'#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\nsegment-0.ts\n'
+                                  b'#EXT-X-DISCONTINUITY\n#EXTINF:1,\nsegment-1.ts\n#EXT-X-ENDLIST\n')
+            extra = {'encrypted.m3u8': '#EXT-X-KEY:METHOD=SAMPLE-AES,URI="secret.key"\n',
                      'map.m3u8': '#EXT-X-MAP:URI="init.mp4"\n',
                      'discontinuity.m3u8': '#EXT-X-DISCONTINUITY\n'}.get(name, '')
             segment = self.server.foreign.url('stolen.ts') if name == 'cross-segment.m3u8' else 'segment-0.ts'
@@ -213,7 +216,7 @@ def exercise(executable, scanner):
             assert not foreign.requests
             assert not any('secret.key' in name or 'init.mp4' in name for name, _ in origin.requests)
             run('wrong-hash', origin.url('finite.m3u8'), ['--sha256', '0' * 64], good=False)
-            print('PASS encryption/init/discontinuity/gap/cross-origin before contact, malformed/truncated FLV and digest failure never publish', flush=True)
+            print('PASS DRM before key contact, missing init/discontinuity processor, gaps/cross-origin, malformed/truncated FLV and digest failure never publish', flush=True)
 
             auth = ['--source-cookie-env', 'MASKPILOT_LIVE_COOKIE', '--source-authorization-env', 'MASKPILOT_LIVE_AUTH']
             output, data, identifier = run('login', origin.url('auth-rolling.m3u8'), auth)

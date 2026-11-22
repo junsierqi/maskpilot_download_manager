@@ -506,10 +506,15 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
     mediaForm->addRow(impl_->selection);
     impl_->origins =
         new ui::MediaOriginsWidget(chinese, [this] { return impl_->url->text().trimmed().toStdString(); });
-    mediaForm->addRow(impl_->origins);
+    auto* accessTab = new QWidget;
+    auto* accessForm = new QFormLayout(accessTab);
+    accessForm->setSizeConstraint(QLayout::SetMinimumSize);
+    accessForm->setSpacing(12);
+    accessForm->addRow(impl_->origins);
     connect(impl_->origins, &ui::MediaOriginsWidget::changed, impl_->selection,
             &ui::MediaSelectionWidget::invalidate);
-    auto tool = [&](QLineEdit*& field, const QString& label, const QString& key, const QString& program) {
+    auto tool = [&](QFormLayout* form, QLineEdit*& field, const QString& label, const QString& key,
+                    const QString& program) {
         auto* row = new QWidget;
         auto* line = new QHBoxLayout(row);
         line->setContentsMargins(0, 0, 0, 0);
@@ -528,10 +533,10 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
             if (!file.isEmpty())
                 field->setText(file);
         });
-        mediaForm->addRow(label, row);
+        form->addRow(label, row);
     };
-    tool(impl_->downloader, t("Media parser", "媒体解析组件"), "mediaDownloader", "yt-dlp");
-    tool(impl_->muxer, t("Media processor", "媒体处理组件"), "mediaMuxer", "ffmpeg");
+    tool(mediaForm, impl_->downloader, t("Media parser", "媒体解析组件"), "mediaDownloader", "yt-dlp");
+    tool(accessForm, impl_->muxer, t("Media processor", "媒体处理组件"), "mediaMuxer", "ffmpeg");
     auto* note = new QLabel(
         t("Missing components? Open Tools → Media support. Inspect URLs for actual formats. "
           "Source Cookie/Authorization and custom headers apply only to this source origin; "
@@ -549,6 +554,11 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
     mediaScroll->setFrameShape(QFrame::NoFrame);
     mediaScroll->setWidget(mediaTab);
     tabs->addTab(mediaScroll, t("Media", "媒体"));
+    auto* accessScroll = new QScrollArea;
+    accessScroll->setWidgetResizable(true);
+    accessScroll->setFrameShape(QFrame::NoFrame);
+    accessScroll->setWidget(accessTab);
+    tabs->addTab(accessScroll, t("Media access", "媒体访问"));
     auto* liveTab = new QWidget;
     auto* liveForm = new QFormLayout(liveTab);
     liveForm->setSpacing(12);
@@ -574,16 +584,17 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
     connect(impl_->liveSize, &QSpinBox::valueChanged, this,
             [this](int mib) { impl_->exactLiveBytes = static_cast<std::int64_t>(mib) * 1024 * 1024; });
     auto* liveNote = new QLabel(
-        t("Use a direct clear MPEG-TS HLS playlist or HTTP-FLV URL. Saves the source container; no media "
-          "components needed. Right-click an active task → Finish and save recording. Duration/size limits "
-          "also save complete media. Pause/cancel never saves the final file; resume starts a new recording "
-          "from the current feed. Login and all redirects/segments must stay on the source origin. "
-          "Encrypted, separate-audio, fMP4, low-latency or discontinuous HLS is refused.",
-          "填写未加密 MPEG-TS HLS 播放列表或 HTTP-FLV 直链，按原容器保存，无需媒体组件。"
-          "右键活动任务可“结束并保存录制”；达到时长或大小上限也会保存完整媒体。"
-          "暂停／取消不会生成最终文件，继续任务会从当前直播重新录制。"
-          "登录、跳转和分片必须保持同协议、主机和端口。"
-          "暂不支持加密、独立音轨、fMP4、低延迟或含不连续标记的 HLS。"));
+        t("Use a direct HLS or HTTP-FLV URL. Ordinary TS/FLV and non-DRM AES-128 TS need no media "
+          "component. fMP4, discontinuities and separate audio with a matching program clock need a trusted "
+          "local processor in "
+          "Media access; additional origins require explicit approval there. Low-latency HLS uses complete "
+          "segments only. Right-click an active task to finish and save. Limits save complete media; "
+          "pause/cancel never publishes, and resume begins a new recording. DRM and delta playlists are "
+          "unsupported.",
+          "填写 HLS 或 HTTP-FLV 直链。普通 TS／FLV 和非 DRM 的 AES-128 TS 无需媒体组件。"
+          "fMP4、不连续片段及节目时钟对齐的独立音轨需在“媒体访问”选择可信本地处理组件；"
+          "额外来源也需在该页明确授权。低延迟 HLS 仅下载完整分片。右键活动任务可结束并保存，"
+          "达到上限时保留完整媒体；暂停／取消不发布文件，继续任务重新录制。不支持 DRM 或增量播放列表。"));
     liveNote->setWordWrap(true);
     liveForm->addRow(liveNote);
     tabs->addTab(liveTab, t("Live recording", "直播录制"));

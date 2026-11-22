@@ -14,6 +14,7 @@ add_library(maskpilot_infrastructure
     src/security/credential_vault.cpp
     src/bridge/download_bridge.cpp
     src/media/live_playlist.cpp
+    src/media/live_assembly.cpp
     src/media/live_transfer.cpp
     src/media/media_tools.cpp
     src/media/media_process.cpp
@@ -27,8 +28,9 @@ target_include_directories(maskpilot_infrastructure PUBLIC include)
 qt_add_resources(maskpilot_infrastructure "media_scope"
     PREFIX "/maskpilot/media" BASE "${CMAKE_CURRENT_SOURCE_DIR}/src/media"
     FILES src/media/scoped_requests.py)
+find_package(OpenSSL REQUIRED)
 target_link_libraries(maskpilot_infrastructure PUBLIC maskpilot_application Qt6::Core
-    PRIVATE CURL::libcurl unofficial::sqlite3::sqlite3 LibtorrentRasterbar::torrent-rasterbar LibXml2::LibXml2 Qt6::Network)
+    PRIVATE CURL::libcurl OpenSSL::Crypto unofficial::sqlite3::sqlite3 LibtorrentRasterbar::torrent-rasterbar LibXml2::LibXml2 Qt6::Network)
 if(WIN32)
   target_link_libraries(maskpilot_infrastructure PRIVATE bcrypt advapi32)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")

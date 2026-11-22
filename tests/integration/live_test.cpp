@@ -98,8 +98,8 @@ TEST(LivePlaylist, StrictSameOriginSequenceMasterAndUnsupportedVariants) {
                         "#EXT-X-STREAM-INF:BANDWIDTH=200\nb.m3u8\n");
     EXPECT_EQ(master.variant, QUrl("https://example.test/live/b.m3u8"));
     for (const auto* tag :
-         {"#EXT-X-KEY:METHOD=AES-128,URI=key", "#EXT-X-MAP:URI=init.mp4", "#EXT-X-BYTERANGE:100@0",
-          "#EXT-X-DISCONTINUITY", "#EXT-X-GAP", "#EXT-X-PART:DURATION=0.5,URI=a.ts"})
+         {"#EXT-X-KEY:METHOD=AES-128,URI=key", "#EXT-X-MAP:URI=init.mp4",
+          "#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"key\"", "#EXT-X-GAP", "#EXT-X-PART:DURATION=0.5,URI=a.ts"})
         EXPECT_THROW(parse(base + tag + "\n#EXTINF:2,\na.ts\n"), std::exception) << tag;
     EXPECT_THROW(parse(base + "#EXTINF:2,\nhttps://foreign.test/a.ts\n"), std::exception);
     EXPECT_THROW(parse(base + "#EXTINF:2,\nhttps://example.test:444/a.ts\n"), std::exception);

@@ -8,9 +8,9 @@
 
 ### 直播录制
 
-新建下载后打开“直播录制”页，选择直接 HLS 或 HTTP-FLV 地址。HLS 保存为 `.ts`，HTTP-FLV 保存为 `.flv`，无需媒体组件。默认最长 1 小时、最大 1 GiB，可设 1 秒～48 小时、1 MiB～1 TiB。右键活动任务选择“结束并保存录制”，或等待来源正常结束／达到上限；只保存完整分片或 FLV 标签，不转码。
+新建下载后打开“直播录制”页，选择直接 HLS 或 HTTP-FLV 地址。HLS 保存为 `.ts`，HTTP-FLV 保存为 `.flv`。普通 TS／FLV 及非 DRM 的 AES-128 TS 无需媒体组件；fMP4、不连续片段和对齐的独立音轨需要在“媒体访问”选择可信本地处理组件。默认最长 1 小时、最大 1 GiB，可设 1 秒～48 小时、1 MiB～1 TiB。右键活动任务选择“结束并保存录制”，或等待来源正常结束／达到上限；只保存完整分片或 FLV 标签，不转码。
 
-暂停、取消、网络失败、缺失分片和不支持的格式不会生成最终文件。继续任务从当前直播重录，不拼接旧缓存或补回已错过内容。HLS 初次从列表末尾最多三个分片开始，按序号去重。支持未加密 MPEG-TS 简单主列表／媒体列表；加密／DRM、fMP4、字节范围、低延迟、不连续标记、独立音轨、DASH 直播、RTMP 及网页直播解析明确不支持。
+暂停、取消、网络失败、缺失分片和不支持的格式不会生成最终文件。继续任务从当前直播重录，不拼接旧缓存或补回已错过内容。HLS 初次从列表末尾最多三个分片开始，按序号去重。每轨道最多保留 8192 个完整分片，到达后结束并保存。支持普通 MPEG-TS、AES-128 CBC（密钥轮换、显式／序号 IV）、严格字节范围、初始化映射／fMP4、不连续序列及清单序号／时长／不连续序列及 PROGRAM-DATE-TIME 节目时钟对齐的独立音轨。低延迟 HLS 仅回退下载完整分片，不捕获部分分片；拒绝增量／跳片清单、DRM、SAMPLE-AES、无法对齐的音轨。DASH 直播、RTMP 及网页直播解析仍未实现。
 
 所有跳转、列表与分片须保持初始协议、主机和有效端口。高级页可填写 Cookie／Authorization，仅保留在内存，重启需重新输入。支持选定代理、动态限速、原生正文额度、最终摘要、发布前扫描和无覆盖发布。额度耗尽转策略等待，恢复后重录，已用量不返还。正文计量包含收到但未组成最终完整单位的媒体字节，不含播放列表或网络封装。
 
@@ -19,7 +19,7 @@ maskpilot_cli.exe "https://example.test/live/index.m3u8" "D:\Downloads\record.ts
 maskpilot_cli.exe "https://example.test/live/feed.flv" "D:\Downloads\record.flv" ".\flv-data" --live-flv --source-cookie-env LIVE_COOKIE --source-authorization-env LIVE_AUTH
 ```
 
-凭据环境变量按需提供，勿将真实凭据写入脚本。运行直播验收：`ctest --test-dir out/build/windows-msvc-protocols -R 'Live|live_recording_product_path' --output-on-failure`。真实视频测试要求测试 PATH 中有 `ffmpeg`／`ffprobe`，它们不参与原生直播传输。
+凭据环境变量按需提供，勿将真实凭据写入脚本。运行直播验收：`ctest --test-dir out/build/windows-msvc-protocols -R 'Live|live_recording_product_path' --output-on-failure`。真实视频测试要求测试 PATH 中有 `ffmpeg`／`ffprobe`，复杂 HLS 仅使用本地处理组件封装，全部网络请求仍由原生引擎完成。`--live-muxer <绝对路径>` 选择组件；`--live-origins-env MASKPILOT_MEDIA_ACCESS` 使用下述来源 JSON。
 
 ### 文件与站点下载
 
@@ -178,13 +178,13 @@ Cookie 仅查询所选 URL 与浏览器提供的容器。隐私窗口登录材�
 
 恢复会话有效十分钟，仅存于扩展内存和桌面进程；浏览器重启后需重新开始。会话期间自动接管暂缓，取消会话不会删除原任务或已完成文件。支持可直接重新获取的 HTTP(S) GET 文件，不重放表单／POST，不保证任意登录站点、媒体或上下文任务恢复；新地址的旧分段仍须通过 HTTP 身份校验。
 
-## 登录媒体下载（开发分支）
+## 登录媒体与独立来源授权
 
 独立媒体任务可在请求高级选项中明确填写 Cookie、Authorization 或自定义头，再探测和选择格式。凭据只保留在当前进程内；重启后需要重新填写，不能自动转为匿名下载。对既有任务补充登录材料后，再恢复下载。
 
-带登录材料时，探测、清单、分片和重定向只允许原始来源的同协议、主机与有效端口；需要其他来源的资源会明确失败。受限的临时本机请求网关保留所选代理路由，HTTPS 不解密，仍由媒体组件验证证书；不安装本地根证书。HTTP 代理须允许到目标端口的 CONNECT。普通公开媒体保留既有多来源行为。浏览器的自动媒体入口仍不把精确 URL 的 Cookie 授权扩展成整个来源授权，请在桌面明确配置。此功能不处理 DRM、交互式登录或任意网站适配。
+默认登录请求只允许原始来源的同协议、主机与有效端口。独立点播／直播任务可在“媒体访问”明确添加最多 16 个额外 HTTP(S) 来源，逐项设置独立 Cookie／Authorization／自定义头或匿名访问，并勾选确认；跳转时也不会继承另一来源的登录头。来源及登录需求可持久保存，凭据与确认状态不保存；重启、导入或编辑 URL 后须重新核对确认并补充材料。CLI 可用 `--media-origins-env MASKPILOT_MEDIA_ACCESS`（直播用 `--live-origins-env`）从环境变量读取 JSON，例如 `[{"origin":"https://cdn.example.com","authenticationRequired":false}]`；变量名须以 `MASKPILOT_MEDIA_` 开头，不要把真实材料写进脚本。显式点播模式支持 GET／HEAD，拒绝 POST、其他协议和未授权来源。受限的临时本机请求网关保留所选代理路由，HTTPS 不解密，仍由媒体组件验证证书；不安装本地根证书。HTTP 代理须允许到目标端口的 CONNECT。普通公开媒体保留既有多来源行为。浏览器的自动媒体入口仍不把精确 URL 的 Cookie 授权扩展成整个来源授权，请在桌面明确配置。此功能不处理 DRM、交互式登录或任意网站适配。
 
-已安装可信媒体测试组件时，CMake 注册 `authenticated_media_product_path`，使用本地 MP4／HLS／DASH 及 HTTP／SOCKS5 代理验证登录、跨源拒绝和文件输出；不访问真实站点。
+已安装可信媒体测试组件时，CMake 注册 `authenticated_media_product_path` 与 `media_origins_product_path`，使用本地 MP4／HLS／DASH 及 HTTP／SOCKS5 代理验证登录、独立来源凭据、跳转隔离、未授权来源拒绝和文件输出；不访问真实站点。
 
 ## 下载完成扫描（开发核心）
 
@@ -206,7 +206,7 @@ maskpilot_cli.exe --scan-program 'C:/Tools/scanner.exe' --scan-arg '--check' --s
 
 工具菜单提供“媒体组件”，可选择已有的可信可执行文件；Windows 还可下载校验过的解析／合并组件，Linux 使用系统安装或用户指定的原生组件。组件可选，默认安装包不捆绑。新建媒体任务可先探测该地址的实际视频／音频格式，再选择精确格式 ID 和兼容的输出容器；自动模式仍提供画质上限预设。支持 MKV／MP4／WebM 及音频 M4A／MP3／Opus／FLAC，具体取决于源格式和本地组件。来源或网络配置改变会使探测结果失效；开始下载前重新核实所选格式，失效时明确失败。
 
-探测在后台执行，可取消；只显示有界的格式信息。解析器使用原生网络下载，本程序自带的 `media_guard/` 启动器将 FFmpeg／ffprobe 限于任务专属目录内的普通媒体文件，阻止外部下载回退和伪装播放列表的网络读取。它不构成对任意不可信可执行文件的沙箱；组件路径须指向可信程序。媒体暂停后恢复、重试或更改带宽会重新下载。独立媒体登录限于上述同源授权；直播及 DRM 不支持。网站适配取决于组件和站点当前行为，详见 [支持矩阵](docs/product/support-matrix.md)。
+探测在后台执行，可取消；只显示有界的格式信息。解析器使用原生网络下载，本程序自带的 `media_guard/` 启动器将 FFmpeg／ffprobe 限于任务专属目录内的普通媒体文件，阻止外部下载回退和伪装播放列表的网络读取。它不构成对任意不可信可执行文件的沙箱；组件路径须指向可信程序。媒体暂停后恢复、重试或更改带宽会重新下载。独立媒体登录遵循上述确切来源授权；点播组件不处理直播，直播由独立原生引擎负责。DRM 不支持。网站适配取决于组件和站点当前行为，详见 [支持矩阵](docs/product/support-matrix.md)。
 
 ## 从源码构建
 
@@ -214,7 +214,7 @@ maskpilot_cli.exe --scan-program 'C:/Tools/scanner.exe' --scan-arg '--check' --s
 
 Windows x64，Visual Studio 2022 C++ 桌面工具、Windows SDK、CMake ≥3.25、Ninja、Qt **6.11.3 MSVC x64**、vcpkg、Python 3、Node ≥22。设好环境变量，仓库脚本会初始化编译器环境：
 
-完整测试还要求 PATH 中有 `ffmpeg` 和 `ffprobe`（用于生成、核验自有视频夹具，不是原生直播运行依赖）。Python 测试依赖须在 CMake 配置前安装；建议使用独立虚拟环境。CI 使用固定版本及 SHA-256 校验的媒体工具，配置见 `.github/workflows/windows.yml`。可选登录媒体测试还需可信解析组件，详见 [验证场景](docs/testing/scenarios.md)。
+完整测试还要求 PATH 中有 `ffmpeg` 和 `ffprobe`（用于生成、核验自有视频夹具，普通 TS／FLV 不是原生直播运行依赖；复杂 HLS 的本地封装需要可信媒体处理组件）。Python 测试依赖须在 CMake 配置前安装；建议使用独立虚拟环境。CI 使用固定版本及 SHA-256 校验的媒体工具，配置见 `.github/workflows/windows.yml`。可选登录媒体测试还需可信解析组件，详见 [验证场景](docs/testing/scenarios.md)。
 
 ```powershell
 $env:QT_ROOT_DIR = 'C:/Qt/6.11.3/msvc2022_64'

@@ -95,8 +95,8 @@ bool mediaOriginRequiresLogin(const MediaOriginAccess& rule) {
 std::string validateMediaOrigins(const DownloadSpec& spec, bool requireAccess) {
     if (spec.mediaOrigins.empty())
         return {};
-    if (spec.kind != TransferKind::Media)
-        return "Additional media origins require media mode.";
+    if (spec.kind != TransferKind::Media && spec.kind != TransferKind::Live)
+        return "Additional media origins require media or live recording mode.";
     if (spec.mediaOrigins.size() > 16)
         return "At most 16 additional media origins are supported.";
     const auto primary = mediaOrigin(spec.url);

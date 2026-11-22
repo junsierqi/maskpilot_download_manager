@@ -100,7 +100,7 @@ bool readOptions(maskpilot::DownloadSpec& spec, int argc, char** argv, int start
             const std::string value = argv[n];
             if (option.ends_with("-env"))
                 privateEnvironmentInputs.push_back(value);
-            if (option.starts_with("--media-"))
+            if (option.starts_with("--media-") && spec.kind != maskpilot::TransferKind::Live)
                 spec.kind = maskpilot::TransferKind::Media;
             if (option == "--live-duration") {
                 const auto duration = integerValue(value);
@@ -109,7 +109,7 @@ bool readOptions(maskpilot::DownloadSpec& spec, int argc, char** argv, int start
                 spec.live.durationSeconds = static_cast<int>(duration);
             } else if (option == "--source-cookie-env" || option == "--source-authorization-env") {
                 (option == "--source-cookie-env" ? spec.cookie : spec.authorization) = credentialFromEnvironment(value);
-            } else if (option == "--media-origins-env") {
+            } else if (option == "--media-origins-env" || option == "--live-origins-env") {
                 if (!value.starts_with("MASKPILOT_MEDIA_"))
                     throw std::invalid_argument(
                         "Media origin input must use a MASKPILOT_MEDIA_ environment variable.");
@@ -158,7 +158,7 @@ bool readOptions(maskpilot::DownloadSpec& spec, int argc, char** argv, int start
                 spec.mediaOriginsConfirmed = true;
             } else if (option == "--live-max-bytes") {
                 spec.live.maxBytes = integerValue(value);
-            } else if (option == "--media-parser" || option == "--media-muxer") {
+            } else if (option == "--media-parser" || option == "--media-muxer" || option == "--live-muxer") {
                 (option == "--media-parser" ? spec.mediaDownloader : spec.mediaMuxer) =
                     std::filesystem::path(std::u8string(value.begin(), value.end()));
             } else if (option == "--media-format-id")
@@ -388,6 +388,7 @@ int runClient(int argc, char** argv) {
                "  --scan-arg VALUE (repeat, including one literal {file}) --scan-timeout SECONDS\n"
                "  --waive-scan --resume TASK_ID DATA explicitly waives that stopped task's requirement.\n";
         std::cout << "Live: --live-hls|--live-flv --live-duration SECONDS --live-max-bytes BYTES\n"
+                     "      --live-muxer EXE --live-origins-env MASKPILOT_MEDIA_ACCESS\n"
                      "      --source-cookie-env NAME --source-authorization-env NAME (memory only)\n"
                      "Media: --media --inspect-media --media-parser EXE --media-muxer EXE\n"
                      "       --media-mode auto|muxed|video-audio|audio|video --media-format-id ID\n"

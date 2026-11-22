@@ -24,10 +24,10 @@ Linux 内核／SDK／运行库要求、完整日志和未验收范围见 [Linux 
 
 | 增量能力 | 实际产品路径与边界 |
 |---|---|
-| 独立同源登录媒体 | `ctest --test-dir <build> -R 'MediaAuthenticated|authenticated_media_product_path' --output-on-failure --no-tests=error`；本地 MP4／HLS／DASH、真实 Qt、认证代理、秘密不落库及跨源拒绝；不验证真实登录网站 |
+| 独立来源登录媒体 | `ctest --test-dir <build> -R 'MediaAuthenticated|MediaOrigins|authenticated_media_product_path|media_origins_product_path' --output-on-failure --no-tests=error`；本地 MP4／HLS／DASH、真实 Qt、认证代理、秘密不落库、确切来源凭据／跳转隔离、匿名来源及未授权来源零连接；不验证真实登录网站 |
 | 明确 POST 下载 | `ctest --test-dir <build> -R 'HttpPost|http_post_product_path' --output-on-failure --no-tests=error`；单次请求、正文／方法校验、取消、不可自动重试与实际文件；浏览器 POST 正文仍归浏览器处理 |
 | SFTP | `ctest --test-dir <build> -R 'Sftp|sftp_product_path' --output-on-failure --no-tests=error`；真实本地 SSH 服务、主机指纹拒绝、密码／加密私钥、代理、续传／重下、额度与扫描，不自动接受未知主机 |
-| 有界原生直播 | `ctest --test-dir <build> -R 'Live|live_recording_product_path' --output-on-failure --no-tests=error`；实际 TS-HLS／HTTP-FLV、同源登录／代理、时长／大小／手动结束、暂停重录、扫描／额度；序号回退、空媒体标签和无媒体内容不发布，正常空标签填充仍可播放 |
+| 有界原生直播 | `ctest --test-dir <build> -R 'Live|live_recording_product_path|live_compatibility_product_path' --output-on-failure --no-tests=error`；实际 TS-HLS／HTTP-FLV、AES-128／轮换、精确范围、fMP4／对齐独立音轨／不连续本地封装、完整分片回退、逐来源登录／代理、时长／大小／手动结束、暂停重录、扫描／额度；序号回退、空媒体标签和无媒体内容不发布，正常空标签填充仍可播放 |
 | 共享摘要生命周期 | `ctest --test-dir <build> -R '^Checksums\.' --output-on-failure --no-tests=error`；Windows 原生提供程序、独立已知向量、空／Unicode／1 MiB 文件、8 线程重复计算及取消／读错后恢复 |
 
 当前全工程审计证据及未完成需求见 [仓库审计](repository-audit.md)。

@@ -19,6 +19,7 @@ target_sources(maskpilot_tests PRIVATE unit/queue_schedule_test.cpp)
 target_sources(maskpilot_tests PRIVATE unit/traffic_budget_test.cpp integration/traffic_store_test.cpp)
 target_sources(maskpilot_tests PRIVATE unit/media_selection_test.cpp unit/media_ui_test.cpp integration/media_store_test.cpp)
 target_sources(maskpilot_tests PRIVATE unit/media_origins_test.cpp)
+target_sources(maskpilot_tests PRIVATE unit/live_compatibility_test.cpp)
 target_sources(maskpilot_tests PRIVATE unit/transfer_constraints_test.cpp unit/transfer_constraints_ui_test.cpp integration/transfer_constraints_store_test.cpp)
 target_sources(maskpilot_tests PRIVATE unit/response_metadata_test.cpp unit/site_content_test.cpp integration/response_metadata_store_test.cpp)
 target_sources(maskpilot_tests PRIVATE unit/project_task_test.cpp unit/site_project_test.cpp integration/site_project_store_test.cpp)
@@ -75,6 +76,12 @@ add_test(NAME http_post_product_path COMMAND ${Python3_EXECUTABLE}
   --scanner $<TARGET_FILE:maskpilot_scan_probe>)
 set_tests_properties(http_post_product_path PROPERTIES TIMEOUT 180)
 find_program(MASKPILOT_TEST_MEDIA_MUXER ffmpeg)
+if(MASKPILOT_TEST_MEDIA_MUXER)
+  add_test(NAME live_compatibility_product_path COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/integration/live_compatibility_test.py
+    --exercise $<TARGET_FILE:maskpilot_cli> --muxer ${MASKPILOT_TEST_MEDIA_MUXER})
+  set_tests_properties(live_compatibility_product_path PROPERTIES TIMEOUT 240)
+endif()
 set(MASKPILOT_TEST_MEDIA_PARSER "${PROJECT_SOURCE_DIR}/out/tools/yt-dlp.exe" CACHE FILEPATH "Optional media test parser")
 if(EXISTS "${MASKPILOT_TEST_MEDIA_PARSER}" AND MASKPILOT_TEST_MEDIA_MUXER)
   set_source_files_properties(integration/media_auth_test.cpp PROPERTIES COMPILE_DEFINITIONS

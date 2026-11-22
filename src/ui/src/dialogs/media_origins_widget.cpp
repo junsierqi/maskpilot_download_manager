@@ -38,10 +38,11 @@ MediaOriginsWidget::MediaOriginsWidget(bool chinese, std::function<std::string()
     impl_->chinese = chinese;
     impl_->source = std::move(source);
     setObjectName("mediaOrigins");
+    setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
     const auto t = [this](const char* en, const char* zh) { return impl_->text(en, zh); };
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
-    layout->addWidget(new QLabel(t("Additional media origins", "额外媒体来源")));
+    layout->addWidget(new QLabel(t("Additional media and live origins", "额外媒体／直播来源")));
     auto* note =
         new QLabel(t("Add only the exact origins needed by this media. Each uses its own login; anonymous "
                      "entries receive no source credentials.",
