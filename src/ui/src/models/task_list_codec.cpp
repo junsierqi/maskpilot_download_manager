@@ -74,6 +74,8 @@ QByteArray encodeTaskList(const std::vector<Task>& tasks) {
     qsizetype estimatedBytes = 0;
     for (const auto& task : tasks) {
         const auto& spec = task.spec;
+        if (!validateMediaOrigins(spec).empty())
+            invalid();
         if (!validateSftpOptions(spec.sftp, isSftpUrl(spec.url)).empty())
             invalid();
         if (!validateHttpRequest(spec.httpRequest).empty())
@@ -123,6 +125,8 @@ QByteArray encodeTaskList(const std::vector<Task>& tasks) {
             object.insert("maxStoredBytes", static_cast<double>(spec.maxStoredBytes));
         if (spec.sameOriginRedirectOnly)
             object.insert("sameOriginRedirectOnly", true);
+        if (!spec.mediaOrigins.empty())
+            object.insert("mediaOrigins", text(encodeMediaOrigins(spec.mediaOrigins)));
         if (spec.kind == TransferKind::Media)
             object.insert("mediaSelection",
                           QJsonObject{{"mode", static_cast<int>(spec.mediaSelection.mode)},
@@ -205,7 +209,9 @@ DecodedTaskList decodeTaskList(const QByteArray& bytes,
                       "sameOriginRedirectOnly",
                       "httpMethod",
                       "postContentType",
-                      "sftp", "live"});
+                      "sftp",
+                      "live",
+                      "mediaOrigins"});
         if (version != 2 && (object.contains("maxStoredBytes") || object.contains("sameOriginRedirectOnly")))
             invalid();
         if (version != 2 && (object.contains("httpMethod") || object.contains("postContentType")))
@@ -220,6 +226,13 @@ DecodedTaskList decodeTaskList(const QByteArray& bytes,
             invalid();
         auto spec = defaults(url);
         spec.url = url.toStdString();
+        spec.mediaOrigins.clear();
+        spec.mediaOriginsConfirmed = false;
+        if (object.contains("mediaOrigins")) {
+            if (version != 2)
+                invalid();
+            spec.mediaOrigins = decodeMediaOrigins(string(object, "mediaOrigins").toStdString());
+        }
         spec.httpRequest = {};
         spec.sftp = {};
         if (object.contains("sftp")) {

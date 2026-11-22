@@ -1,4 +1,5 @@
 #pragma once
+#include <QString>
 #include <maskpilot/domain/task.h>
 #include <memory>
 namespace maskpilot::media_process {
@@ -11,5 +12,8 @@ class MediaOriginGateway final {
     explicit MediaOriginGateway(const DownloadSpec&);
     ~MediaOriginGateway();
     DownloadSpec routedRequest() const;
+    QString adapterDirectory() const;
+    QString bootstrapEndpoint() const;
+    bool adapterReady() const;
 };
 } // namespace maskpilot::media_process

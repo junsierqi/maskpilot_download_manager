@@ -2,6 +2,7 @@
 #include "../process/owned_process.h"
 #include <QByteArray>
 #include <QProcess>
+#include <QProcessEnvironment>
 #include <QStringList>
 #include <filesystem>
 #include <functional>
@@ -19,6 +20,8 @@ class ProcessTree final {
     void prepare(QProcess& process);
     void stop(QProcess& process);
     DownloadSpec route(const DownloadSpec& specification);
+    void configureAdapter(QProcessEnvironment&, QStringList&) const;
+    bool adapterReady() const;
 };
 QString pathString(const std::filesystem::path&);
 QStringList commonArguments();

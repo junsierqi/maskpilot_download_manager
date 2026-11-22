@@ -1,0 +1,4 @@
+BEGIN IMMEDIATE;
+ALTER TABLE tasks ADD COLUMN media_origins TEXT NOT NULL DEFAULT '';
+PRAGMA user_version=19;
+COMMIT;

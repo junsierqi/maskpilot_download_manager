@@ -1,4 +1,5 @@
 #include "download_name.h"
+#include "media_origins_widget.h"
 #include "media_selection_widget.h"
 #include <QCheckBox>
 #include <QComboBox>
@@ -55,6 +56,7 @@ struct AddDownloadDialog::Impl {
     QSpinBox *liveDuration, *liveSize;
     std::int64_t exactLiveBytes = 1024LL * 1024 * 1024;
     ui::MediaSelectionWidget* selection;
+    ui::MediaOriginsWidget* origins = nullptr;
     std::string mediaTaskId;
     std::int64_t maxStoredBytes = 0;
     bool sameOriginRedirectOnly = false;
@@ -158,6 +160,8 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
         impl_->destination->setText(QDir(parent).filePath(safeName(impl_->url->text())));
     });
     connect(impl_->url, &QLineEdit::textEdited, this, [this] {
+        if (impl_->origins)
+            impl_->origins->invalidateAccess();
         const bool required = requiresOriginAuthentication(specification());
         impl_->cookie->clear();
         impl_->authorization->clear();
@@ -500,6 +504,11 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
         chinese, [this] { return MediaInspectionRequest{specification(), impl_->mediaTaskId, queueId()}; });
     impl_->selection->setEnabled(false);
     mediaForm->addRow(impl_->selection);
+    impl_->origins =
+        new ui::MediaOriginsWidget(chinese, [this] { return impl_->url->text().trimmed().toStdString(); });
+    mediaForm->addRow(impl_->origins);
+    connect(impl_->origins, &ui::MediaOriginsWidget::changed, impl_->selection,
+            &ui::MediaSelectionWidget::invalidate);
     auto tool = [&](QLineEdit*& field, const QString& label, const QString& key, const QString& program) {
         auto* row = new QWidget;
         auto* line = new QHBoxLayout(row);
@@ -523,15 +532,16 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
     };
     tool(impl_->downloader, t("Media parser", "媒体解析组件"), "mediaDownloader", "yt-dlp");
     tool(impl_->muxer, t("Media processor", "媒体处理组件"), "mediaMuxer", "ffmpeg");
-    auto* note =
-        new QLabel(t("Missing components? Open Tools → Media support. Inspect URLs for actual formats. "
-                     "Source Cookie/Authorization and custom headers apply only to this source origin; "
-                     "authenticated media from other origins is refused. Credentials remain in memory. "
-                     "Resuming media safely restarts its output.",
-                     "缺少组件时，可从“工具 → "
-                     "媒体支持”安装。可探测实际格式，支持代理登录。来源 Cookie／Authorization 和自定义头"
-                     "仅用于当前来源的同协议、主机和端口；带登录材料时拒绝其他来源。凭据仅保留在内存中。"
-                     "继续媒体任务时会安全地重新下载。"));
+    auto* note = new QLabel(
+        t("Missing components? Open Tools → Media support. Inspect URLs for actual formats. "
+          "Source Cookie/Authorization and custom headers apply only to this source origin; "
+          "approve additional origins in the list with separate credentials when needed. Credentials remain "
+          "in memory. "
+          "Resuming media safely restarts its output.",
+          "缺少组件时，可从“工具 → "
+          "媒体支持”安装。可探测实际格式，支持代理登录。来源 Cookie／Authorization 和自定义头"
+          "仅用于当前来源的同协议、主机和端口；其他来源需在列表中授权并单独填写登录材料。凭据仅保留在内存中。"
+          "继续媒体任务时会安全地重新下载。"));
     note->setWordWrap(true);
     mediaForm->addRow(note);
     auto* mediaScroll = new QScrollArea;
@@ -701,6 +711,8 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
         auto spec = specification();
         auto error = validateSpec(spec);
         if (error.empty() && !spec.startPaused)
+            error = validateMediaOrigins(spec, true);
+        if (error.empty() && !spec.startPaused)
             error = validateHttpRequest(spec.httpRequest, true);
         if (impl_->stop->isChecked() && spec.stopAt <= std::max<std::int64_t>(unixTime(), spec.scheduledAt))
             error = "Stop time must be after the start time.";
@@ -751,6 +763,7 @@ DownloadSpec AddDownloadDialog::specification() const {
     s.originAuthenticationRequired = impl_->originAuthenticationRequired->isChecked();
     s.expectedSha256 = impl_->checksum->text().trimmed().toStdString();
     s.kind = impl_->media->isChecked() ? maskpilot::TransferKind::Media : maskpilot::TransferKind::Http;
+    impl_->origins->writeTo(s);
     s.audioOnly = impl_->selection->audioOnly();
     s.mediaFormat = impl_->selection->legacyFormat();
     if (s.kind == TransferKind::Media)
@@ -893,6 +906,7 @@ void AddDownloadDialog::setSpecification(const DownloadSpec& spec) {
     impl_->sftpKeyPassphrase->setText(QString::fromUtf8(spec.sftp.keyPassphrase));
     impl_->updateStorage();
     impl_->selection->setSelection(spec.mediaSelection, spec.audioOnly, spec.mediaFormat);
+    impl_->origins->readFrom(spec);
     impl_->httpMethod->setCurrentIndex(spec.httpRequest.method == HttpMethod::Post ? 1 : 0);
     impl_->postContentType->setCurrentText(QString::fromStdString(spec.httpRequest.contentType));
     impl_->postBody->setPlainText(QString::fromUtf8(spec.httpRequest.body));

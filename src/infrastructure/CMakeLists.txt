@@ -24,6 +24,9 @@ add_library(maskpilot_infrastructure
     src/torrent/torrent_engine.cpp
     src/torrent/torrent_metadata.cpp)
 target_include_directories(maskpilot_infrastructure PUBLIC include)
+qt_add_resources(maskpilot_infrastructure "media_scope"
+    PREFIX "/maskpilot/media" BASE "${CMAKE_CURRENT_SOURCE_DIR}/src/media"
+    FILES src/media/scoped_requests.py)
 target_link_libraries(maskpilot_infrastructure PUBLIC maskpilot_application Qt6::Core
     PRIVATE CURL::libcurl unofficial::sqlite3::sqlite3 LibtorrentRasterbar::torrent-rasterbar LibXml2::LibXml2 Qt6::Network)
 if(WIN32)

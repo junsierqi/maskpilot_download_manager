@@ -28,6 +28,8 @@ bool sameCallerConstraints(const DownloadSpec& a, const DownloadSpec& b) {
         a.maxStoredBytes != b.maxStoredBytes || a.sameOriginRedirectOnly != b.sameOriginRedirectOnly ||
         a.proxyAuthenticationRequired != b.proxyAuthenticationRequired)
         return false;
+    if (encodeMediaOrigins(a.mediaOrigins) != encodeMediaOrigins(b.mediaOrigins))
+        return false;
     if (a.live != b.live)
         return false;
     return a.kind != TransferKind::Media ||
@@ -1398,6 +1400,7 @@ void DownloadService::updateUrl(const std::string& id, std::string url) {
         if (!it->second.projectId.empty() && sourceKind(spec) != TransferKind::Http)
             return;
         spec.cookie.clear();
+        invalidateMediaOrigins(spec);
         spec.authorization.clear();
         spec.headers.clear();
         spec.referrer.clear();

@@ -568,7 +568,8 @@ TEST(Storage, MigratesPreviousSchemaWithoutChangingExistingProtocolsOrFiles) {
                                "sftp_private_key",
                                "live_format",
                                "live_duration",
-                               "live_max_bytes"}) {
+                               "live_max_bytes",
+                               "media_origins"}) {
         const auto sql = std::string("ALTER TABLE tasks DROP COLUMN ") + column;
         ASSERT_EQ(sqlite3_exec(connection, sql.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
     }

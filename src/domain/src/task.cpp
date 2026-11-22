@@ -23,6 +23,8 @@ bool requiresOriginAuthentication(const DownloadSpec& spec) {
     return isSftpUrl(spec.url) || spec.originAuthenticationRequired || hasOriginMaterial(spec);
 }
 std::string validateOriginAuthentication(const DownloadSpec& spec, bool requireMaterial) {
+    if (auto error = validateMediaOrigins(spec, requireMaterial); !error.empty())
+        return error;
     if (!requireMaterial || !requiresOriginAuthentication(spec))
         return {};
     if (spec.kind == TransferKind::BitTorrent || isTorrentUrl(spec.url))
@@ -73,6 +75,8 @@ TransferKind sourceKind(const DownloadSpec& spec) {
     return isFtpUrl(spec.url) ? TransferKind::Ftp : TransferKind::Http;
 }
 std::string validateSpec(const DownloadSpec& spec) {
+    if (auto error = validateMediaOrigins(spec); !error.empty())
+        return error;
     if (auto error = validateLiveRecording(spec.live); !error.empty())
         return error;
     if (spec.kind == TransferKind::Live) {

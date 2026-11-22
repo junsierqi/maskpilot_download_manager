@@ -18,6 +18,7 @@ target_sources(maskpilot_tests PRIVATE unit/queue_test.cpp integration/queue_sto
 target_sources(maskpilot_tests PRIVATE unit/queue_schedule_test.cpp)
 target_sources(maskpilot_tests PRIVATE unit/traffic_budget_test.cpp integration/traffic_store_test.cpp)
 target_sources(maskpilot_tests PRIVATE unit/media_selection_test.cpp unit/media_ui_test.cpp integration/media_store_test.cpp)
+target_sources(maskpilot_tests PRIVATE unit/media_origins_test.cpp)
 target_sources(maskpilot_tests PRIVATE unit/transfer_constraints_test.cpp unit/transfer_constraints_ui_test.cpp integration/transfer_constraints_store_test.cpp)
 target_sources(maskpilot_tests PRIVATE unit/response_metadata_test.cpp unit/site_content_test.cpp integration/response_metadata_store_test.cpp)
 target_sources(maskpilot_tests PRIVATE unit/project_task_test.cpp unit/site_project_test.cpp integration/site_project_store_test.cpp)
@@ -83,6 +84,11 @@ if(EXISTS "${MASKPILOT_TEST_MEDIA_PARSER}" AND MASKPILOT_TEST_MEDIA_MUXER)
     --exercise $<TARGET_FILE:maskpilot_cli> --parser ${MASKPILOT_TEST_MEDIA_PARSER}
     --muxer ${MASKPILOT_TEST_MEDIA_MUXER})
   set_tests_properties(authenticated_media_product_path PROPERTIES TIMEOUT 300)
+  add_test(NAME media_origins_product_path COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/integration/media_origins_test.py
+    --exercise $<TARGET_FILE:maskpilot_cli> --parser ${MASKPILOT_TEST_MEDIA_PARSER}
+    --muxer ${MASKPILOT_TEST_MEDIA_MUXER})
+  set_tests_properties(media_origins_product_path PROPERTIES TIMEOUT 360)
 endif()
 add_test(NAME local_http_product_path COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/support/http_fixture.py --exercise $<TARGET_FILE:maskpilot_cli>)
 set_tests_properties(local_http_product_path PROPERTIES TIMEOUT 120)

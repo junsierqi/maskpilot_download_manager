@@ -18,13 +18,28 @@ ProcessTree::~ProcessTree() = default;
 void ProcessTree::prepare(QProcess& process) { group_.prepare(process); }
 void ProcessTree::stop(QProcess& process) { group_.stop(process); }
 DownloadSpec ProcessTree::route(const DownloadSpec& specification) {
-    if (!requiresOriginAuthentication(specification))
+    if (!requiresOriginAuthentication(specification) && specification.mediaOrigins.empty())
         return specification;
     if (gateway_)
         throw std::logic_error("Media origin routing is already active.");
     gateway_ = std::make_unique<MediaOriginGateway>(specification);
     return gateway_->routedRequest();
 }
+void ProcessTree::configureAdapter(QProcessEnvironment& environment, QStringList& arguments) const {
+    if (!gateway_)
+        return;
+    // Prevent system PAC/localhost bypass, including before a scoped adapter loads.
+    // This unauthenticated route needs the capability supplied through private input or the adapter.
+    const auto proxy = QString::fromStdString(gateway_->routedRequest().proxy);
+    for (const auto* name : {"HTTP_PROXY", "HTTPS_PROXY", "FTP_PROXY", "ALL_PROXY"})
+        environment.insert(name, proxy);
+    environment.insert("NO_PROXY", "");
+    if (!gateway_->adapterDirectory().isEmpty()) {
+        environment.insert("MASKPILOT_MEDIA_SCOPE_ENDPOINT", gateway_->bootstrapEndpoint());
+        arguments << "--plugin-dirs" << gateway_->adapterDirectory();
+    }
+}
+bool ProcessTree::adapterReady() const { return !gateway_ || gateway_->adapterReady(); }
 QString pathString(const std::filesystem::path& path) { return QString::fromStdU16String(path.u16string()); }
 QStringList commonArguments() {
     return {"--ignore-config",
@@ -164,7 +179,8 @@ bool launch(QProcess& process, ProcessTree& tree, const DownloadSpec& spec, cons
     for (const auto& name : environment.keys()) {
         const auto lower = name.toLower();
         if (lower == "http_proxy" || lower == "https_proxy" || lower == "ftp_proxy" || lower == "all_proxy" ||
-            lower == "no_proxy" || lower == "ffreport" || lower.startsWith("maskpilot_media_"))
+            lower == "no_proxy" || lower == "ffreport" || lower == "sslkeylogfile" ||
+            lower.startsWith("maskpilot_media_"))
             environment.remove(name);
     }
     environment.insert("MASKPILOT_MEDIA_REAL_FFMPEG", QDir::toNativeSeparators(realFfmpeg));
@@ -172,11 +188,12 @@ bool launch(QProcess& process, ProcessTree& tree, const DownloadSpec& spec, cons
         environment.insert("MASKPILOT_MEDIA_REAL_FFPROBE",
                            QDir::toNativeSeparators(probe.canonicalFilePath()));
     environment.insert("MASKPILOT_MEDIA_WORK_DIR", QDir::toNativeSeparators(canonicalWork));
-    process.setProcessEnvironment(environment);
     const auto input = privateInput(tree.route(spec));
     process.setProgram(pathString(spec.mediaDownloader));
     auto guardedArguments = arguments;
     guardedArguments << "--ffmpeg-location" << pathString(guard);
+    tree.configureAdapter(environment, guardedArguments);
+    process.setProcessEnvironment(environment);
     process.setArguments(guardedArguments);
     process.setWorkingDirectory(pathString(work));
     process.setProcessChannelMode(QProcess::SeparateChannels);
@@ -201,6 +218,20 @@ bool launch(QProcess& process, ProcessTree& tree, const DownloadSpec& spec, cons
         throw std::runtime_error("Cannot send the private media request.");
     }
     process.closeWriteChannel();
+    // Frozen components unpack before loading the adapter; keep this separately bounded and cancellable.
+    const auto adapterDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+    while (!tree.adapterReady()) {
+        if (stopped()) {
+            tree.stop(process);
+            return false;
+        }
+        if (process.state() == QProcess::NotRunning || std::chrono::steady_clock::now() >= adapterDeadline) {
+            tree.stop(process);
+            throw std::runtime_error("Media request adapter is unavailable or incompatible. No media origin "
+                                     "access was authorized.");
+        }
+        process.waitForReadyRead(50);
+    }
     return true;
 }
 } // namespace maskpilot::media_process

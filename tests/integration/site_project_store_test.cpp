@@ -165,7 +165,7 @@ TEST(SiteProjectStorage, MigratesActualVersionTwelveWithOrdinaryDefaultsAndOrigi
         EXPECT_TRUE(loaded[0].projectId.empty());
         EXPECT_EQ(loaded[0].projectRevision, 0);
     }
-    EXPECT_EQ(version(open(path).get()), 18);
+    EXPECT_EQ(version(open(path).get()), 19);
     int backups = 0;
     for (const auto& entry : std::filesystem::directory_iterator(temporary.path))
         if (entry.path().filename().string().find(".before-v13-") != std::string::npos) {

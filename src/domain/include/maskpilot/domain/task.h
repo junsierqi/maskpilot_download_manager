@@ -4,6 +4,7 @@
 #include <maskpilot/domain/http_request.h>
 #include <maskpilot/domain/live.h>
 #include <maskpilot/domain/media.h>
+#include <maskpilot/domain/media_origins.h>
 #include <maskpilot/domain/queue.h>
 #include <maskpilot/domain/sftp.h>
 #include <maskpilot/domain/torrent.h>
@@ -73,6 +74,8 @@ struct DownloadSpec {
     std::filesystem::path mediaDownloader;
     std::filesystem::path mediaMuxer;
     MediaSelection mediaSelection;
+    std::vector<MediaOriginAccess> mediaOrigins;
+    bool mediaOriginsConfirmed = false; // Process-local authorization; never persisted or exported.
     // Native HTTP stored-file body bound; zero preserves the unrestricted default.
     std::int64_t maxStoredBytes = 0;
     bool sameOriginRedirectOnly = false;

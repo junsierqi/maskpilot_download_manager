@@ -1,10 +1,15 @@
 #include "media_origin_gateway.h"
 #include "../network/curl_runtime.h"
 #include "../network/proxy_options.h"
+#include <QDir>
 #include <QElapsedTimer>
+#include <QFile>
 #include <QHostAddress>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QTcpServer>
 #include <QTcpSocket>
+#include <QTemporaryDir>
 #include <QUrl>
 #include <QUuid>
 #include <algorithm>
@@ -15,8 +20,14 @@
 #include <functional>
 #include <future>
 #include <mutex>
+#include <set>
 #include <thread>
 #include <vector>
+
+static void initializeMediaScopeResource() {
+    static std::once_flag initialized;
+    std::call_once(initialized, [] { Q_INIT_RESOURCE(media_scope); });
+}
 
 namespace maskpilot::media_process {
 namespace {
@@ -51,6 +62,11 @@ struct MediaOriginGateway::Impl {
     QByteArray token, authentication;
     quint16 localPort = 0;
     std::atomic_bool stopping = false;
+    std::atomic_bool scopeReady = false;
+    std::atomic_bool policyReady = false;
+    std::set<std::string> allowedOrigins;
+    std::unique_ptr<QTemporaryDir> adapter;
+    QByteArray policy;
     std::jthread listener;
     struct Worker {
         std::shared_ptr<std::atomic_bool> done;
@@ -60,6 +76,25 @@ struct MediaOriginGateway::Impl {
         : specification(spec), origin(QUrl::fromEncoded(QByteArray::fromStdString(spec.url))),
           token(QUuid::createUuid().toString(QUuid::Id128).toLatin1()),
           authentication("Basic " + (QByteArray("scope:") + token).toBase64()) {
+        if (!spec.mediaOrigins.empty()) {
+            if (const auto error = validateMediaOrigins(spec, true); !error.empty())
+                throw std::invalid_argument(error);
+            initializeMediaScopeResource();
+            adapter = std::make_unique<QTemporaryDir>();
+            const auto directory = adapter->path() + "/scope/yt_dlp_plugins/extractor";
+            QFile source(":/maskpilot/media/scoped_requests.py");
+            if (!adapter->isValid() || !QDir().mkpath(directory) || !source.open(QIODevice::ReadOnly))
+                throw std::runtime_error("Cannot prepare the owned media request adapter.");
+            QFile output(directory + "/maskpilot_scope.py");
+            const auto script = source.readAll();
+            if (script.isEmpty() || !output.open(QIODevice::WriteOnly) ||
+                output.write(script) != script.size())
+                throw std::runtime_error("Cannot install the owned media request adapter.");
+            output.close();
+            allowedOrigins.insert(mediaOrigin(spec.url));
+            for (const auto& rule : spec.mediaOrigins)
+                allowedOrigins.insert(mediaOrigin(rule.origin, true));
+        }
         network::initializeCurl();
         std::promise<quint16> ready;
         auto result = ready.get_future();
@@ -94,6 +129,49 @@ struct MediaOriginGateway::Impl {
             // Worker joins occur while the specification and stop flag are still alive.
         });
         localPort = result.get();
+        try {
+            if (adapter) {
+                QJsonObject origins;
+                const auto headers = [](const std::string& cookie, const std::string& authorization,
+                                        const auto& extra) {
+                    QJsonObject fields;
+                    if (!cookie.empty())
+                        fields.insert("cookie", QString::fromUtf8(cookie));
+                    if (!authorization.empty())
+                        fields.insert("authorization", QString::fromUtf8(authorization));
+                    for (const auto& [name, value] : extra)
+                        fields.insert(QString::fromUtf8(name).toLower(), QString::fromUtf8(value));
+                    return fields;
+                };
+                auto primary = headers(spec.cookie, spec.authorization, spec.headers);
+                if (!spec.referrer.empty()) {
+                    auto referrer = QUrl(QString::fromUtf8(spec.referrer));
+                    referrer.setPath("/");
+                    referrer.setQuery(QString());
+                    referrer.setFragment(QString());
+                    referrer.setUserInfo(QString());
+                    primary.insert("referer", QString::fromUtf8(referrer.toEncoded()));
+                }
+                origins.insert(QString::fromStdString(mediaOrigin(spec.url)), primary);
+                for (const auto& rule : spec.mediaOrigins)
+                    origins.insert(QString::fromStdString(mediaOrigin(rule.origin, true)),
+                                   headers(rule.cookie, rule.authorization, rule.headers));
+                policy = QJsonDocument(QJsonObject{{"version", 1},
+                                                   {"origins", origins},
+                                                   {"proxy", QString("http://scope:%1@127.0.0.1:%2")
+                                                                 .arg(QString::fromLatin1(token))
+                                                                 .arg(localPort)}})
+                             .toJson(QJsonDocument::Compact);
+                if (policy.size() > 256 * 1024)
+                    throw std::invalid_argument("Media routing policy exceeds its bound.");
+                policyReady.store(true);
+            }
+        } catch (...) {
+            stopping = true;
+            if (listener.joinable())
+                listener.join();
+            throw;
+        }
     }
     ~Impl() {
         stopping = true;
@@ -125,11 +203,49 @@ struct MediaOriginGateway::Impl {
             return;
         }
         const bool tunnel = request[0] == "CONNECT";
+        const auto control = QByteArray("/scope/") + token;
+        if (adapter && policyReady.load() && request[0] == "GET" &&
+            (request[1] == control || request[1] == control + "/ready")) {
+            int hosts = 0;
+            for (qsizetype i = 1; i < lines.size(); ++i) {
+                const auto line = lines[i].toLatin1();
+                const auto colon = line.indexOf(':');
+                const auto name = line.left(colon).toLower();
+                if (colon <= 0 || !clean(line) || name == "transfer-encoding" || name == "origin" ||
+                    (name == "content-length" && line.mid(colon + 1).trimmed() != "0")) {
+                    refuse(client);
+                    return;
+                }
+                if (name == "host" && (++hosts != 1 || line.mid(colon + 1).trimmed() !=
+                                                           "127.0.0.1:" + QByteArray::number(localPort))) {
+                    refuse(client);
+                    return;
+                }
+            }
+            if (hosts != 1 || input.size() != end + 4) {
+                refuse(client);
+                return;
+            }
+            const auto body = request[1] == control ? policy : QByteArray("{}");
+            if (request[1] != control)
+                scopeReady.store(true);
+            client.write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nCache-Control: "
+                         "no-store\r\nConnection: close\r\nContent-Length: " +
+                         QByteArray::number(body.size()) + "\r\n\r\n" + body);
+            while (client.bytesToWrite() && !stopping && Clock::now() < deadline)
+                client.waitForBytesWritten(50);
+            return;
+        }
         const auto destination = QUrl::fromEncoded(
             tunnel ? QByteArray("https://") + request[1] + "/" : request[1], QUrl::StrictMode);
-        if (!sameOrigin(destination, origin) ||
-            (tunnel && (destination.path() != "/" || destination.hasQuery())) ||
-            (!tunnel && (origin.scheme() != "http" || (request[0] != "GET" && request[0] != "HEAD")))) {
+        const auto destinationOrigin = mediaOrigin(destination.toEncoded().toStdString());
+        const bool permitted = adapter
+                                   ? scopeReady.load() && !destinationOrigin.empty() &&
+                                         allowedOrigins.contains(destinationOrigin) &&
+                                         destination.userInfo().isEmpty() && destination.fragment().isEmpty()
+                                   : sameOrigin(destination, origin);
+        if (!permitted || (tunnel && (destination.path() != "/" || destination.hasQuery())) ||
+            (!tunnel && (destination.scheme() != "http" || (request[0] != "GET" && request[0] != "HEAD")))) {
             refuse(client);
             return;
         }
@@ -153,8 +269,8 @@ struct MediaOriginGateway::Impl {
             }
             if (name == "host") {
                 const auto host =
-                    QUrl::fromEncoded(origin.scheme().toLatin1() + "://" + value, QUrl::StrictMode);
-                if (++hostFields != 1 || !sameOrigin(host, origin) || !host.path().isEmpty() ||
+                    QUrl::fromEncoded(destination.scheme().toLatin1() + "://" + value, QUrl::StrictMode);
+                if (++hostFields != 1 || !sameOrigin(host, destination) || !host.path().isEmpty() ||
                     host.hasQuery()) {
                     refuse(client);
                     return;
@@ -182,9 +298,9 @@ struct MediaOriginGateway::Impl {
         if (!connection)
             return;
         auto* handle = connection.get();
-        auto raw = origin;
+        auto raw = destination;
         raw.setScheme("http");
-        raw.setPort(port(origin));
+        raw.setPort(port(destination));
         raw.setPath("/");
         raw.setQuery(QString());
         raw.setFragment(QString());
@@ -290,6 +406,26 @@ DownloadSpec MediaOriginGateway::routedRequest() const {
     spec.proxyUsername = "scope";
     spec.proxyPassword = impl_->token.toStdString();
     spec.proxyAuthenticationRequired = true;
+    if (impl_->adapter) {
+        spec.cookie.clear();
+        spec.authorization.clear();
+        spec.headers.clear();
+        spec.referrer.clear();
+        spec.originAuthenticationRequired = false;
+        // The gateway retains the complete policy; no source material enters global parser headers.
+        spec.mediaOrigins.clear();
+        spec.mediaOriginsConfirmed = false;
+    }
     return spec;
 }
+QString MediaOriginGateway::adapterDirectory() const {
+    return impl_->adapter ? impl_->adapter->path() : QString();
+}
+QString MediaOriginGateway::bootstrapEndpoint() const {
+    return impl_->adapter ? QString("http://127.0.0.1:%1/scope/%2")
+                                .arg(impl_->localPort)
+                                .arg(QString::fromLatin1(impl_->token))
+                          : QString();
+}
+bool MediaOriginGateway::adapterReady() const { return !impl_->adapter || impl_->scopeReady.load(); }
 } // namespace maskpilot::media_process

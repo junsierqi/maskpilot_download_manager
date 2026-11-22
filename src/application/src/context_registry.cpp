@@ -384,6 +384,8 @@ DownloadSpec ContextRegistry::resolve(const Task& task) const {
     if (!impl_->enabled(task.ownerId))
         throw std::invalid_argument("Download context is disabled or unavailable.");
     auto spec = task.spec;
+    if (task.ownerId != "standalone" && !spec.mediaOrigins.empty())
+        throw std::invalid_argument("Additional media origins require explicit standalone authorization.");
     if (task.ownerId != "standalone" && spec.kind == TransferKind::Live)
         throw std::invalid_argument("Live recording requires a standalone task.");
     if (isSftpUrl(spec.url) && task.ownerId != "standalone")

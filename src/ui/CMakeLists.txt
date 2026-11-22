@@ -1,4 +1,5 @@
 add_library(maskpilot_ui src/windows/main_window.cpp
+    src/dialogs/media_origins_widget.cpp src/dialogs/media_origins_widget.h
     src/dialogs/site_project_dialog.cpp
     src/dialogs/media_selection_widget.cpp src/dialogs/media_selection_widget.h
     src/dialogs/settings_dialog.cpp

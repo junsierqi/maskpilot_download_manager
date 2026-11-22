@@ -17,6 +17,7 @@
 #include <maskpilot/infrastructure/torrent_engine.h>
 #include <memory>
 #include <thread>
+#include <vector>
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -51,6 +52,7 @@ std::string credentialFromEnvironment(const std::string& name) {
 }
 bool readOptions(maskpilot::DownloadSpec& spec, int argc, char** argv, int start) {
     bool inspection = false;
+    std::vector<std::string> privateEnvironmentInputs;
     for (int n = start; n < argc; ++n) {
         const std::string option = argv[n];
         if (option == "--live-hls" || option == "--live-flv") {
@@ -96,6 +98,8 @@ bool readOptions(maskpilot::DownloadSpec& spec, int argc, char** argv, int start
             if (++n >= argc)
                 throw std::invalid_argument("Missing option value.");
             const std::string value = argv[n];
+            if (option.ends_with("-env"))
+                privateEnvironmentInputs.push_back(value);
             if (option.starts_with("--media-"))
                 spec.kind = maskpilot::TransferKind::Media;
             if (option == "--live-duration") {
@@ -105,6 +109,53 @@ bool readOptions(maskpilot::DownloadSpec& spec, int argc, char** argv, int start
                 spec.live.durationSeconds = static_cast<int>(duration);
             } else if (option == "--source-cookie-env" || option == "--source-authorization-env") {
                 (option == "--source-cookie-env" ? spec.cookie : spec.authorization) = credentialFromEnvironment(value);
+            } else if (option == "--media-origins-env") {
+                if (!value.starts_with("MASKPILOT_MEDIA_"))
+                    throw std::invalid_argument(
+                        "Media origin input must use a MASKPILOT_MEDIA_ environment variable.");
+                const auto raw = credentialFromEnvironment(value);
+                if (raw.size() > 128 * 1024)
+                    throw std::invalid_argument("Media origin input exceeds its limit.");
+                QJsonParseError error;
+                const auto document = QJsonDocument::fromJson(QByteArray::fromStdString(raw), &error);
+                if (error.error != QJsonParseError::NoError || !document.isArray() ||
+                    document.array().isEmpty() || document.array().size() > 16)
+                    throw std::invalid_argument("Expected 1..16 media origin rules.");
+                spec.mediaOrigins.clear();
+                for (const auto& entry : document.array()) {
+                    if (!entry.isObject())
+                        throw std::invalid_argument("Invalid media origin rule.");
+                    const auto object = entry.toObject();
+                    for (auto field = object.begin(); field != object.end(); ++field)
+                        if (field.key() != "origin" && field.key() != "cookie" &&
+                            field.key() != "authorization" && field.key() != "headers" &&
+                            field.key() != "authenticationRequired")
+                            throw std::invalid_argument("Unknown media origin rule field.");
+                    const auto text = [&](const char* name) {
+                        if (object.contains(name) && !object[name].isString())
+                            throw std::invalid_argument("Media origin field must be a string.");
+                        return object[name].toString().toStdString();
+                    };
+                    maskpilot::MediaOriginAccess rule;
+                    rule.origin = text("origin");
+                    rule.cookie = text("cookie");
+                    rule.authorization = text("authorization");
+                    if (object.contains("authenticationRequired") &&
+                        !object["authenticationRequired"].isBool())
+                        throw std::invalid_argument("Invalid media origin authentication requirement.");
+                    rule.authenticationRequired = object["authenticationRequired"].toBool();
+                    if (object.contains("headers") && !object["headers"].isObject())
+                        throw std::invalid_argument("Media origin headers must be an object.");
+                    const auto headers = object["headers"].toObject();
+                    for (auto field = headers.begin(); field != headers.end(); ++field) {
+                        if (!field.value().isString())
+                            throw std::invalid_argument("Media origin header must be a string.");
+                        rule.headers.emplace_back(field.key().toStdString(),
+                                                  field.value().toString().toStdString());
+                    }
+                    spec.mediaOrigins.push_back(std::move(rule));
+                }
+                spec.mediaOriginsConfirmed = true;
             } else if (option == "--live-max-bytes") {
                 spec.live.maxBytes = integerValue(value);
             } else if (option == "--media-parser" || option == "--media-muxer") {
@@ -230,6 +281,10 @@ bool readOptions(maskpilot::DownloadSpec& spec, int argc, char** argv, int start
                 throw std::invalid_argument("Unknown option.");
         }
     }
+    // Values have been captured in the request. Do not propagate consumed inputs to helper processes.
+    for (const auto& name : privateEnvironmentInputs)
+        if (!qunsetenv(name.c_str()))
+            throw std::runtime_error("Cannot clear a private request environment input.");
     return inspection;
 }
 void inspectMedia(maskpilot::DownloadService& service, maskpilot::DownloadSpec spec,
@@ -336,7 +391,8 @@ int runClient(int argc, char** argv) {
                      "      --source-cookie-env NAME --source-authorization-env NAME (memory only)\n"
                      "Media: --media --inspect-media --media-parser EXE --media-muxer EXE\n"
                      "       --media-mode auto|muxed|video-audio|audio|video --media-format-id ID\n"
-                     "       --media-audio-id ID --media-container auto|mkv|mp4|webm|m4a|mp3|opus|flac\n";
+                     "       --media-audio-id ID --media-container auto|mkv|mp4|webm|m4a|mp3|opus|flac\n"
+                     "       --media-origins-env MASKPILOT_MEDIA_NAME (approved JSON rules, memory only)\n";
         return argc == 1 ? 0 : 2;
     }
     try {
