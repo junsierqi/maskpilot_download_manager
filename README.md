@@ -1,10 +1,18 @@
-# MaskPilot
+# MaskPilot Download Manager
 
 基于 C++20 和 Qt 6 Widgets 的 Windows／Linux 下载管理器。HTTP/HTTPS、FTP/FTPS、SFTP、直播录制、媒体适配器及独立 BT 引擎负责传输、恢复、校验和安全落盘；桌面、命令行与浏览器共用任务调度和持久化层。Linux 的具体系统、运行库和验收边界见 [Linux 构建与验收](docs/testing/linux-acceptance.md)，不能将其视为所有发行版兼容。
 
 **当前主干 `master`**汇总已经完成的功能，包括浏览器辅助链接／登录恢复、周期站点同步、原生正文滚动额度和可选完成后扫描。日常开发直接在最新 `master` 上进行，按已验证的完整阶段提交；不保留功能各异的长期开发分支。冻结的 0.2.0／0.3.0 包保持独立；旧包的长期测试证据不代表当前开发代码。本轮以本地验证和候选包为目标，在线更新与正式发行延后。实际支持范围及剩余差距见 [功能与缺口](docs/product/feature-matrix.md)。
 
 macOS 已加入原生构建配置、平台适配及 GitHub Actions 双架构验证入口，**尚未在真实 macOS 上完成编译／运行验收**。推送代码后，`macOS` 工作流分别在 Apple Silicon 和 Intel 上构建全部目标、运行核心及平台测试、上传日志；失败应修正后重跑，不能仅凭配置文件宣称支持。操作方式、测试范围与待办见 [macOS 构建与验收](docs/testing/macos-acceptance.md)。
+
+## 阅读入口
+
+| 目的 | 入口 |
+|---|---|
+| 使用与支持范围 | [使用说明](#使用)、[协议与限制](docs/product/support-matrix.md)、[功能与缺口](docs/product/feature-matrix.md) |
+| 编译与开发 | [从源码构建](#从源码构建)、[当前架构](docs/architecture/overview.md)、[工程蓝图](docs/DEVELOPMENT_BLUEPRINT.md) |
+| 验证与平台 | [测试场景](docs/testing/scenarios.md)、[Linux](docs/testing/linux-acceptance.md)、[macOS 待验收入口](docs/testing/macos-acceptance.md) |
 
 ## 使用
 
@@ -14,7 +22,7 @@ macOS 已加入原生构建配置、平台适配及 GitHub Actions 双架构验�
 
 暂停、取消、网络失败、缺失分片和不支持的格式不会生成最终文件。继续任务从当前直播重录，不拼接旧缓存或补回已错过内容。HLS 初次从列表末尾最多三个分片开始，按序号去重。每轨道最多保留 8192 个完整分片，到达后结束并保存。支持普通 MPEG-TS、AES-128 CBC（密钥轮换、显式／序号 IV）、严格字节范围、初始化映射／fMP4、不连续序列及清单序号／时长／不连续序列及 PROGRAM-DATE-TIME 节目时钟对齐的独立音轨。低延迟 HLS 仅回退下载完整分片，不捕获部分分片；拒绝增量／跳片清单、DRM、SAMPLE-AES、无法对齐的音轨。DASH 直播、RTMP 及网页直播解析仍未实现。
 
-所有跳转、列表与分片须保持初始协议、主机和有效端口。高级页可填写 Cookie／Authorization，仅保留在内存，重启需重新输入。支持选定代理、动态限速、原生正文额度、最终摘要、发布前扫描和无覆盖发布。额度耗尽转策略等待，恢复后重录，已用量不返还。正文计量包含收到但未组成最终完整单位的媒体字节，不含播放列表或网络封装。
+默认所有跳转、列表、密钥与分片须保持初始协议、主机和有效端口；如需其他来源，在“媒体访问”逐项明确授权，各来源使用独立登录材料，不跨来源继承凭据。高级页可填写 Cookie／Authorization，仅保留在内存，重启需重新输入。支持选定代理、动态限速、原生正文额度、最终摘要、发布前扫描和无覆盖发布。额度耗尽转策略等待，恢复后重录，已用量不返还。正文计量包含收到但未组成最终完整单位的媒体字节，不含播放列表或网络封装。
 
 ```powershell
 maskpilot_cli.exe "https://example.test/live/index.m3u8" "D:\Downloads\record.ts" ".\live-data" --live-hls --live-duration 1800 --live-max-bytes 1073741824
@@ -36,7 +44,7 @@ maskpilot_cli.exe "https://example.test/live/feed.flv" "D:\Downloads\record.flv"
 
 HTTP 文件只有在服务器提供可验证的强资源标识及 Range 支持时才续传；其余情况安全重下。开发代码在连接空闲时可拆分尚未完成的大段，每任务最多 8 个活动连接、256 个持久化分段；剩余段过小时保持原分段，不承诺所有服务器上都更快。认证头与 Cookie 仅保存在本次进程内，重启后需补充。带签名参数的原始 URL 保存在本机任务数据库和主动导出的任务清单中，请保护应用数据目录与导出文件。
 
-## 静态站点项目（开发分支）
+## 静态站点项目
 
 在“工具 → 静态站点项目”新建项目，选择公开根地址、输出目录、队列、页面深度、路径前缀和资源类型。新建不访问来源；“预览”下载候选页面与 CSS，包含样式导入，以生成资源计划。已识别的图片、字体和媒体在明确“开始”后下载。未知候选链接可能在有界请求后被识别为其他类型，预览会显示跳过原因。
 
@@ -72,9 +80,9 @@ $expectedHash = '填写独立取得的64位十六进制SHA256'
 
 ## 代理与凭据
 
-开发分支提供单独的“代理”页，地址中禁止嵌入账号密码。直接文件支持 HTTP／HTTPS／SOCKS5 代理，SOCKS5 的目标主机名由代理解析；HTTPS 代理校验证书与主机名。留空表示明确直连，指定代理后不受环境中的 `NO_PROXY` 绕过规则影响。
+新建／编辑请求提供单独的“代理”页，地址中禁止嵌入账号密码。直接文件支持 HTTP／HTTPS／SOCKS5 代理，SOCKS5 的目标主机名由代理解析；HTTPS 代理校验证书与主机名。留空表示明确直连，指定代理后不受环境中的 `NO_PROXY` 绕过规则影响。
 
-代理账号密码默认仅存内存。可在代理页明确勾选“记住代理凭据”，由当前用户的系统凭据库保存（Windows 凭据管理器／Linux 已解锁的 Secret Service），不提供明文回退。任务库与导出清单不保存密码。未保存的凭据在重启或导入后须通过“更新请求”补充，缺少所需凭据时不会开始传输。右键“忘记代理凭据”会清除安全保存及当前会话的代理账号密码，并保留必须认证的标记。认证协商仍遵循代理服务器的协议。
+代理账号密码默认仅存内存。可在代理页明确勾选“记住代理凭据”，由当前用户的系统凭据库保存（Windows 凭据管理器／Linux 已解锁的 Secret Service），不提供明文回退。macOS 已增加 Keychain 适配，真实运行仍待 CI 验收。任务库与导出清单不保存密码。未保存的凭据在重启或导入后须通过“更新请求”补充，缺少所需凭据时不会开始传输。右键“忘记代理凭据”会清除安全保存及当前会话的代理账号密码，并保留必须认证的标记。认证协商仍遵循代理服务器的协议。
 
 BT 支持 HTTP CONNECT 与 SOCKS5 代理；不同路由或凭据使用隔离会话。代理 BT 使用 TCP，关闭 DHT、本地发现、自动端口映射和 uTP，不支持 UDP Tracker 或 HTTPS 代理。代理主机本身可能需要本机 DNS；不承诺匿名性。主动 FTP 不能与代理组合。媒体支持认证 HTTP／SOCKS5 代理，代理秘密和原始来源地址经私密标准输入传递，不放进解析组件启动参数。
 
@@ -253,13 +261,17 @@ sh scripts/verify-linux.sh
 
 入口完成构建、扩展、私有钥匙串中的完整 CTest 及实际媒体专项。构建预设为 `linux-gcc-release`；本地包使用 `python scripts/package_linux.py --build-directory out/build/linux-gcc-release --output-directory out/package/MaskPilot-0.3.0-linux-x64-local`。输出已存在即拒绝。所需系统运行库、离线源码、浏览器配置及当前资格限制见 [Linux 指南](docs/testing/linux-acceptance.md)。正式发行仍延后。
 
+### macOS（待实际验收）
+
+原生构建预设为 `macos-clang-release`。所需 Qt／原生依赖、手动构建子集与 GitHub 双架构检查步骤见 [macOS 指南](docs/testing/macos-acceptance.md)。完整 CI 使用一次性测试钥匙串，不应在个人机器伪造 CI 环境运行。当前没有可分发的 macOS 安装包或已通过的 macOS 编译结论。
+
 ## 工程与验证
 
 `apps/` 为桌面、命令行、本机桥接入口及本地媒体启动器，`src/domain/` 为模型，`src/application/` 为调度，`src/infrastructure/` 为网络／SQLite／媒体，`src/ui/` 为窗口、模型和对话框，`browser_extension/` 为浏览器扩展，`tests/` 为单元、故障与真实应用测试，`packaging/` 为安装流程。业务层不依赖 Qt UI 或具体网络实现。
 
-开发顺序、状态不变量和主要目录见 [工程蓝图](docs/DEVELOPMENT_BLUEPRINT.md)。具体测试命令见 [验证场景](docs/testing/scenarios.md)，发布证据与待验收项见 [验收记录](docs/releases/acceptance.md)。未完成的压力、干净系统或商店验证不代表已通过。
+实际目录、依赖方向及调用流程见 [当前架构](docs/architecture/overview.md)；产品目标、开发顺序与状态不变量见 [工程蓝图](docs/DEVELOPMENT_BLUEPRINT.md)。具体测试命令见 [验证场景](docs/testing/scenarios.md)，发布证据与待验收项见 [验收记录](docs/releases/acceptance.md)。未完成的压力、干净系统或商店验证不代表已通过。
 
-本次全工程检查的修复、验收证据和原始需求剩余项见 [仓库审计](docs/testing/repository-audit.md)。功能回归通过不等于最初的完整产品目标已经实现。
+[历史 Windows 仓库审计](docs/testing/repository-audit.md) 保留对应提交的修复与验收证据，不代表后续全部代码已通过同一轮测试。当前支持范围以功能／支持矩阵为准，功能回归通过不等于最初的完整产品目标已经实现。
 
 贡献代码使用 C++20、4 空格缩进与 `.clang-format`（LLVM 基线，110 列）；类型用 `PascalCase`，函数和局部变量沿用 `camelCase`。`.clang-tidy` 提供静态检查配置，但 `verify.ps1` 不自动运行它。GoogleTest 测试采用 `TEST(Suite, DescriptiveBehavior)`，网络场景优先使用本地故障服务；新增行为须说明验证方法。提交主题使用简短的祈使句；PR 说明行为变化、关联问题及验证结果，界面变化附截图。既有 `AGENTS.md` 按用户要求保留，当前工程说明以本文与蓝图补充。
 

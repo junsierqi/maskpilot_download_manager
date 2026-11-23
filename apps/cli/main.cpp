@@ -376,7 +376,8 @@ int runClient(int argc, char** argv) {
                      "BYTES\n"
                      "Global --bt-no-discovery disables DHT, local discovery and automatic port mapping; "
                      "explicit trackers and peers remain enabled.\n"
-                     "This verification client pauses unfinished transfers after 180 seconds.\n";
+                     "Non-live transfer verification pauses unfinished tasks after 180 seconds.\n"
+                     "Live recordings use their configured duration and size limits, then finalize.\n";
         std::cout << "HTTP: --max-stored-bytes N (0 unlimited) --same-origin-redirects\n";
         std::cout
             << "SFTP options: --sftp-host-key SHA256:BASE64 --sftp-user-env NAME\n"

@@ -1,8 +1,8 @@
 # MaskPilot 下载器：产品与工程开发蓝图
 
-> 状态：用户已授权执行的开发基线 v0.1；支持状态以实际验收记录为准。
+> 状态：用户已授权执行的产品与工程基线；源码版本以 `CMakeLists.txt` 为准，支持状态以实际验收记录为准。
 > 已确定：开源项目、C++、Qt、编码前规划完整流程与主要工程目录。
-> 建议默认值：Windows 11 x64 首发、C++20、Qt 6 Widgets、自有任务管理与 HTTP 调度。
+> 初始设计默认值：Windows 11 x64 首发、C++20、Qt 6 Widgets、自有任务管理与 HTTP 调度；当前平台资格以功能矩阵及平台指南为准。
 > 既有 `AGENTS.md` 保持不变；本文补充产品和工程约束，不能覆盖用户后续明确指令。
 
 ## 开发主干与提交约定
@@ -25,7 +25,7 @@
 
 下表为建议范围；`F-*` 是产品编号，与工作流中的 `REQ-*`、`TASK-*` 分开。正式实现计划须建立映射，不能仅勾选功能名称。
 
-当前 0.1.0 只覆盖其中的核心流程，不能视为本表全部完成。F-02 的动态拆段、F-06 的多队列／周期计划和 F-11 的站点支持名单仍有缺口；原目标保留，具体状态见功能矩阵。版本验收不等同于完整目标交付。
+本表保留产品目标与最初阶段划分，不是当前完成状态。当前主干已实现动态拆段、命名队列／每周窗口、周期站点同步等增量，Linux 已有明确环境验收，macOS 构建／适配及 CI 仍待真实运行。持续维护的媒体站点名单、其他平台／服务及正式发行等仍有差距，详见 [功能矩阵](product/feature-matrix.md)。版本验收不等同于完整目标交付。
 
 | 编号 | 能力与交付边界 | 建议版本 | 阶段 | 最低验收证据 |
 |---|---|---|---|---|
@@ -69,84 +69,35 @@ M0 必须验证这些选择能在本机形成同一套可构建组合，再记�
 
 ## 4. 主要工程目录：预先规划与受控演进
 
-以下是目标结构，不表示这些文件已创建。M0 建立必要目录和 CMake 目标；不为未实现模块堆放空类或假接口。开发中可按实际职责和维护成本调整文件与目录；调整前说明收益及影响，更新目录说明与相关设计，并验证依赖边界及已有行为。
+以下为当前主要目录；详细职责、实际子目录与 CMake 依赖见 [当前架构](architecture/overview.md)。不为未实现模块堆放空类或假接口。开发中可按实际职责和维护成本调整目录，调整前说明收益及影响，更新文档并验证依赖边界与已有行为。
 
 ```text
-maskpilot_download_manager/
-├── AGENTS.md                       # 既有贡献指南
-├── README.md                       # 安装、启动、开发入口及当前支持状态
-├── LICENSE                         # 原始工程代码 MIT 许可证
-├── CMakeLists.txt                  # 组合子目标，不承载业务逻辑
-├── CMakePresets.json               # 可共享构建预设
-├── vcpkg.json                      # 原生依赖声明
-├── vcpkg-configuration.json        # 固定依赖 baseline
-├── .clang-format
-├── .clang-tidy
-├── .gitignore
-├── .github/workflows/              # 构建、检查、打包验证
+.
+├── CMakeLists.txt / CMakePresets.json   # 目标与共享预设
+├── vcpkg.json / vcpkg-configuration.json
+├── .clang-format / .clang-tidy
+├── .github/workflows/                  # 平台构建和验证
 ├── apps/
-│   ├── desktop/                    # main、单实例、依赖注入、生命周期
-│   └── native_host/                # 浏览器消息入口及本机 IPC 转发
+│   ├── desktop/                        # Qt、单实例、依赖组合
+│   ├── cli/                            # 验证客户端与站点命令
+│   ├── native_host/                    # 原生消息与本机 IPC
+│   └── media_guard/                    # 本地媒体组件启动器
 ├── src/
-│   ├── domain/                     # 纯 C++ 领域模型与不变量
-│   │   ├── include/maskpilot/domain/
-│   │   ├── src/
-│   │   └── CMakeLists.txt
-│   ├── application/                # 用例、任务控制、调度、恢复协调
-│   │   ├── include/maskpilot/application/
-│   │   │   └── ports/              # transport、repository、file、clock 等接口
-│   │   ├── src/
-│   │   └── CMakeLists.txt
-│   ├── infrastructure/             # 实现 application ports
-│   │   ├── include/maskpilot/infrastructure/
-│   │   ├── src/
-│   │   │   ├── network/            # libcurl、HTTP 验证与代理
-│   │   │   ├── persistence/        # SQLite repository 与 migration 执行
-│   │   │   ├── filesystem/         # 文件分配、写入、同步与最终发布
-│   │   │   ├── platform/           # Windows 凭据、IPC、电源与系统集成
-│   │   │   ├── media/              # 媒体清单与外部工具 adapter
-│   │   │   └── diagnostics/        # 结构化日志、脱敏、诊断导出
-│   │   └── CMakeLists.txt
-│   └── ui/                         # Qt Widgets 界面与展示适配
-│       ├── include/maskpilot/ui/
-│       ├── src/
-│       │   ├── windows/
-│       │   ├── dialogs/
-│       │   ├── models/             # QAbstractItemModel 等
-│       │   ├── presenters/         # 用户动作与应用事件的转换
-│       │   └── widgets/            # 真正复用的视觉控件
-│       ├── forms/                  # Qt Designer .ui
-│       └── CMakeLists.txt
-├── browser_extension/
-│   ├── src/                        # background、content、popup、协议适配
-│   ├── manifests/                  # 按浏览器生成配置
-│   ├── tests/
-│   ├── package.json
-│   └── package-lock.json
-├── resources/
-│   ├── icons/
-│   ├── translations/
-│   └── app.qrc
-├── database/migrations/            # 编号递增的 SQL，发布后不可改写
-├── tests/
-│   ├── unit/                       # domain/application 的快速测试
-│   ├── integration/                # 网络、SQLite、文件和 IPC
-│   ├── system/                     # 桌面、恢复、安装与端到端
-│   ├── fixtures/                   # 小型固定数据，不放真实下载文件
-│   └── support/                    # 本地故障服务和测试辅助
-├── benchmarks/                     # 可复现性能场景和结果格式
-├── cmake/                          # 查找、编译选项、打包辅助
-├── scripts/                        # bootstrap、verify、package、smoke
-├── packaging/windows/              # 安装器、host 注册和卸载规则
-├── docs/
-│   ├── DEVELOPMENT_BLUEPRINT.md     # 当前总蓝图
-│   ├── product/                    # 功能目标、支持范围及缺口
-│   ├── architecture/               # 模块、线程、状态、存储与 ADR
-│   ├── protocols/                  # IPC/浏览器协议与兼容策略
-│   ├── testing/                    # 用例矩阵、故障注入、性能方法
-│   └── releases/                   # 版本范围、验收记录和已知问题
-├── third_party/                    # 来源、许可证、补丁；不随意复制整库
-└── .idea-to-code/                   # 当前任务、决策、验证和恢复记录
+│   ├── domain/                         # 模型与不变量
+│   ├── application/                    # 协调器、用例、端口
+│   ├── infrastructure/                 # 协议、存储、系统适配
+│   └── ui/                             # 窗口、对话框、模型、样式
+├── browser_extension/                  # TypeScript、清单、构建与测试
+├── resources/                          # 应用静态资源
+├── database/migrations/                # 递增 SQL 迁移
+├── tests/                              # 单元／集成／系统／平台测试
+├── benchmarks/                         # 性能场景与报告
+├── cmake/                              # 原生依赖与编译／打包配置
+├── scripts/                            # 构建、验证、打包入口
+├── packaging/                          # 安装与浏览器注册材料
+├── docs/                               # 使用、产品、架构、协议与验收
+├── third_party/                        # 实际依赖声明
+└── out/                                # 忽略的生成内容
 ```
 
 目录规则：
@@ -171,7 +122,7 @@ apps/native_host ────────────> 最小协议/平台适配
 domain ─────────────────────> C++ 标准库
 ```
 
-`domain`、`application` 不依赖 QWidget、libcurl、SQL 或 Windows API。Qt 与第三方库留在适配层；构建检查禁止循环依赖。不要为了“纯 C++”重新实现成熟库已有的能力。
+`domain`、`application` 不依赖 QWidget、libcurl、SQL 或 Windows API。Qt 与第三方库留在适配层；复查 CMake 目标与源码依赖，避免循环，当前没有独立的自动架构规则检查器。不要为了“纯 C++”重新实现成熟库已有的能力。
 
 核心端口建议包括 `ITransferTransport`、`ITaskRepository`、`IFileStore`、`ICredentialStore`、`IClock` 和 `IEventDispatcher`。只为已确定的边界建接口；不为每个小类机械增加接口。
 
@@ -229,7 +180,7 @@ domain ─────────────────────> C++ 标�
 
 只收集用户授权下载所需的 Cookie/头信息，不导出整份浏览器 Cookie 库。日志脱敏 URL 查询参数、认证头、Cookie 与本地敏感路径；默认无遥测。TLS 验证默认开启，任何例外都不能成为全局静默设置。
 
-媒体工具以结构化参数启动，禁止命令字符串拼接。固定允许的工具来源和版本，限制输出与运行时间，取消时回收进程树；解析失败保留可解释错误。自动升级执行代码前须设计真实性验证与回滚；1.0 默认检查更新并引导下载安装。
+媒体工具以结构化参数启动，禁止命令字符串拼接。固定允许的工具来源和版本，限制输出与运行时间，取消时回收进程树；解析失败保留可解释错误。自动升级执行代码前须设计真实性验证与回滚；在线更新发现和正式发行按当前授权延后，现有手动离线升级不等于在线服务已交付。
 
 ## 9. 界面与完整使用流程
 
@@ -265,7 +216,7 @@ domain ─────────────────────> C++ 标�
 
 重点覆盖：零字节/未知长度/大于 4 GiB 文件、中文与长路径、目录重名、磁盘写满、任务删除与迟到回调、网络切换、重复接管、缺失数据库/临时文件、损坏导入、工具退出和程序强制终止。
 
-命令是工程建成后的约定入口，目前尚不可执行：
+以下是现有入口，在仓库根目录运行；Windows SDK、Qt、原生依赖及测试前置要求见 [README 构建说明](../README.md#从源码构建)。Linux／macOS 使用对应平台预设和指南，不能直接套用 Windows 命令：
 
 ```powershell
 cmake --preset windows-msvc-debug
@@ -273,10 +224,10 @@ cmake --build --preset windows-msvc-debug
 ctest --preset windows-msvc-debug --output-on-failure
 powershell -File scripts/verify.ps1
 powershell -File scripts/package.ps1
-powershell -File scripts/smoke.ps1 -PackagePath <package-path>
+powershell -File scripts/smoke.ps1 -PackageDirectory out/package/MaskPilot-0.3.0-windows-x64
 ```
 
-`verify.ps1` 聚合构建、格式/静态检查和适用测试；失败返回非零，不能吞错。浏览器扩展固定使用锁文件并提供 `npm ci`、`npm run build`、`npm test`。CI 配置存在不等于 CI 已运行；本地、CI、实机和人工检查证据分别记录。
+`verify.ps1` 聚合 Windows 构建、CTest、发布路径／清单、离线更新恢复和扩展测试；失败返回非零，不能吞错。它不自动运行 clang-format／clang-tidy；仓库提供相应配置，修改者另行检查格式及适用静态诊断。浏览器扩展固定使用锁文件并提供 `npm ci`、`npm run build`、`npm test`。CI 配置存在不等于 CI 已运行；本地、CI、实机和人工检查证据分别记录。
 
 不先设容易误导的全仓覆盖率数字；状态转换、区间计算、重试、恢复判定等关键分支必须有正反例并报告覆盖缺口。正式性能测试记录 CPU、磁盘、网络、依赖版本及样例，不使用“连接更多所以更快”作为结论。
 
