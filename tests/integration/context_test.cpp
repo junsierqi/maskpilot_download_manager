@@ -742,7 +742,7 @@ QJsonObject readObject(const std::filesystem::path& path) {
 }
 TEST_F(DownloadContexts, ActualHttpAndSocksRoutesCarryOnlyTheirOwnedOriginGrants) {
     const QString originScript = R"PY(
-import hashlib,http.server,json,pathlib,sys,threading
+import hashlib,http.server,json,pathlib,socketserver,sys,threading
 path=pathlib.Path(sys.argv[1]); lock=threading.Lock(); state={'cookies':[],'proxy_auth':[],'paths':[]}
 class Handler(http.server.BaseHTTPRequestHandler):
  def log_message(self,*args): pass
@@ -760,7 +760,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
   if not head: self.wfile.write(body)
  def do_HEAD(self): self.answer(True)
  def do_GET(self): self.answer(False)
-server=http.server.ThreadingHTTPServer(('127.0.0.1',0),Handler)
+class OwnedServer(http.server.ThreadingHTTPServer):
+ def server_bind(self):
+  socketserver.TCPServer.server_bind(self)
+  self.server_name='localhost'; self.server_port=self.server_address[1]
+server=OwnedServer(('127.0.0.1',0),Handler)
 server.daemon_threads=True
 thread=threading.Thread(target=server.serve_forever); thread.start()
 print(json.dumps({'port':server.server_address[1]}),flush=True)

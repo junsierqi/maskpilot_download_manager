@@ -7,6 +7,8 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import re
+import socket
 
 
 def keychain_paths(output):
@@ -107,11 +109,73 @@ def require_hosted_ci(environment, system):
     return temporary
 
 
+def probe_loopback():
+    for kind in (socket.SOCK_STREAM, socket.SOCK_DGRAM):
+        with socket.socket(socket.AF_INET, kind) as endpoint:
+            endpoint.bind(('127.0.0.2', 0))
+
+
+class LoopbackSession:
+    """Own one missing address in a guarded disposable hosted VM, never a whole interface."""
+    address = '127.0.0.2'
+
+    def __init__(self, run=subprocess.run, probe=probe_loopback):
+        self.run = run
+        self.probe = probe
+        self.original = None
+        self.created = False
+
+    def command(self, arguments):
+        result = self.run(arguments, capture_output=True, text=True, timeout=30)
+        if result.returncode:
+            raise RuntimeError('Hosted loopback fixture command failed')
+        return result.stdout
+
+    def addresses(self):
+        output = self.command(['/sbin/ifconfig', 'lo0'])
+        if len(output) > 131072:
+            raise RuntimeError('Loopback fixture inspection exceeded its bound')
+        values = re.findall(r'^\s*inet\s+([0-9.]+)\s', output, re.MULTILINE)
+        if '127.0.0.1' not in values or len(values) != len(set(values)):
+            raise RuntimeError('Ambiguous loopback fixture state')
+        return set(values)
+
+    def __enter__(self):
+        self.original = self.addresses()
+        try:
+            if self.address not in self.original:
+                # Record the missing address before invoking a command that could
+                # time out after mutation. This VM has one owning hosted job.
+                self.created = True
+                self.command(['/usr/bin/sudo', '-n', '/sbin/ifconfig', 'lo0',
+                              'alias', self.address, 'netmask', '255.255.255.255'])
+                if self.addresses() != self.original | {self.address}:
+                    raise RuntimeError('Unexpected hosted loopback fixture mutation')
+            self.probe()
+        except BaseException:
+            self.restore()
+            raise
+        return self
+
+    def restore(self):
+        if not self.created:
+            return
+        if self.address in self.addresses():
+            self.command(['/usr/bin/sudo', '-n', '/sbin/ifconfig', 'lo0', '-alias', self.address])
+        if self.addresses() != self.original:
+            raise RuntimeError('Hosted loopback fixture restoration failed')
+        self.created = False
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.restore()
+        return False
+
+
 def execute(command, platform_executable, environment=None, system=None):
     environment = dict(os.environ if environment is None else environment)
     parent = require_hosted_ci(environment, sys.platform if system is None else system)
     with tempfile.TemporaryDirectory(prefix='maskpilot-keychain-', dir=parent) as temporary:
-        with KeychainSession(temporary) as session:
+        with LoopbackSession(), KeychainSession(temporary) as session:
             result = subprocess.run(command, env=environment)
             if result.returncode:
                 return result.returncode

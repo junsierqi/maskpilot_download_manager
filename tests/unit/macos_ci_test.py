@@ -5,6 +5,7 @@ import shlex
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 spec = importlib.util.spec_from_file_location('macos_session', Path(__file__).resolve().parents[2] / 'scripts/macos_test_session.py')
 session = importlib.util.module_from_spec(spec)
@@ -143,6 +144,97 @@ class KeychainSessionTests(unittest.TestCase):
                     changed[key] = value
                 with self.assertRaises(RuntimeError):
                     session.require_hosted_ci(changed, system)
+
+
+class LoopbackFixture:
+    def __init__(self, addresses=None, fail=None):
+        self.addresses = set(addresses or ['127.0.0.1', '127.0.0.3'])
+        self.original = set(self.addresses)
+        self.fail = fail
+        self.calls = []
+
+    def __call__(self, command, **options):
+        self.calls.append(command)
+        assert options == dict(capture_output=True, text=True, timeout=30)
+        if command == ['/sbin/ifconfig', 'lo0']:
+            output = '\n'.join('  inet ' + address + ' netmask 0xffffffff' for address in sorted(self.addresses))
+            return subprocess.CompletedProcess(command, 0, output, '')
+        assert command[:4] == ['/usr/bin/sudo', '-n', '/sbin/ifconfig', 'lo0']
+        assert command[5] == '127.0.0.2', 'Only the owned secondary address may change'
+        operation = command[4]
+        if operation == 'alias':
+            assert command[6:] == ['netmask', '255.255.255.255']
+            if self.fail == 'add':
+                return subprocess.CompletedProcess(command, 1, '', '')
+            self.addresses.add('127.0.0.2')
+            if self.fail == 'timeout-after-add':
+                raise subprocess.TimeoutExpired('ifconfig', 30)
+        elif operation == '-alias':
+            if self.fail == 'remove':
+                return subprocess.CompletedProcess(command, 1, '', '')
+            self.addresses.remove('127.0.0.2')
+        else:
+            raise AssertionError('Unexpected loopback mutation')
+        return subprocess.CompletedProcess(command, 0, '', '')
+
+
+class LoopbackSessionTests(unittest.TestCase):
+    def owned(self, fake, probe=None):
+        def bound_probe():
+            self.assertIn('127.0.0.2', fake.addresses)
+        return session.LoopbackSession(fake, probe or bound_probe)
+
+    def test_success_restores_only_added_address(self):
+        fake = LoopbackFixture()
+        with self.owned(fake):
+            self.assertEqual(fake.addresses, fake.original | {'127.0.0.2'})
+        self.assertEqual(fake.addresses, fake.original)
+
+    def test_existing_alias_is_never_modified_even_after_body_failure(self):
+        fake = LoopbackFixture(['127.0.0.1', '127.0.0.2'])
+        with self.assertRaises(ValueError), self.owned(fake):
+            raise ValueError('owned body failure')
+        self.assertEqual(fake.addresses, fake.original)
+        self.assertFalse(any(command[0] == '/usr/bin/sudo' for command in fake.calls))
+
+    def test_setup_failure_and_partial_timeout_restore(self):
+        for fault in ['add', 'timeout-after-add']:
+            with self.subTest(fault=fault):
+                fake = LoopbackFixture(fail=fault)
+                with self.assertRaises((RuntimeError, subprocess.TimeoutExpired)), self.owned(fake):
+                    self.fail('Invalid fixture entered its body')
+                self.assertEqual(fake.addresses, fake.original)
+
+    def test_probe_failure_restores(self):
+        fake = LoopbackFixture()
+        def failed_probe():
+            raise OSError('owned bind failure')
+        with self.assertRaises(OSError), self.owned(fake, failed_probe):
+            self.fail('Unavailable fixture entered its body')
+        self.assertEqual(fake.addresses, fake.original)
+
+    def test_body_failure_restores(self):
+        fake = LoopbackFixture()
+        with self.assertRaises(ValueError), self.owned(fake):
+            raise ValueError('owned test failure')
+        self.assertEqual(fake.addresses, fake.original)
+
+    def test_restore_failure_is_never_success(self):
+        fake = LoopbackFixture(fail='remove')
+        with self.assertRaises(RuntimeError), self.owned(fake):
+            pass
+        self.assertIn('127.0.0.2', fake.addresses)
+
+    def test_foreign_address_change_is_preserved_and_reported(self):
+        fake = LoopbackFixture()
+        with self.assertRaisesRegex(RuntimeError, 'restoration failed'), self.owned(fake):
+            fake.addresses.add('127.0.0.4')
+        self.assertEqual(fake.addresses, fake.original | {'127.0.0.4'})
+
+    def test_non_hosted_execution_cannot_reach_loopback_changes(self):
+        with mock.patch.object(session, 'LoopbackSession', side_effect=AssertionError('Unexpected mutation')):
+            with self.assertRaises(RuntimeError):
+                session.execute(['owned-command'], 'owned-platform', environment={}, system='win32')
 
 
 if __name__ == '__main__':
