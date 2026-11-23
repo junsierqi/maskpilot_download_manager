@@ -6,7 +6,9 @@
 #include <algorithm>
 #include <cerrno>
 #include <maskpilot/infrastructure/credential_vault.h>
+#include <mutex>
 #include <sys/stat.h>
+#include <type_traits>
 #include <unistd.h>
 
 namespace maskpilot::security {
@@ -31,6 +33,25 @@ struct OwnedCF {
         throw CredentialVaultError(CredentialVaultFailure::Unavailable,
                                    "Keychain is locked or unavailable; unlock it explicitly before retrying");
     throw CredentialVaultError(CredentialVaultFailure::Storage, "Keychain operation failed");
+}
+std::mutex keychainInteractionMutex;
+template <class Function> OSStatus unattended(Function operation) {
+    static_assert(std::is_nothrow_invocable_r_v<OSStatus, Function>);
+    // The legacy file-Keychain shim can request UI independently of SecItem's
+    // query option. Serialize the process setting and restore its exact value.
+    std::lock_guard lock(keychainInteractionMutex);
+    Boolean original = false;
+    auto status = SecKeychainGetUserInteractionAllowed(&original);
+    if (status != errSecSuccess)
+        failure(status);
+    status = SecKeychainSetUserInteractionAllowed(false);
+    if (status != errSecSuccess)
+        failure(status);
+    const auto result = operation(); // Only nonthrowing framework calls run here.
+    status = SecKeychainSetUserInteractionAllowed(original);
+    if (status != errSecSuccess)
+        failure(status);
+    return result;
 }
 void id(const std::string& value) {
     if (value.size() != 32 || !std::all_of(value.begin(), value.end(), [](unsigned char c) {
@@ -108,7 +129,7 @@ void addKeychain(const std::string& installation, const std::string& reference, 
     if (!data.value)
         throw std::bad_alloc();
     CFDictionarySetValue(dictionary, kSecValueData, data.value);
-    const auto status = SecItemAdd(dictionary, nullptr);
+    const auto status = unattended([&]() noexcept { return SecItemAdd(dictionary, nullptr); });
     if (status != errSecSuccess)
         failure(status);
 }
@@ -118,9 +139,10 @@ std::optional<KeychainEntry> readKeychain(const std::string& installation, const
     CFDictionarySetValue(dictionary, kSecReturnData, kCFBooleanTrue);
     CFDictionarySetValue(dictionary, kSecReturnRef, kCFBooleanTrue);
     CFDictionarySetValue(dictionary, kSecMatchLimit, kSecMatchLimitOne);
-    CFTypeRef result = nullptr;
-    const auto status = SecItemCopyMatching(dictionary, &result);
-    const OwnedCF returned(result);
+    OwnedCF returned(nullptr);
+    const auto status =
+        unattended([&]() noexcept { return SecItemCopyMatching(dictionary, &returned.value); });
+    const auto result = returned.value;
     if (status == errSecItemNotFound)
         return {};
     if (status != errSecSuccess)
@@ -153,7 +175,7 @@ bool removeKeychain(const KeychainEntry& entry) {
     CFDictionarySetValue(dictionary, kSecClass, kSecClassGenericPassword);
     CFDictionarySetValue(dictionary, kSecMatchItemList, items.value);
     CFDictionarySetValue(dictionary, kSecUseAuthenticationUI, kSecUseAuthenticationUIFail);
-    const auto status = SecItemDelete(dictionary);
+    const auto status = unattended([&]() noexcept { return SecItemDelete(dictionary); });
     if (status == errSecItemNotFound)
         return false;
     if (status != errSecSuccess)

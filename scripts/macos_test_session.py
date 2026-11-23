@@ -180,9 +180,13 @@ def execute(command, platform_executable, environment=None, system=None):
             if result.returncode:
                 return result.returncode
             record = Path(temporary) / 'locked-entry.json'
+            print('macOS qualification: seed owned vault entry', flush=True)
             subprocess.run([platform_executable, '--seed-vault', str(record)], env=environment, check=True, timeout=30)
+            print('macOS qualification: lock owned keychain', flush=True)
             session.security('lock-keychain', session.path)
+            print('macOS qualification: verify locked vault refuses access', flush=True)
             result = subprocess.run([platform_executable, '--locked-vault', str(record)], env=environment, timeout=30)
+            print('macOS qualification: unlock owned keychain for cleanup', flush=True)
             session.security('unlock-keychain', '-p', session.password, session.path)
             return result.returncode
 

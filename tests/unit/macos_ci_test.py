@@ -1,5 +1,7 @@
 """CI-session lifecycle tests using an injected security command, on any host."""
 import importlib.util
+import contextlib
+import io
 from pathlib import Path
 import shlex
 import subprocess
@@ -144,6 +146,37 @@ class KeychainSessionTests(unittest.TestCase):
                     changed[key] = value
                 with self.assertRaises(RuntimeError):
                     session.require_hosted_ci(changed, system)
+
+    def test_vault_probe_failures_restore_owned_session(self):
+        for failure in ('--seed-vault', '--locked-vault', 'locked-refused', None):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                fake = SecurityFixture()
+                owned_class = session.KeychainSession
+                calls = []
+                def run(command, **options):
+                    calls.append(command)
+                    if len(command) > 1:
+                        self.assertEqual(options['timeout'], 30)
+                    if len(command) > 1 and command[1] == failure:
+                        raise subprocess.TimeoutExpired('owned-vault-probe', 30)
+                    code = 5 if failure == 'locked-refused' and '--locked-vault' in command else 0
+                    return subprocess.CompletedProcess(command, code)
+                environment = dict(GITHUB_ACTIONS='true', RUNNER_OS='macOS', RUNNER_ENVIRONMENT='github-hosted', RUNNER_TEMP=directory)
+                output = io.StringIO()
+                with mock.patch.object(session, 'LoopbackSession', return_value=contextlib.nullcontext()), \
+                     mock.patch.object(session, 'KeychainSession', side_effect=lambda path: owned_class(path, fake)), \
+                     mock.patch.object(session.subprocess, 'run', side_effect=run), contextlib.redirect_stdout(output):
+                    if failure in ('--seed-vault', '--locked-vault'):
+                        with self.assertRaises(subprocess.TimeoutExpired):
+                            session.execute(['owned-ctest'], 'owned-vault', environment, 'darwin')
+                    else:
+                        self.assertEqual(session.execute(['owned-ctest'], 'owned-vault', environment, 'darwin'),
+                                         5 if failure == 'locked-refused' else 0)
+                self.assertEqual(fake.paths, fake.original)
+                self.assertEqual(fake.default, fake.original[0])
+                self.assertFalse(fake.created.exists())
+                self.assertIn('seed owned vault entry', output.getvalue())
+                self.assertEqual(calls[0], ['owned-ctest'])
 
 
 class LoopbackFixture:

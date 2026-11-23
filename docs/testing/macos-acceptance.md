@@ -2,7 +2,7 @@
 
 ## Current status
 
-Native configuration, Apple adapters, and executable CI entry points are prepared. Hosted compilation passes with Xcode 26.3, but **native runtime acceptance remains incomplete**: arm64 improved from 262/319 at `114848e` to 316/320 at `ce167b1`. The remaining failures concern native fixture prerequisites; follow-up fixes require a fresh run on both architectures. Windows regression or Python simulations do not qualify macOS. Formal release, signing, online updates, and complete media/browser compatibility are not claimed.
+Native configuration, Apple adapters, and executable CI entry points are prepared. Hosted compilation passes with Xcode 26.3, but **native runtime acceptance remains incomplete**: arm64 improved from 262/319 at `114848e` to 316/320 at `ce167b1`; all five prerequisite cases pass at `6febb95`, followed by a 30-second isolated vault qualification failure. Follow-up fixes require a fresh run on both architectures. Windows regression or Python simulations do not qualify macOS. Formal release, signing, online updates, and complete media/browser compatibility are not claimed.
 
 ## After pushing
 
@@ -22,6 +22,8 @@ The first hosted runs failed with the runner's default Xcode 16.4 because its C+
 Keychain tests write fake credentials only in owned random namespaces. CI creates a private temporary keychain, temporarily changes search/default settings, restores/verifies originals on completion/error, and deletes only its keychain. Execution is restricted to GitHub-hosted macOS; never fake these environment variables on a personal machine. Forced job cancellation relies on hosted VM destruction, since in-process finally execution cannot be guaranteed.
 
 The same guarded session prepares `127.0.0.2` on `lo0` when absent, probes TCP/UDP binding, and removes only its added alias on exit. Existing addresses remain untouched. The distinct address is required for peer-isolation/seeding fixtures; macOS does not implicitly bind the entire IPv4 loopback range. A short prerequisite gate runs before the complete native selection; either gate or restoration failure fails the job. Test origins use literal local names without reverse DNS, and Firefox fixtures use the actual adjacent-manifest policy.
+
+Vault operations retain the query-level no-authentication option and temporarily suppress legacy Keychain interaction under a shared process mutex, restoring the exact previous setting before returning. Locked access must fail without automatically unlocking or prompting. The isolated CI probe prints stage names only (seed, lock, locked read, cleanup unlock); it never logs credential values. Native assertions cover restoration after successful and failed operations, including an already-disabled setting.
 
 ## Logs and failures
 

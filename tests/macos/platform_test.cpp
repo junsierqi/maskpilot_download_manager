@@ -9,6 +9,7 @@
 #include <QTemporaryDir>
 #include <QThread>
 #include <QUuid>
+#include <Security/Security.h>
 #include <cerrno>
 #include <cstdio>
 #include <fstream>
@@ -20,6 +21,12 @@ using namespace maskpilot;
 namespace {
 std::string id() { return QUuid::createUuid().toString(QUuid::Id128).toStdString(); }
 const ProxyCredentials credentials{"owned-macos-user", "owned-test-secret-中文"};
+Boolean interactionAllowed() {
+    Boolean allowed = false;
+    if (SecKeychainGetUserInteractionAllowed(&allowed) != errSecSuccess)
+        throw std::runtime_error("Cannot inspect Keychain interaction state");
+    return allowed;
+}
 
 TEST(MacPaths, OnlyVerifiedSystemDirectoryAliasesAreAllowed) {
     EXPECT_TRUE(platform_paths::isSystemDirectoryAlias("/var"));
@@ -45,6 +52,7 @@ template <class F> void bindingFailure(F action) {
     }
 }
 TEST(MacVault, NativeRoundTripBindingCreateOnlyAndOwnedRemoval) {
+    const auto interaction = interactionAllowed();
     const auto installation = id();
     auto vault = makeNativeCredentialVault(installation);
     ProxyCredentialBinding binding{"standalone", "http://127.0.0.1:3128", id()};
@@ -61,8 +69,10 @@ TEST(MacVault, NativeRoundTripBindingCreateOnlyAndOwnedRemoval) {
             }
         }
     } cleanup{*vault, binding, reference};
+    EXPECT_EQ(interactionAllowed(), interaction);
     auto reopened = makeNativeCredentialVault(installation);
     const auto restored = reopened->recall(binding, reference);
+    EXPECT_EQ(interactionAllowed(), interaction);
     ASSERT_TRUE(restored);
     EXPECT_EQ(restored->username, credentials.username);
     EXPECT_EQ(restored->password, credentials.password);
@@ -72,6 +82,7 @@ TEST(MacVault, NativeRoundTripBindingCreateOnlyAndOwnedRemoval) {
     } catch (const CredentialVaultError& error) {
         EXPECT_EQ(error.failure(), CredentialVaultFailure::AlreadyExists);
     }
+    EXPECT_EQ(interactionAllowed(), interaction);
     for (int change = 0; change < 3; ++change) {
         auto other = binding;
         if (change == 0)
@@ -88,6 +99,24 @@ TEST(MacVault, NativeRoundTripBindingCreateOnlyAndOwnedRemoval) {
     EXPECT_TRUE(reopened->forget(binding, reference));
     EXPECT_FALSE(reopened->recall(binding, reference));
     EXPECT_FALSE(reopened->forget(binding, reference));
+    EXPECT_EQ(interactionAllowed(), interaction);
+}
+TEST(MacVault, PreservesAlreadyDisabledInteraction) {
+    const auto original = interactionAllowed();
+    struct Restore {
+        Boolean original;
+        ~Restore() { SecKeychainSetUserInteractionAllowed(original); }
+    } restore{original};
+    ASSERT_EQ(SecKeychainSetUserInteractionAllowed(false), errSecSuccess);
+    const auto installation = id();
+    auto vault = makeNativeCredentialVault(installation);
+    const ProxyCredentialBinding binding{"standalone", "http://127.0.0.1:3128", id()};
+    const auto reference = vault->remember(binding, credentials);
+    EXPECT_FALSE(interactionAllowed());
+    EXPECT_TRUE(vault->recall(binding, reference));
+    EXPECT_FALSE(interactionAllowed());
+    EXPECT_TRUE(vault->forget(binding, reference));
+    EXPECT_FALSE(interactionAllowed());
 }
 TEST(MacFiles, ExclusiveDirectoryRenamePreservesExistingDestination) {
     QTemporaryDir directory;
@@ -158,10 +187,13 @@ int vaultMode(const QStringList& arguments) {
     if (arguments.size() != 3)
         return 2;
     QFile file(arguments[2]);
+    const auto interaction = interactionAllowed();
     if (arguments[1] == "--seed-vault") {
         const auto installation = id();
         const ProxyCredentialBinding binding{"standalone", "http://127.0.0.1:3128", id()};
         const auto reference = makeNativeCredentialVault(installation)->remember(binding, credentials);
+        if (interactionAllowed() != interaction)
+            return 6;
         const QJsonObject record{{"installation", QString::fromStdString(installation)},
                                  {"reference", QString::fromStdString(reference)},
                                  {"nonce", QString::fromStdString(binding.ownershipNonce)}};
@@ -178,6 +210,8 @@ int vaultMode(const QStringList& arguments) {
         makeNativeCredentialVault(record["installation"].toString().toStdString())
             ->recall(binding, record["reference"].toString().toStdString());
     } catch (const CredentialVaultError& error) {
+        if (interactionAllowed() != interaction)
+            return 6;
         return error.failure() == CredentialVaultFailure::Unavailable ||
                        error.failure() == CredentialVaultFailure::AccessDenied
                    ? 0
