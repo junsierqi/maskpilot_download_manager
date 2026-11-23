@@ -1,8 +1,14 @@
 name: Linux
-on: [push, pull_request]
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+concurrency:
+  group: linux-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   verify:
     runs-on: ubuntu-24.04
+    timeout-minutes: 90
     container:
       image: ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db
     steps:
@@ -13,20 +19,26 @@ jobs:
             ca-certificates git build-essential cmake ninja-build pkg-config \
             qt6-base-dev qt6-svg-dev libcurl4-openssl-dev libssh2-1-dev \
             libtorrent-rasterbar-dev libxml2-dev libsqlite3-dev libgtest-dev libssl-dev openssl \
-            libsecret-1-dev gnome-keyring dbus-x11 python3-venv ffmpeg nodejs npm tini \
+            libsecret-1-dev gnome-keyring dbus-x11 python3-venv ffmpeg tini \
             xvfb xauth fonts-noto-cjk
       - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
       - name: Verify as an isolated non-root user
         run: |
           useradd --create-home --uid 10001 builder
           chown -R 10001:10001 "$GITHUB_WORKSPACE"
-          runuser -u builder -- bash -c '
+          node_bin=$(dirname "$(command -v node)")
+          runuser -u builder -- env MASKPILOT_NODE_DIR="$node_bin" bash -c '
             set -euo pipefail
             python3 -m venv out/python-linux
             out/python-linux/bin/python -m pip install -r tests/requirements.txt yt-dlp==2026.10.26
             mkdir -p out/qa
-            export PATH="$PWD/out/python-linux/bin:/usr/local/bin:/usr/bin:/bin"
+            export PATH="$PWD/out/python-linux/bin:$MASKPILOT_NODE_DIR:/usr/local/bin:/usr/bin:/bin"
             export PYTHON="$PWD/out/python-linux/bin/python"
+            node --version
+            npm --version
             trap "tail -n 100 out/qa/linux-ci.log" EXIT
             tini -s -- sh scripts/verify-linux.sh 2>&1 | tee out/qa/linux-ci.log
           '
