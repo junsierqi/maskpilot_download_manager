@@ -46,8 +46,33 @@ jobs:
       - name: Install native development dependencies
         run: |
           brew update
-          brew install cmake ninja pkgconf boost curl libxml2 sqlite googletest openssl@3
-          brew upgrade curl
+          for sdk_package in cmake ninja pkgconf boost curl libxml2 sqlite googletest openssl@3; do
+            sdk_prefix=$(brew --prefix "$sdk_package")
+            if [ -d "$sdk_prefix" ]; then
+              printf 'Retaining installed SDK: %s\n' "$sdk_package"
+            else
+              brew install "$sdk_package"
+            fi
+          done
+          network_ready() {
+            network_prefix=$(brew --prefix curl)
+            "$network_prefix/bin/curl" --version | python -c '
+          import re, sys
+          text = sys.stdin.read()
+          versions = re.search(r"^curl ([0-9.]+).*libcurl/([0-9.]+)", text)
+          required = {"http", "https", "ftp", "ftps", "sftp"}
+          protocols = next((set(line.split()[1:]) for line in text.splitlines() if line.startswith("Protocols:")), set())
+          compatible = versions and all(tuple(map(int, value.split("."))) >= (8, 22, 0) for value in versions.groups())
+          ready = compatible and required <= protocols
+          if not ready:
+              print("Native network SDK requires client/runtime 8.22+ and HTTP/HTTPS/FTP/FTPS/SFTP.", file=sys.stderr)
+          sys.exit(0 if ready else 1)
+          '
+          }
+          if ! network_ready; then
+            brew upgrade curl
+          fi
+          network_ready
       - name: Prepare isolated Python test tools
         run: |
           python -m venv out/python-macos
