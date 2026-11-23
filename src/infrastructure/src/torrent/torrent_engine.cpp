@@ -37,6 +37,8 @@
 #include <linux/fs.h>
 #include <sys/syscall.h>
 #include <unistd.h>
+#elif defined(__APPLE__)
+#include <stdio.h>
 #endif
 
 namespace maskpilot {
@@ -212,6 +214,9 @@ void publish(Storage& storage) {
                 RENAME_NOREPLACE) != 0)
         throw std::runtime_error(
             "Cannot publish torrent directory. Existing destination and staged files were preserved.");
+#elif defined(__APPLE__)
+    if (renamex_np(storage.stage.c_str(), storage.final.c_str(), RENAME_EXCL) != 0)
+        throw std::runtime_error("Cannot publish completed torrent. Existing files were preserved.");
 #else
     throw std::runtime_error("Atomic torrent publication is not supported on this platform.");
 #endif

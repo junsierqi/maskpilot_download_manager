@@ -31,6 +31,20 @@
         "CMAKE_BUILD_TYPE": "Release",
         "BUILD_TESTING": "ON"
       }
+    },
+    {
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "BUILD_TESTING": "ON"
+      },
+      "name": "macos-clang-release",
+      "condition": {
+        "lhs": "${hostSystemName}",
+        "type": "equals",
+        "rhs": "Darwin"
+      },
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/out/build/${presetName}"
     }
   ],
   "buildPresets": [
@@ -46,6 +60,11 @@
       "name": "linux-gcc-release",
       "configurePreset": "linux-gcc-release",
       "jobs": 1
+    },
+    {
+      "jobs": 2,
+      "name": "macos-clang-release",
+      "configurePreset": "macos-clang-release"
     }
   ],
   "testPresets": [
@@ -72,6 +91,16 @@
       "output": {
         "outputOnFailure": true
       }
+    },
+    {
+      "output": {
+        "outputOnFailure": true
+      },
+      "environment": {
+        "QT_QPA_PLATFORM": "offscreen"
+      },
+      "name": "macos-clang-release",
+      "configurePreset": "macos-clang-release"
     }
   ]
 }

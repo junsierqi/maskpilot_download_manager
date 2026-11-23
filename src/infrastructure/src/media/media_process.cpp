@@ -80,6 +80,12 @@ std::filesystem::path ownedGuardDirectory() {
         throw std::runtime_error("Cannot locate the owned media guard.");
     const auto directory = std::filesystem::path(std::wstring(module.data(), length)).parent_path();
     constexpr auto ffmpegName = "ffmpeg.exe", ffprobeName = "ffprobe.exe";
+#elif defined(__APPLE__)
+    const auto executable = std::filesystem::path(QCoreApplication::applicationFilePath().toStdU16String());
+    if (executable.empty() || !executable.is_absolute())
+        throw std::runtime_error("Cannot locate the owned media guard.");
+    const auto directory = executable.parent_path();
+    constexpr auto ffmpegName = "ffmpeg", ffprobeName = "ffprobe";
 #else
     std::error_code error;
     const auto executable = std::filesystem::read_symlink("/proc/self/exe", error);

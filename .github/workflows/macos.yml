@@ -1,0 +1,66 @@
+name: macOS
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: macos-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    name: Native ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: '1'
+      MASKPILOT_MACOS_ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.11.3'
+          arch: clang_64
+          aqtsource: 'git+https://github.com/miurahr/aqtinstall.git@5a49f2b391ae8ee1d3c0dd87f8b33c1d49a4deb7'
+          archives: 'qtbase qtsvg qttools qttranslations'
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install native development dependencies
+        run: brew install cmake ninja pkgconf boost curl libxml2 sqlite googletest openssl@3
+      - name: Prepare isolated Python test tools
+        run: |
+          python -m venv out/python-macos
+          out/python-macos/bin/python -m pip install -r tests/requirements.txt
+      - name: Build every target and qualify native paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out/qa
+          export PYTHON="$PWD/out/python-macos/bin/python"
+          trap 'tail -n 120 out/qa/macos-ci.log' EXIT
+          bash scripts/verify-macos.sh > out/qa/macos-ci.log 2>&1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: macos-${{ matrix.arch }}-qualification
+          if-no-files-found: warn
+          path: |
+            out/qa/macos-*.txt
+            out/qa/macos-ci.log
+            out/qa/macos-*-unpackaged.tar.gz
+            out/build/macos-clang-release/Testing/Temporary/*.log
+            out/build/macos-clang-release/CMakeFiles/CMakeConfigureLog.yaml

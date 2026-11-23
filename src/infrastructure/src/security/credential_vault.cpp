@@ -20,6 +20,9 @@
 #include <QUuid>
 #include <algorithm>
 #include <memory>
+#ifdef __APPLE__
+#include "macos_keychain.h"
+#endif
 #ifdef _WIN32
 #include <Windows.h>
 #include <wincred.h>
@@ -458,6 +461,93 @@ class NativeVault final : public ICredentialVault {
             throw CredentialVaultError(CredentialVaultFailure::Storage,
                                        "Cannot remove owned credential item");
         return true;
+    }
+};
+#elif defined(__APPLE__)
+class NativeVault final : public ICredentialVault {
+    std::string installation_;
+    QJsonObject decode(const QByteArray& bytes, const ProxyCredentialBinding& binding) const {
+        const auto document = QJsonDocument::fromJson(bytes);
+        const auto object = document.object();
+        if (!document.isObject() || object["version"].toInt() != 1 || !object["owner"].isString() ||
+            !object["route"].isString() || !object["nonce"].isString() || !object["username"].isString() ||
+            !object["password"].isString() ||
+            (!object["nonce"].toString().isEmpty() && !opaqueId(object["nonce"].toString().toStdString())))
+            throw CredentialVaultError(CredentialVaultFailure::Corrupt, "Invalid keychain entry");
+        if (object["owner"].toString() != text(binding.ownerId) ||
+            object["route"].toString() != text(route(binding)) ||
+            object["nonce"].toString() != text(binding.ownershipNonce))
+            throw CredentialVaultError(CredentialVaultFailure::Binding,
+                                       "Credential vault binding does not match");
+        DownloadSpec spec;
+        spec.proxy = binding.proxyEndpoint;
+        spec.proxyUsername = object["username"].toString().toStdString();
+        spec.proxyPassword = object["password"].toString().toStdString();
+        spec.proxyAuthenticationRequired = true;
+        if (!validateProxy(spec, true).empty())
+            throw CredentialVaultError(CredentialVaultFailure::Corrupt, "Invalid keychain entry");
+        return object;
+    }
+
+  public:
+    explicit NativeVault(std::string installation) : installation_(std::move(installation)) {}
+    std::string remember(const ProxyCredentialBinding& binding,
+                         const ProxyCredentials& credentials) override {
+        const auto reference = QUuid::createUuid().toString(QUuid::Id128).toStdString();
+        store(reference, binding, credentials);
+        return reference;
+    }
+    void store(const std::string& reference, const ProxyCredentialBinding& binding,
+               const ProxyCredentials& credentials) override {
+        const auto canonical = route(binding);
+        DownloadSpec spec;
+        spec.proxy = binding.proxyEndpoint;
+        spec.proxyUsername = credentials.username;
+        spec.proxyPassword = credentials.password;
+        spec.proxyAuthenticationRequired = true;
+        if (!validateProxy(spec, true).empty())
+            invalid();
+        auto bytes = QJsonDocument(QJsonObject{{"version", 1},
+                                               {"owner", text(binding.ownerId)},
+                                               {"route", text(canonical)},
+                                               {"nonce", text(binding.ownershipNonce)},
+                                               {"username", text(credentials.username)},
+                                               {"password", text(credentials.password)}})
+                         .toJson(QJsonDocument::Compact);
+        struct Wipe {
+            QByteArray& data;
+            ~Wipe() { data.fill('\0'); }
+        } wipe{bytes};
+        const security::MacKeychainLock lock(installation_, reference);
+        security::addKeychain(installation_, reference, bytes);
+    }
+    std::optional<ProxyCredentials> recall(const ProxyCredentialBinding& binding,
+                                           const std::string& reference) override {
+        route(binding);
+        const security::MacKeychainLock lock(installation_, reference);
+        auto entry = security::readKeychain(installation_, reference);
+        if (!entry)
+            return {};
+        struct Wipe {
+            QByteArray& data;
+            ~Wipe() { data.fill('\0'); }
+        } wipe{entry->bytes};
+        const auto object = decode(entry->bytes, binding);
+        return ProxyCredentials{object["username"].toString().toStdString(),
+                                object["password"].toString().toStdString()};
+    }
+    bool forget(const ProxyCredentialBinding& binding, const std::string& reference) override {
+        route(binding);
+        const security::MacKeychainLock lock(installation_, reference);
+        auto entry = security::readKeychain(installation_, reference);
+        if (!entry)
+            return false;
+        struct Wipe {
+            QByteArray& data;
+            ~Wipe() { data.fill('\0'); }
+        } wipe{entry->bytes};
+        decode(entry->bytes, binding);
+        return security::removeKeychain(*entry);
     }
 };
 #else

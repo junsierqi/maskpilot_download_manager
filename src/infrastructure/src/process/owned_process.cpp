@@ -2,6 +2,9 @@
 #include <array>
 #include <stdexcept>
 #include <vector>
+#ifdef __APPLE__
+#include "macos_process_group.h"
+#endif
 #ifdef _WIN32
 #include <windows.h>
 #elif defined(__linux__)
@@ -15,6 +18,9 @@
 #endif
 namespace maskpilot::process {
 struct OwnedProcessGroup::Impl {
+#ifdef __APPLE__
+    MacProcessGroup mac_;
+#endif
 #ifdef _WIN32
     struct Handle {
         HANDLE value = nullptr;
@@ -161,8 +167,10 @@ struct OwnedProcessGroup::Impl {
                 process.kill();
         });
         finished_ = QObject::connect(&process, &QProcess::finished, &process, [this] { killGroup(); });
+#elif defined(__APPLE__)
+        mac_.prepare(process);
 #else
-        (void)process;
+        throw std::runtime_error("Private helper lifetime isolation is unsupported on this platform.");
 #endif
     }
     void stop(QProcess& process) {
@@ -172,6 +180,8 @@ struct OwnedProcessGroup::Impl {
         killGroup();
         if (pidfd_ < 0 && process.state() != QProcess::NotRunning)
             process.kill();
+#elif defined(__APPLE__)
+        mac_.stop(process);
 #else
         process.kill();
 #endif

@@ -129,6 +129,24 @@ def child_gone(identity_path, scanner):
     """Only terminate a leaked fixture child after exact image and creation-time checks."""
     assert identity_path.is_file(), 'Owned scanner did not start its actual descendant'
     value = json.loads(identity_path.read_text(encoding='utf-8'))
+    if sys.platform == 'darwin':
+        # Observe only: no numeric-PID signal can be made atomic with an identity
+        # check on Darwin. The disposable CI VM reclaims a failed fixture.
+        assert type(value['pid']) is int and value['pid'] > 1
+        assert Path(value['program']).resolve() == scanner.resolve()
+        deadline = time.monotonic() + 5
+        while True:
+            result = subprocess.run(['/bin/ps', '-ww', '-p', str(value['pid']), '-o', 'stat=', '-o', 'command='],
+                                    capture_output=True, text=True, timeout=5)
+            fields = result.stdout.strip().split(None, 1)
+            if result.returncode == 1 and not fields:
+                return
+            assert result.returncode == 0 and len(fields) == 2, 'Cannot inspect owned Darwin descendant'
+            state, command = fields
+            if state.startswith('Z') or str(identity_path) not in command or str(scanner) not in command:
+                return  # Original child exited; never touch a reused PID.
+            assert time.monotonic() < deadline, 'Owned scanner descendant survived owner termination'
+            time.sleep(.05)
     if sys.platform == 'linux':
         try:
             handle = os.pidfd_open(value['pid'])

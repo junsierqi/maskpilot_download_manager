@@ -1,5 +1,9 @@
 # 验证场景
 
+## macOS 验证入口（待实际运行）
+
+GitHub `macOS` 工作流分别构建 arm64／x86_64 的全部目标，执行显式核心测试集、浏览器扩展单元测试及 `macos_platform_product_path`；后者使用真实钥匙串、无覆盖目录发布、本地种子和实际进程树验证。CI 钥匙串在临时目录隔离，失败也恢复原搜索列表及默认项；`macos_ci_fixture` 仅证明该脚本的模拟故障／恢复流程，不替代原生结果。首次实际编译、运行及视觉资格仍未证明；详见 [macOS 验收](macos-acceptance.md)。
+
 ## Linux 原生验证
 
 以普通用户运行 `sh scripts/verify-linux.sh`，使用 `linux-gcc-release` 预设、独立 HOME／会话总线／加密测试钥匙串，完成原生构建、扩展、完整 CTest 和真实媒体专项。`linux_package_product_path` 验证实际安装字节、完整许可证、内部库链接、禁止覆盖输出以及移出构建目录后的 Qt／浏览器桥接／BT CLI；它清除开发运行库路径，不冒充干净系统认证。

@@ -12,6 +12,7 @@ import socketserver
 import sqlite3
 import struct
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -81,6 +82,24 @@ def desktop_autostart(host,desktop,root,environment):
                             assert kernel.TerminateProcess(handle,130)
                             assert kernel.WaitForSingleObject(handle,5000)==0
                     finally: kernel.CloseHandle(handle)
+            elif sys.platform == 'darwin':
+                # This detached desktop is not a Popen child. Restrict fixture
+                # cleanup to its exact executable and unique private directory.
+                def owned_desktop():
+                    result=subprocess.run(['/bin/ps','-ww','-p',str(pid),'-o','stat=','-o','command='],
+                                          capture_output=True,text=True,timeout=5)
+                    fields=result.stdout.strip().split(None,1)
+                    if result.returncode==1 and not fields:return False
+                    assert result.returncode==0 and len(fields)==2,'Cannot inspect owned macOS desktop'
+                    state,command=fields
+                    return not state.startswith('Z') and str(copied_desktop) in command and str(data) in command
+                for requested_signal in (signal.SIGTERM,signal.SIGKILL):
+                    if not owned_desktop():break
+                    try:os.kill(pid,requested_signal)
+                    except ProcessLookupError:break
+                    deadline=time.monotonic()+5
+                    while owned_desktop() and time.monotonic()<deadline:time.sleep(.05)
+                assert not owned_desktop(),'Owned macOS auto-start desktop cleanup failed'
             else:
                 try: descriptor=os.pidfd_open(pid)
                 except ProcessLookupError: descriptor=None

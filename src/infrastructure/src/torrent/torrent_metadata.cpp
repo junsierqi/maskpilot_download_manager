@@ -16,11 +16,15 @@
 #include <string_view>
 #ifdef _WIN32
 #include <windows.h>
-#elif defined(__linux__)
+#elif defined(__linux__) || defined(__APPLE__)
 #include <cerrno>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#endif
+#ifdef __APPLE__
+#include <cstring>
+#include <sys/mount.h>
 #endif
 
 namespace maskpilot::torrent_internal {
@@ -156,6 +160,53 @@ bool localMount(const std::filesystem::path& path) {
            bestType == "btrfs" || bestType == "tmpfs" || bestType == "ramfs" || bestType == "overlay" ||
            bestType == "f2fs" || bestType == "zfs";
 }
+#endif
+#ifdef __APPLE__
+bool localMount(const std::filesystem::path& path) {
+    // A nonblocking mount snapshot rejects known network/automounter sources before traversal.
+    const auto candidate = path.native();
+    if (candidate == "/Network" || candidate.starts_with("/Network/") || candidate == "/net" ||
+        candidate.starts_with("/net/") || candidate == "/home" || candidate.starts_with("/home/"))
+        return false;
+    const int count = getfsstat(nullptr, 0, MNT_NOWAIT);
+    if (count <= 0 || count > 4096)
+        return false;
+    std::vector<struct statfs> mounts(static_cast<std::size_t>(count) + 1);
+    const auto found =
+        getfsstat(mounts.data(), static_cast<int>(mounts.size() * sizeof(struct statfs)), MNT_NOWAIT);
+    if (found <= 0 || found >= static_cast<int>(mounts.size()))
+        return false;
+    std::size_t best = 0;
+    bool local = false;
+    for (int index = 0; index < found; ++index) {
+        const auto& mount = mounts[static_cast<std::size_t>(index)];
+        const auto length = strnlen(mount.f_mntonname, sizeof(mount.f_mntonname));
+        if (length == sizeof(mount.f_mntonname))
+            return false;
+        const std::string point(mount.f_mntonname, length);
+        if ((point == "/" || candidate == point || candidate.starts_with(point + "/")) && length >= best) {
+            best = length;
+            local = (mount.f_flags & MNT_LOCAL) && (std::strcmp(mount.f_fstypename, "apfs") == 0 ||
+                                                    std::strcmp(mount.f_fstypename, "hfs") == 0 ||
+                                                    std::strcmp(mount.f_fstypename, "msdos") == 0 ||
+                                                    std::strcmp(mount.f_fstypename, "exfat") == 0 ||
+                                                    std::strcmp(mount.f_fstypename, "tmpfs") == 0);
+        }
+    }
+    // Unmounted names under /Volumes must not trigger an implicit mount.
+    if (candidate.starts_with("/Volumes/") && best <= std::string("/Volumes").size())
+        return false;
+    return local;
+}
+bool localDescriptor(int descriptor) {
+    struct statfs mount{};
+    return fstatfs(descriptor, &mount) == 0 && (mount.f_flags & MNT_LOCAL) &&
+           (std::strcmp(mount.f_fstypename, "apfs") == 0 || std::strcmp(mount.f_fstypename, "hfs") == 0 ||
+            std::strcmp(mount.f_fstypename, "msdos") == 0 || std::strcmp(mount.f_fstypename, "exfat") == 0 ||
+            std::strcmp(mount.f_fstypename, "tmpfs") == 0);
+}
+#endif
+#if defined(__linux__) || defined(__APPLE__)
 struct Descriptor {
     int value = -1;
     explicit Descriptor(int descriptor) : value(descriptor) {}
@@ -231,9 +282,9 @@ TorrentMetadata readLocalMetadata(const std::string& source) {
         read != bytes->size())
         throw std::invalid_argument("Cannot read the bounded local torrent file.");
     return bytes;
-#elif defined(__linux__)
+#elif defined(__linux__) || defined(__APPLE__)
     constexpr auto error = "Choose a regular torrent file on a supported local disk without symlinks.";
-    const auto path = nativePath(source);
+    auto path = nativePath(source);
     const auto unicodeSource = QString::fromUtf8(source.data(), static_cast<qsizetype>(source.size()));
     if (!path.is_absolute() || path.filename().empty() || path.lexically_normal() != path ||
         unicodeSource.toUtf8().toStdString() != source ||
@@ -241,11 +292,25 @@ TorrentMetadata readLocalMetadata(const std::string& source) {
         std::any_of(source.begin(), source.end(), [](unsigned char c) { return c < 32 || c == 127; }) ||
         !localMount(path))
         throw std::invalid_argument(error);
+#ifdef __APPLE__
+    // Darwin's standard temporary roots are system aliases, not arbitrary user symlinks.
+    if (source.starts_with("/var/") || source.starts_with("/tmp/"))
+        path = std::filesystem::path("/private") / path.relative_path();
+    if (!localMount(path))
+        throw std::invalid_argument(error);
+#endif
     Descriptor directory{open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC)};
     if (directory.value < 0)
         throw std::invalid_argument(error);
     std::filesystem::path cursor("/");
+#ifdef __APPLE__
+    std::size_t components = 0;
+#endif
     for (const auto& part : path.parent_path().relative_path()) {
+#ifdef __APPLE__
+        if (++components > 256 || !localDescriptor(directory.value))
+            throw std::invalid_argument(error);
+#endif
         cursor /= part;
         if (!localMount(cursor))
             throw std::invalid_argument(error);
@@ -258,6 +323,10 @@ TorrentMetadata readLocalMetadata(const std::string& source) {
     Descriptor file{
         openat(directory.value, path.filename().c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)};
     struct stat before{}, after{};
+#ifdef __APPLE__
+    if (file.value >= 0 && !localDescriptor(file.value))
+        throw std::invalid_argument(error);
+#endif
     if (file.value < 0 || fstat(file.value, &before) != 0 || !S_ISREG(before.st_mode) ||
         before.st_size <= 0 || static_cast<std::uint64_t>(before.st_size) > maxTorrentMetadataBytes)
         throw std::invalid_argument(error);
@@ -272,9 +341,16 @@ TorrentMetadata readLocalMetadata(const std::string& source) {
         offset += static_cast<std::size_t>(count);
     }
     if (fstat(file.value, &after) != 0 || before.st_dev != after.st_dev || before.st_ino != after.st_ino ||
-        before.st_size != after.st_size || before.st_mtim.tv_sec != after.st_mtim.tv_sec ||
-        before.st_mtim.tv_nsec != after.st_mtim.tv_nsec || before.st_ctim.tv_sec != after.st_ctim.tv_sec ||
-        before.st_ctim.tv_nsec != after.st_ctim.tv_nsec)
+        before.st_size != after.st_size ||
+#ifdef __APPLE__
+        before.st_mtimespec.tv_sec != after.st_mtimespec.tv_sec ||
+        before.st_mtimespec.tv_nsec != after.st_mtimespec.tv_nsec ||
+        before.st_ctimespec.tv_sec != after.st_ctimespec.tv_sec ||
+        before.st_ctimespec.tv_nsec != after.st_ctimespec.tv_nsec)
+#else
+        before.st_mtim.tv_sec != after.st_mtim.tv_sec || before.st_mtim.tv_nsec != after.st_mtim.tv_nsec ||
+        before.st_ctim.tv_sec != after.st_ctim.tv_sec || before.st_ctim.tv_nsec != after.st_ctim.tv_nsec)
+#endif
         throw std::invalid_argument("Local torrent metadata changed while being captured.");
     return bytes;
 #else

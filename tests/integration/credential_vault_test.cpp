@@ -282,7 +282,7 @@ TEST(CredentialVault, MissingLinuxSecretServiceFailsExplicitly) {
         vault->store(randomId(), {"standalone", "http://proxy.example"}, {"user", "password"});
     });
 }
-#else
+#elif !defined(__APPLE__)
 TEST(CredentialVault, UnsupportedPlatformFailsExplicitly) {
     auto vault = makeNativeCredentialVault(randomId());
     expectFailure(CredentialVaultFailure::Unavailable,

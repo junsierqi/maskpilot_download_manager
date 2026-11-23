@@ -94,7 +94,7 @@ class CompletionScanner final : public ICompletionScanner {
         std::transform(extension.begin(), extension.end(), extension.begin(), ::towlower);
         if (extension != L".exe")
             throw std::invalid_argument("Choose a trusted .exe scanner; shell scripts are not supported.");
-#elif defined(__linux__)
+#elif defined(__linux__) || defined(__APPLE__)
         if (!QFileInfo(QString::fromStdU16String(options_.program.u16string())).isExecutable())
             throw std::invalid_argument("Choose a trusted scanner with executable permission.");
 #endif

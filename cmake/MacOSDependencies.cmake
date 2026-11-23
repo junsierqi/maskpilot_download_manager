@@ -1,0 +1,13 @@
+# Use the explicitly selected native SDK, never the reduced system curl/SQLite.
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+  message(FATAL_ERROR "macOS dependencies require a native Darwin toolchain")
+endif()
+find_package(CURL REQUIRED COMPONENTS HTTP HTTPS FTP FTPS SFTP)
+find_package(SQLite3 REQUIRED)
+if(NOT TARGET unofficial::sqlite3::sqlite3)
+  add_library(unofficial::sqlite3::sqlite3 ALIAS SQLite::SQLite3)
+endif()
+find_package(LibXml2 2.14 REQUIRED)
+find_package(OpenSSL REQUIRED)
+include("${CMAKE_CURRENT_LIST_DIR}/TorrentDependency.cmake")
+maskpilot_find_torrent()

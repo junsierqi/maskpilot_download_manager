@@ -35,4 +35,11 @@ if(WIN32)
   target_link_libraries(maskpilot_infrastructure PRIVATE bcrypt advapi32)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_link_libraries(maskpilot_infrastructure PRIVATE PkgConfig::LIBSECRET)
+elseif(APPLE)
+  target_sources(maskpilot_infrastructure PRIVATE
+    src/process/macos_process_group.cpp src/security/macos_keychain.cpp)
+  find_library(MASKPILOT_SECURITY_FRAMEWORK Security REQUIRED)
+  find_library(MASKPILOT_COREFOUNDATION_FRAMEWORK CoreFoundation REQUIRED)
+  target_link_libraries(maskpilot_infrastructure PRIVATE
+    ${MASKPILOT_SECURITY_FRAMEWORK} ${MASKPILOT_COREFOUNDATION_FRAMEWORK})
 endif()

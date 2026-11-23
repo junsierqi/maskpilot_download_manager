@@ -14,6 +14,8 @@
 #include <fcntl.h>
 #include <sys/syscall.h>
 #include <unistd.h>
+#elif defined(__APPLE__)
+#include <stdio.h>
 #endif
 
 namespace maskpilot {
@@ -176,6 +178,9 @@ void renameNew(const fs::path& source, const fs::path& target) {
         reject();
 #elif defined(__linux__)
     if (syscall(SYS_renameat2, AT_FDCWD, source.c_str(), AT_FDCWD, target.c_str(), 1) != 0)
+        reject();
+#elif defined(__APPLE__)
+    if (renamex_np(source.c_str(), target.c_str(), RENAME_EXCL) != 0)
         reject();
 #else
     (void)source;

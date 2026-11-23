@@ -43,6 +43,20 @@ target_link_libraries(maskpilot_tests PRIVATE maskpilot_application maskpilot_in
 include(GoogleTest)
 gtest_discover_tests(maskpilot_tests DISCOVERY_MODE PRE_TEST WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
+add_test(NAME macos_ci_fixture COMMAND ${Python3_EXECUTABLE}
+  ${CMAKE_CURRENT_SOURCE_DIR}/unit/macos_ci_test.py)
+set_tests_properties(macos_ci_fixture PROPERTIES TIMEOUT 30)
+if(APPLE)
+  add_executable(maskpilot_macos_platform_tests macos/platform_test.cpp)
+  target_link_libraries(maskpilot_macos_platform_tests PRIVATE maskpilot_infrastructure GTest::gtest)
+  add_executable(maskpilot_macos_process_fixture macos/process_fixture.cpp)
+  target_link_libraries(maskpilot_macos_process_fixture PRIVATE maskpilot_options)
+  add_test(NAME macos_platform_product_path COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/macos/platform_fixture.py
+    --platform $<TARGET_FILE:maskpilot_macos_platform_tests>
+    --helper $<TARGET_FILE:maskpilot_macos_process_fixture>)
+  set_tests_properties(macos_platform_product_path PROPERTIES TIMEOUT 120)
+endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_test(NAME linux_package_product_path COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/system/linux_package_test.py --build-directory ${CMAKE_BINARY_DIR})
