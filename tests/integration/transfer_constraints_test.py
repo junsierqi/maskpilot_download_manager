@@ -65,6 +65,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         value = self.headers.get('Range', '')
         with self.server.lock:
             self.server.requests.append(dict(route=route, range=value))
+        if route == '/empty-response':
+            self.close_connection = True
+            return
         locations = {
             '/docs': '/docs/index.html',
             '/redirect-foreign': self.server.foreign + '/foreign',
@@ -154,6 +157,25 @@ def completed(result, target, data, state, context=None):
     return saved
 
 
+def diagnose_virtual_ipv6(proxy):
+    client = os.environ.get('MASKPILOT_TEST_HTTP_CLIENT')
+    if not client:
+        return
+    # Only a hardcoded owned fixture URL, with no curlrc, credentials, headers,
+    # response body, ambient bypass or unbounded wait. Never changes acceptance.
+    try:
+        result = subprocess.run([client, '--disable', '--silent', '--show-error', '--globoff',
+                                 '--connect-timeout', '3', '--max-time', '5', '--location', '--max-redirs', '5',
+                                 '--noproxy', '', '--proxy', proxy.url(), '--output', os.devnull,
+                                 '--write-out', 'HTTP=%{response_code}',
+                                 'http://[0:0:0:0:0:0:0:1]/redirect-ipv6'],
+                                capture_output=True, text=True, timeout=7)
+        print('Owned IPv6 client comparison:', result.returncode, result.stdout[:4096],
+              result.stderr[:4096], flush=True)
+    except (OSError, subprocess.SubprocessError) as error:
+        print('Owned IPv6 comparison unavailable:', type(error).__name__, flush=True)
+
+
 def rejected(result, target, state):
     assert result.returncode == 1, (result.stdout, result.stderr)
     assert not target.exists()
@@ -200,6 +222,12 @@ def exercise(executable):
             assert len(origin.hits('/known')) == before + 1, 'Known oversize launched a body request'
             assert not (state / 'parts' / row(state)['id']).exists(), 'Known oversize created recovery work'
             print('PASS exact known size and declared oversize rejection before body/cache', flush=True)
+
+            result, state, target = run('empty-response', '/empty-response', len(SMALL))
+            assert result.returncode == 1 and not target.exists(), (result.stdout, result.stderr)
+            assert row(state)['state'] == 10 and row(state)['downloaded'] == 0
+            assert 'Network request failed:' in result.stderr and 'HTTP 0' not in result.stderr
+            print('PASS no-response transport failure retains its native category without publication', flush=True)
 
             for route in ('/chunked', '/unknown'):
                 result, state, target = run(route[1:] + '-exact', route, len(SMALL))
@@ -297,6 +325,8 @@ def exercise(executable):
                 assert final.hostname == 'constraint.invalid' and final.port == 80 and final.path == '/final'
                 result, state, target = run(kind + '-ipv6', 'http://[0:0:0:0:0:0:0:1]/redirect-ipv6',
                                             len(SMALL), '--same-origin-redirects', '--proxy', proxy.url())
+                if result.returncode:
+                    diagnose_virtual_ipv6(proxy)
                 completed(result, target, SMALL, state, (kind, 'ipv6', proxy.snapshot()))
                 assert proxy.snapshot()['destinations']
                 print(f'PASS {kind} virtual default-port and expanded IPv6 routing', flush=True)

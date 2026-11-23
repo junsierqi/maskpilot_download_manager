@@ -549,6 +549,12 @@ class CurlTransfer final : public ITransferTransport {
             return;
         event.total = remote.total;
         event.retryAfter = remote.retryAfter;
+        if (remote.status == 0 && remote.code != CURLE_OK) {
+            report(TransferOutcome::Failed,
+                   "Network request failed: " + std::string(curl_easy_strerror(remote.code)) + ".",
+                   retryCode(remote.code));
+            return;
+        }
         if (remote.status != 200 && remote.status != 206 && !(remote.status == 416 && remote.total == 0)) {
             report(remote.status == 401 || remote.status == 403 ? TransferOutcome::Attention
                                                               : TransferOutcome::Failed,

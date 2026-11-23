@@ -32,6 +32,7 @@ npm --prefix browser_extension ci --ignore-scripts
 npm --prefix browser_extension test
 export QT_QPA_PLATFORM=offscreen
 export MASKPILOT_TEST_CLI="$(cd "$build" && pwd)/maskpilot_cli"
+export MASKPILOT_TEST_HTTP_CLIENT="$(brew --prefix curl)/bin/curl"
 # Official Qt can dynamically load OpenSSL; its Homebrew keg is not in /usr/lib.
 export DYLD_LIBRARY_PATH="$(brew --prefix openssl@3)/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
 # Native cases include domain/UI/storage/torrent/scanner/crypto. Optional full
