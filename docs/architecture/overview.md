@@ -37,11 +37,11 @@ Domain/application source does not depend on QWidget, curl, SQLite, or OS creden
 3. Routing selects native file, BT, trusted media helper, or native live adapters. Login material remains in memory/private input; persistence stores public configuration, requirement flags, and explicitly approved vault references.
 4. Content is staged in owned files/directories, checked for resource identity/integrity, optionally scanned, and published without replacement. Pause, cancellation, errors, late callbacks, and restart are reconciled by the state machine rather than forced into success.
 
-Site projects reuse the download coordinator and an atomic manifest for preview, children, and immutable revisions; there is no separate network engine. Browser recovery uses bounded original-task sessions to refresh links/login without expanding context authority. See the [browser interface](../protocols/browser.md) and [task list contract](../protocols/task-list.md).
+Site projects reuse the download coordinator and an atomic manifest for preview, children, and immutable revisions; there is no separate network engine. Committed summaries and changed immutable details are published under one view lock, preventing a completed detail from preceding its committed summary. Browser recovery uses bounded original-task sessions to refresh links/login without expanding context authority. See the [browser interface](../protocols/browser.md) and [task list contract](../protocols/task-list.md).
 
 ## Platform and validation boundaries
 
-Platform differences live mainly in native dependencies, credential vaults, process lifetime, and publication adapters. Windows uses Credential Manager/job objects; Linux uses Secret Service/session/pidfd protection; macOS has Keychain, EOF guardian, and exclusive publication code, with real compilation/runtime still pending CI qualification. No plaintext vault fallback is provided. Helpers must be trusted; lifetime controls are not a hostile-code sandbox.
+Platform differences live mainly in native dependencies, credential vaults, process lifetime, and publication adapters. Windows uses Credential Manager/job objects; Linux uses Secret Service/session/pidfd protection; macOS has Keychain, EOF guardian, and exclusive publication code, with compilation and selected core/platform paths qualified on macOS 15 arm64/x86_64; visual, clean-deployment, and formal release checks remain separate. No plaintext vault fallback is provided. Helpers must be trusted; lifetime controls are not a hostile-code sandbox.
 
 The desktop defaults to English, honors saved English/Simplified Chinese choices, and applies a language change after restart. Application labels and Qt translator startup share the same fallback.
 

@@ -17,7 +17,7 @@ The candidate covers core downloading but **does not complete the original full 
 | Completion scan | Trusted optional tool, staged pre-publication checks, durable requirement/results, bounded cancellable process group, Qt/CLI/detail/waiver controls | Disabled by default, no bundled antivirus/efficacy/network sandbox guarantee, no retroactive published-BT scan |
 | Delivery | Windows local portable/current-user installation and independently hashed offline update/recovery/rollback; Linux native build/private tests/system-library local package | Online discovery/signing/store/clean-system qualification; no Linux installer/updater; current long runs required before release |
 
-Master supports bounded HLS/HTTP-FLV recording, duration/size limits, finish/save, per-origin login, proxies, budgets, and scanning. Pause/restart records current live content afresh. HLS supports non-DRM AES-128, ranges, fMP4, aligned separate audio, discontinuities, and complete-segment low-latency fallback; complex containers need a trusted local muxer. DRM, partial/delta HLS, unaligned audio, DASH live, RTMP, webpage live extraction, and protected-media bypass are unsupported. macOS adapters/CI are prepared but real builds/runtime remain unqualified; Linux qualification is system/architecture-specific. Validate each version; this is not certification of complete equivalence with another product.
+Master supports bounded HLS/HTTP-FLV recording, duration/size limits, finish/save, per-origin login, proxies, budgets, and scanning. Pause/restart records current live content afresh. HLS supports non-DRM AES-128, ranges, fMP4, aligned separate audio, discontinuities, and complete-segment low-latency fallback; complex containers need a trusted local muxer. DRM, partial/delta HLS, unaligned audio, DASH live, RTMP, webpage live extraction, and protected-media bypass are unsupported. macOS 15 arm64/x86_64 native builds and selected core/platform paths pass recorded CI; visual, optional media, browser installation, and formal distribution remain separate; Linux qualification is system/architecture-specific. Validate each version; this is not certification of complete equivalence with another product.
 
 ## Implementations and evidence boundaries
 
@@ -41,7 +41,7 @@ Master supports bounded HLS/HTTP-FLV recording, duration/size limits, finish/sav
 | F-15 (partial) | FTP/FTPS adapter/request options | Local FTP/TLS faults; no remote browsing/recursive FTP crawl |
 | F-17 (partial) | Independent BT/unified tasks/selection/seeding/isolated TCP proxies | Local v1/v2/hybrid/magnets/tracker-only metadata/resume/rate-limited seeding; mirrors/remote control/plugins/BT HTTPS/UDP proxies missing |
 | F-16 (partial) | Firefox 150+ temporary extension/panel/native bridge | Real local browser flows; signatures/production policy external |
-| F-18 (partial) | Linux native CMake/adapters/Qt/CLI/native messages/local package | [Linux](../testing/linux-acceptance.md): Ubuntu 26.04 x64 and kernel 6.9+ scope only, not all systems/headless service. [macOS](../testing/macos-acceptance.md) adapters/dual CI prepared, real results pending |
+| F-18 (partial) | Linux native build/adapters/local package; macOS native build/adapters/core CI | [Linux](../testing/linux-acceptance.md): Ubuntu 26.04 x64 and kernel 6.9+ scope only, not all systems/headless service. [macOS](../testing/macos-acceptance.md) macOS 15 arm64/x86_64 native core CI passes; manual visual/deployment/optional-tool and release qualification remain |
 
 ## Context increments
 

@@ -1,10 +1,10 @@
 # MaskPilot Download Manager
 
-A C++20/Qt 6 Widgets download manager for Windows and Linux. HTTP/HTTPS, FTP/FTPS, SFTP, native live recording, media adapters, and an independent BT engine share task scheduling and persistence across desktop, CLI, and browser entry points. See the [Linux guide](docs/testing/linux-acceptance.md) for the tested systems/libraries; support is not universal across distributions.
+A C++20/Qt 6 Widgets download manager with native Windows, Linux, and macOS builds. HTTP/HTTPS, FTP/FTPS, SFTP, native live recording, media adapters, and an independent BT engine share task scheduling and persistence across desktop, CLI, and browser entry points. See the [Linux guide](docs/testing/linux-acceptance.md) for the tested systems/libraries; support is not universal across distributions.
 
 **Current `master`** contains completed increments, including browser-assisted link/login recovery, periodic site synchronization, rolling native-payload budgets, and optional completion scanning. Daily work uses current `master` and focused verified commits, not divergent long-lived feature branches. Frozen 0.2.0/0.3.0 packages remain separate: their long-run evidence does not qualify current development code. Local validation/candidate packages are the present scope; online updates and formal release are deferred. See [features and gaps](docs/product/feature-matrix.md).
 
-Native macOS configuration, Apple adapters, and dual-architecture GitHub Actions entry points exist, but **actual macOS compilation/runtime qualification remains unverified**. The `macOS` workflow builds all targets, runs core/platform tests, and uploads logs on Apple Silicon and Intel. Failures require fixes/reruns; configuration alone does not prove support. See [macOS acceptance](docs/testing/macos-acceptance.md).
+Native macOS builds and core/platform tests pass on macOS 15 Apple Silicon and Intel; see the [recorded CI snapshot](docs/testing/scenarios.md#hosted-ci-snapshot). This qualifies the selected native core paths, not native visual behavior, optional media tools, real-browser installation, or formal distribution. See [macOS acceptance](docs/testing/macos-acceptance.md) for prerequisites and remaining checks.
 
 ## Reading guide
 
@@ -12,7 +12,7 @@ Native macOS configuration, Apple adapters, and dual-architecture GitHub Actions
 |---|---|
 | Usage and support | [Usage](#usage), [protocols and limits](docs/product/support-matrix.md), [features and gaps](docs/product/feature-matrix.md) |
 | Build and development | [Source builds](#building-from-source), [current architecture](docs/architecture/overview.md), [blueprint](docs/DEVELOPMENT_BLUEPRINT.md), [contributing](CONTRIBUTING.md) |
-| Validation and platforms | [Test scenarios](docs/testing/scenarios.md), [Linux](docs/testing/linux-acceptance.md), [pending macOS qualification](docs/testing/macos-acceptance.md) |
+| Validation and platforms | [Test scenarios](docs/testing/scenarios.md), [Linux](docs/testing/linux-acceptance.md), [macOS core qualification](docs/testing/macos-acceptance.md) |
 
 ## Language
 
@@ -86,7 +86,7 @@ Verifiable durable checkpoints support automatic recovery. Caught write failures
 
 New/edit requests have a separate Proxy tab; URL-embedded credentials are forbidden. Files support HTTP/HTTPS/SOCKS5, proxy-side target DNS for SOCKS5, and certificate/hostname checks for HTTPS proxies. Empty means explicit direct. Selected proxies cannot be bypassed by environment `NO_PROXY`.
 
-Credentials default to memory only. Explicit Remember proxy credentials uses current-user Windows Credential Manager/unlocked Linux Secret Service with no plaintext fallback. macOS Keychain exists but real runtime qualification is pending. Databases/exports never contain passwords. Unsaved required credentials need reentry after restart/import and block transfer until supplied. Forget clears saved/in-memory username/password but retains the authentication-required flag. Negotiation follows the proxy protocol.
+Credentials default to memory only. Explicit Remember proxy credentials uses current-user Windows Credential Manager/unlocked Linux Secret Service with no plaintext fallback. macOS Keychain reopen, binding, locked-access refusal, and interaction-state restoration pass isolated native core CI on both architectures. Databases/exports never contain passwords. Unsaved required credentials need reentry after restart/import and block transfer until supplied. Forget clears saved/in-memory username/password but retains the authentication-required flag. Negotiation follows the proxy protocol.
 
 BT uses HTTP CONNECT/SOCKS5 with separate route/credential sessions. Proxied BT uses TCP and disables DHT, local discovery, automatic mapping, and uTP; UDP trackers/HTTPS proxies are unsupported. Proxy hostname resolution may be local; anonymity is not promised. Active FTP cannot use proxies. Authenticated HTTP/SOCKS5 media passes secrets/original URLs through private stdin, not helper arguments.
 
@@ -265,9 +265,9 @@ sh scripts/verify-linux.sh
 
 This builds, tests extension/full CTest in private keyrings, and runs real media checks. Preset: `linux-gcc-release`. Package with `python scripts/package_linux.py --build-directory out/build/linux-gcc-release --output-directory out/package/MaskPilot-0.3.0-linux-x64-local`; existing output is refused. See [Linux](docs/testing/linux-acceptance.md) for runtime/source/browser prerequisites and qualification limits. Formal release is deferred.
 
-### macOS (qualification pending)
+### macOS (native core CI)
 
-Use `macos-clang-release`; [macOS instructions](docs/testing/macos-acceptance.md) cover Qt/native dependencies, manual subset, and dual-architecture CI. Full CI uses a disposable keychain; never impersonate CI on a personal machine. No distributable installer or actual successful Mac build is claimed.
+Use `macos-clang-release`; [macOS instructions](docs/testing/macos-acceptance.md) cover Xcode 26+, Qt/native dependencies, network runtime 8.22+, manual subsets, and dual-architecture core CI. Full CI uses a disposable keychain; never impersonate CI on a personal machine. Successful artifacts are inspection builds requiring native libraries, not standalone `.app`/DMG installers.
 
 ## Engineering and validation
 

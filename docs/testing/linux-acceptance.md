@@ -4,11 +4,11 @@
 
 Linux shares C++20/Qt 6 task, transfer, and persistence layers with Windows. The recorded environment is an isolated Ubuntu 26.04 x64 container on Ubuntu 24.04 x64 with host kernel `7.0.0-43-generic`; it does not prove Ubuntu 24.04 native userspace binary compatibility.
 
-Full helper protection requires Linux **6.9+** pidfd process-group signaling. Recorded SDK: GCC 15.2, CMake 4.2.3, Qt 6.10.2, curl 8.18.0, SQLite 3.46.1, libxml2 2.15.2, libsecret 0.21.7, OpenSSL 3.5.5, and pinned BT 2.1.2. Minimum source contracts are Qt 6.8, libxml2 2.14, and protocol-capable curl; older distribution packages may not meet them.
+Full helper protection requires Linux **6.9+** pidfd process-group signaling. Earlier recorded SDK: GCC 15.2, CMake 4.2.3, Qt 6.10.2, curl 8.18.0, SQLite 3.46.1, libxml2 2.15.2, libsecret 0.21.7, OpenSSL 3.5.5, and pinned BT 2.1.2. Minimum source contracts are Qt 6.8, libxml2 2.14, and protocol-capable curl; older distribution packages may not meet them.
 
 ## Build and full tests
 
-Prepare native development packages listed in `.github/workflows/linux.yml` within matching userspace. Do not upgrade a business host for builds. Run source commands from the repository root as an ordinary user; runtime packages do not contain build scripts:
+Prepare native development packages listed in `.github/workflows/linux.yml` within matching userspace, plus Node.js 22 and npm on the ordinary build user's PATH. CI supplies Node separately with `actions/setup-node`; the OS package list alone is insufficient. Do not upgrade a business host for builds. Run source commands from the repository root as an ordinary user; runtime packages do not contain build scripts:
 
 ```sh
 python3 -m venv out/python-linux
@@ -82,7 +82,11 @@ PY
 
 Load `browser_extension/chromium/` in Chrome developer mode and `browser_extension/firefox/manifest.json` temporarily in Firefox. IDs must match manifests. Manually start with `./maskpilot --data-dir "$HOME/.local/share/maskpilot-downloads"` so browser/desktop share the same area. The host rechecks Firefox manifest/extension/program binding. Revoke only unchanged owned configuration; never remove browser profiles/download data.
 
-## Recorded acceptance
+## Current hosted CI
+
+The [2026-11-23 CI snapshot](scenarios.md#hosted-ci-snapshot) records 329/329 native cases and 48/48 extension cases, with Node 22 available to the ordinary build user. It is separate from the earlier server acceptance and short-load measurements below.
+
+## Earlier server acceptance
 
 Native fixes are at `a0a5e37`. Independent build/test directories retain early failures and repair logs.
 
@@ -99,4 +103,4 @@ Private logs are in `out/qa/linux-port-20261120/`, with `linux-final-verificatio
 
 Recorded Windows/Linux native source digest: `fd563785f21f39dab9a1b29a9c7f8a7d66e7ebe387cb8e005fc0040f2dad13ab`. Paths are sorted as relative POSIX paths, independently of host case sorting. Load evidence covers local HTTP Range only, not media/TLS/public-network long-run qualification. Adjacent `.sha256` files describe final archives.
 
-Physical GPU/Wayland, multi-screen/DPI, production browser policy, other distributions/architectures, macOS, and an 8-hour Linux run remain unqualified. Automatic updates, formal release, and browser-project integration are separate future scope.
+Physical GPU/Wayland, multi-screen/DPI, production browser policy, other distributions/architectures and an 8-hour Linux run remain unqualified by this Linux evidence. For independently recorded native Mac core CI and its remaining gaps, see [macOS](macos-acceptance.md). Automatic updates, formal release, and browser-project integration are separate future scope.

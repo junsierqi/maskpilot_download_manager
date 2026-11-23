@@ -6,7 +6,8 @@
 |---|---|
 | Windows x64 | Native implementation, portable/current-user installation and offline recovery; current regressions and frozen-release qualification are separate |
 | Linux x64 | Native C++/Qt/engines/vault/native messaging; Ubuntu 26.04 userspace, kernel 6.9+ for complete helper protection; see [Linux](../testing/linux-acceptance.md) |
-| Other environments | Ubuntu 24.04 native userspace, other distributions/architectures, physical GPU/Wayland/screens, production browser policy, and macOS remain unproven; no headless service/formal release |
+| macOS 15 arm64/x86_64 | All native targets build and 320 core/platform cases pass per architecture; see [recorded CI](../testing/scenarios.md#hosted-ci-snapshot). Manual visual/deployment, optional media tools, real browser installation, and formal release remain separate |
+| Other environments | Ubuntu 24.04 native userspace, other distributions/architectures, physical GPU/Wayland/screens, production browser policy, and other macOS versions remain unproven; no headless service/formal release |
 
 Linux checks extension logic and real native-message/desktop/download paths, not completed real-browser installation, store release, or enterprise-policy qualification. Read capabilities below with platform limits.
 
@@ -51,7 +52,7 @@ Master supports bounded public static projects: create, page/CSS preview, explic
 | UI | Qt Widgets, English default and saved English/Simplified Chinese, protocol/category filters, filename/source/download/upload. Narrow windows hide secondary size/category/remaining columns; details retain all information |
 | Updates | Manual new packages preserve data; no published online-update service/signing certificate/store entry |
 
-macOS native dependencies/adapters and Apple Silicon/Intel core CI exist, but actual results remain pending and are not a qualified-platform entry. See [macOS](../testing/macos-acceptance.md).
+macOS native dependencies/adapters and Apple Silicon/Intel core paths pass the [recorded native CI](../testing/scenarios.md#hosted-ci-snapshot). This entry covers selected automated paths, not universal platform compatibility. See [macOS](../testing/macos-acceptance.md) for remaining qualification.
 
 Future scope includes mirrors, remote control, plugins, formal macOS release, and unqualified systems/architectures. Basic BT is not every advanced setting of a professional torrent client; public-network/firewall/private-tracker compatibility needs separate acceptance.
 

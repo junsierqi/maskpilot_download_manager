@@ -1,6 +1,6 @@
 # Contributing
 
-Read the [README](README.md), [current architecture](docs/architecture/overview.md), and [feature scope](docs/product/feature-matrix.md) first. Product goals and qualified features are recorded separately; actual macOS CI qualification remains pending. See the [documentation index](docs/README.md) for the full map.
+Read the [README](README.md), [current architecture](docs/architecture/overview.md), and [feature scope](docs/product/feature-matrix.md) first. Product goals and qualified features are recorded separately; macOS 15 native core CI passes on Apple Silicon and Intel, with manual visual/deployment and release qualification tracked separately. See the [documentation index](docs/README.md) for the full map.
 
 The desktop defaults to English and supports saved English/Simplified Chinese choices through Settings (restart required). Canonical repository documentation is English.
 

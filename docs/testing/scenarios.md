@@ -1,8 +1,23 @@
 # Testing scenarios
 
-## macOS entry (real execution pending)
+## macOS native core entry
 
-GitHub `macOS` builds all arm64/x86_64 targets and runs an explicit core set, extension units, and `macos_platform_product_path` for real keychain/no-replace/local-torrent/process-tree checks. Disposable keychains restore original search/default settings even on failure. `macos_ci_fixture` proves simulated script failure/recovery only, not native behavior. Actual initial compile/runtime/visual qualification remains pending; see [macOS](macos-acceptance.md).
+GitHub `macOS` builds all arm64/x86_64 targets and passes the selected 320 core/platform cases per architecture, extension units, and a six-case prerequisite gate. `macos_platform_product_path` exercises real keychain/no-replace/local-torrent/process-tree checks. Disposable keychains restore original search/default settings even on failure. `macos_ci_fixture` proves simulated script failure/recovery only. Native visual, clean deployment, optional media tools, and browser installation require separate acceptance; see [macOS](macos-acceptance.md).
+
+## Hosted CI snapshot
+
+Recorded on 2026-11-23. All four native jobs qualify the same code commit; each row links its actual successful run.
+
+| Environment | Commit | Native cases | Extension cases | Run |
+|---|---|---:|---:|---|
+| Windows x64 | `40aadd9` | 340/340 | 48/48 | [Actions](https://github.com/junsierqi/maskpilot_download_manager/actions/runs/45213171865/job/137827120975) |
+| Linux x64 | `40aadd9` | 329/329 | 48/48 | [Actions](https://github.com/junsierqi/maskpilot_download_manager/actions/runs/45213171975/job/137827122720) |
+| macOS 15 arm64 | `40aadd9` | 320/320 | 48/48 | [Actions](https://github.com/junsierqi/maskpilot_download_manager/actions/runs/45213172114/job/137827122000) |
+| macOS 15 x86_64 | `40aadd9` | 320/320 | 48/48 | [Actions](https://github.com/junsierqi/maskpilot_download_manager/actions/runs/45213172114/job/137827121394) |
+
+All four jobs qualify the same application, test, and build inputs at `40aadd9`. Both Mac jobs also pass the six-case prerequisite gate; Linux uses Node 22 under the ordinary build user. Subsequent documentation-only changes do not rebuild or extend this evidence.
+
+These runs do not constitute a new eight-hour load result, clean-machine deployment, native Mac visual acceptance, complete media-site compatibility, or signed public release. Earlier version-specific acceptance remains historical evidence.
 
 ## Native Linux checks
 

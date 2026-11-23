@@ -25,7 +25,7 @@ Feature completeness is a long-term goal, not a current compatibility promise. M
 
 The table proposes scope. Product identifiers `F-*` are separate from workflow `REQ-*` and `TASK-*`; implementation plans must map them rather than merely check feature names.
 
-This table preserves product goals and original staging, not current completion status. Mainline now includes dynamic segment splitting, named queues/weekly windows, and recurring site synchronization. Linux has environment-specific acceptance; macOS build/adaptation and CI await real execution. A maintained media-site compatibility list, additional platforms/services, and formal distribution remain gaps. See the [feature matrix](product/feature-matrix.md). Version acceptance does not imply completion of the entire product goal.
+This table preserves product goals and original staging, not current completion status. Mainline now includes dynamic segment splitting, named queues/weekly windows, and recurring site synchronization. Linux has environment-specific acceptance; macOS 15 arm64/x86_64 has recorded native build/core CI, while visual, deployment, and optional-tool qualification remain separate. A maintained media-site compatibility list, additional platforms/services, and formal distribution remain gaps. See the [feature matrix](product/feature-matrix.md). Version acceptance does not imply completion of the entire product goal.
 
 | ID | Capability and delivery boundary | Proposed version | Stage | Minimum acceptance evidence |
 |---|---|---|---|---|
