@@ -1,28 +1,28 @@
 ---
-name: 问题报告
-about: 提供可复现的问题、环境及实际结果
+name: Bug report
+about: Report a reproducible problem, environment, and actual result
 title: ''
 ---
 
-## 问题与预期
+## Problem and expected behavior
 
-描述出现的问题，以及你预期的行为。
+Describe what went wrong and what you expected instead.
 
-## 环境
+## Environment
 
-- 版本／提交：
-- 操作系统、版本及 CPU 架构：
-- 安装包还是源码构建；源码构建时的 Qt／编译器版本：
-- 涉及的协议、浏览器／扩展或可选组件版本：
+- Version/commit:
+- Operating system, version, and CPU architecture:
+- Package or source build; Qt/compiler versions for a source build:
+- Relevant protocol, browser/extension, or optional component versions:
 
-## 复现步骤
+## Reproduction
 
-1. 使用的设置或脱敏命令：
-2. 操作步骤：
-3. 实际结果：
+1. Settings or sanitized command:
+2. Steps:
+3. Actual result:
 
-## 验证材料
+## Evidence
 
-附相关错误、可复现的自有本地样例或已脱敏日志。界面问题附截图、窗口大小和系统缩放；CI 问题附失败任务／步骤及首条相关诊断。
+Include relevant errors, an owned local reproduction, or sanitized logs. For UI issues, include screenshots, window size, and system scaling. For CI issues, identify the failed job/step and first relevant diagnostic.
 
-不要公开账号密码、Cookie、Authorization、私钥、登录配置或含秘密的完整 URL。没有安全可分享的样例时，先描述现象和限制。
+Do not publish passwords, cookies, Authorization values, private keys, login profiles, or complete secret-bearing URLs. If no sample can safely be shared, first describe the symptoms and constraints.

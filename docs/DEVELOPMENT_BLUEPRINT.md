@@ -1,222 +1,222 @@
-# MaskPilot 下载器：产品与工程开发蓝图
+# MaskPilot Download Manager: Product and Engineering Blueprint
 
-> 状态：用户已授权执行的产品与工程基线；源码版本以 `CMakeLists.txt` 为准，支持状态以实际验收记录为准。
-> 已确定：开源项目、C++、Qt、编码前规划完整流程与主要工程目录。
-> 初始设计默认值：Windows 11 x64 首发、C++20、Qt 6 Widgets、自有任务管理与 HTTP 调度；当前平台资格以功能矩阵及平台指南为准。
-> 既有 `AGENTS.md` 保持不变；本文补充产品和工程约束，不能覆盖用户后续明确指令。
+> Status: user-authorized product and engineering baseline. `CMakeLists.txt` defines the source version; acceptance records define support.
+> Confirmed: open source, C++, Qt, and planning the complete workflow and major directories before implementation.
+> Initial defaults: Windows 11 x64 first, C++20, Qt 6 Widgets, owned task management and HTTP scheduling. Current qualification follows the feature matrix and platform guides.
+> Existing `AGENTS.md` remains unchanged. This blueprint supplements constraints and cannot override subsequent explicit user instructions.
 
-## 开发主干与提交约定
+## Mainline development and commits
 
-- 日常开发直接在最新 `master` 上进行；所有已完成、已验证的功能必须汇总在主干，不能长期分散在不同功能分支。
-- 开始工作前检查工作区和提交关系，确认主干包含已有成果；除非用户另有明确要求，不自动创建功能分支或其他工作树。
-- 每个完整阶段实现、验证、审查通过后作聚焦提交；正在实现的修改与已验收提交分开记录，不把未完成工作描述为已经交付。
-- 回滚以明确的提交或本轮差异为边界，保留其他已完成能力及用户数据；清理旧分支前必须证明其所有提交已包含在主干中。
-- 存在远程仓库时再核对远程状态；没有配置远程地址时，只能确认本地主干的完整性，不能声称已与远程同步。
+- Develop directly on the latest `master`. All completed, verified functionality must converge on mainline rather than remain scattered across long-lived feature branches.
+- Check the workspace and commit relationships before work; confirm mainline includes existing results. Do not create feature branches or worktrees unless explicitly requested.
+- Make focused commits after each complete stage passes implementation, validation, and review. Distinguish pending changes from accepted commits; do not describe unfinished work as delivered.
+- Bound rollback to explicit commits or the current diff, preserving other capabilities and user data. Before deleting old branches, prove their commits are included in mainline.
+- Check remote state when configured. Without a remote, claim only local mainline completeness, never remote synchronization.
 
-## 1. 目标与完成边界
+## 1. Goals and completion boundaries
 
-目标是做可日常使用、可维护、功能完整的开源下载管理器，并在自动化和可扩展性上发展。评价顺序为：文件正确性、恢复可靠性、浏览器接管体验、易用性、性能、功能数量。
+Build a maintainable, complete open-source download manager for daily use, with room for automation and extension. Prioritize file correctness, reliable recovery, browser takeover, usability, performance, then feature count.
 
-“完整交付”指经确认的版本范围全部实现并通过验收，包括安装、配置、正常流程、异常流程和使用文档。内部按里程碑构建与验证，不将中间原型当最终产品交付。不能保证第一次编码没有缺陷，也不以会话持续时间作为完成标准。
+Complete delivery means implementing and accepting the entire confirmed version scope, including installation, configuration, normal/error flows, and documentation. Build and validate internal milestones without presenting prototypes as the final product. Neither defect-free first-pass coding nor completion within one uninterrupted session is guaranteed.
 
-完整功能是长期产品目标，不是当前已证明的兼容性承诺。当前功能逐项映射到 `docs/product/feature-matrix.md`，记录实现、验收样例和差异；未评估项不能标为支持。延期项不能因开发困难而悄悄从总目标消失。
+Feature completeness is a long-term goal, not a current compatibility promise. Map capabilities individually in `docs/product/feature-matrix.md`, recording implementation, acceptance examples, and gaps. Unevaluated features cannot be marked supported. Deferred goals must not silently disappear because implementation is difficult.
 
-## 2. 版本范围与功能验收矩阵
+## 2. Version scope and feature acceptance matrix
 
-下表为建议范围；`F-*` 是产品编号，与工作流中的 `REQ-*`、`TASK-*` 分开。正式实现计划须建立映射，不能仅勾选功能名称。
+The table proposes scope. Product identifiers `F-*` are separate from workflow `REQ-*` and `TASK-*`; implementation plans must map them rather than merely check feature names.
 
-本表保留产品目标与最初阶段划分，不是当前完成状态。当前主干已实现动态拆段、命名队列／每周窗口、周期站点同步等增量，Linux 已有明确环境验收，macOS 构建／适配及 CI 仍待真实运行。持续维护的媒体站点名单、其他平台／服务及正式发行等仍有差距，详见 [功能矩阵](product/feature-matrix.md)。版本验收不等同于完整目标交付。
+This table preserves product goals and original staging, not current completion status. Mainline now includes dynamic segment splitting, named queues/weekly windows, and recurring site synchronization. Linux has environment-specific acceptance; macOS build/adaptation and CI await real execution. A maintained media-site compatibility list, additional platforms/services, and formal distribution remain gaps. See the [feature matrix](product/feature-matrix.md). Version acceptance does not imply completion of the entire product goal.
 
-| 编号 | 能力与交付边界 | 建议版本 | 阶段 | 最低验收证据 |
+| ID | Capability and delivery boundary | Proposed version | Stage | Minimum acceptance evidence |
 |---|---|---|---|---|
-| F-01 | HTTP/HTTPS，重定向、代理、请求头、认证 | 1.0 | M2 | 本地服务覆盖成功、超时、认证、代理与重定向 |
-| F-02 | 自适应分段、连接上限、单连接降级 | 1.0 | M3 | Range 正确/忽略/异常时文件哈希一致 |
-| F-03 | 暂停、续传、崩溃恢复、远端变化检测 | 1.0 | M3 | 强制终止并重启，恢复后字节一致 |
-| F-04 | 队列、优先级、并发与全局/任务限速 | 1.0 | M4 | 调度不超配额，限速误差满足测试约定 |
-| F-05 | 历史、搜索、分类、目录规则、批量导入导出 | 1.0 | M4 | 重启保留；损坏导入不覆盖现有任务 |
-| F-06 | 定时开始/停止、计划队列、完成动作 | 1.0 | M4 | 时区、休眠唤醒、错过计划和退出流程测试 |
-| F-07 | Chrome/Edge 扩展、右键发送、下载接管 | 1.0 | M6 | 实装扩展，验证普通与需登录下载；可恢复浏览器下载 |
-| F-08 | 新建/详情/设置、托盘、通知、快捷键 | 1.0 | M5 | 主路径实机操作，高 DPI 与键盘访问检查 |
-| F-09 | 静态页面链接提取、批量筛选、URL 模板 | 1.0 | M6 | 预览、去重、数量上限和取消均有效 |
-| F-10 | 普通网页媒体发现、HLS/DASH 点播与合并 | 1.0 | M7 | 自有媒体样例，音轨、画质、缺片、合并失败测试 |
-| F-11 | 受支持网站媒体解析适配 | 1.0 | M7 | 明确支持列表；失效时可诊断，不承诺任意网站 |
-| F-12 | 临时链接更新与安全重试 | 1.0 | M3/M6 | 刷新后验证资源身份，不能拼接不同版本 |
-| F-13 | 文件校验、冲突处理、磁盘异常与错误日志 | 1.0 | M2/M3 | 磁盘满、无权限、重名、校验失败有确定结果 |
-| F-14 | 中文/英文、安装、便携版、升级数据迁移 | 1.0 | M5/M8 | 干净机器可运行，升级后任务仍可读 |
-| F-15 | FTP/FTPS、站点规则、递归站点抓取 | 对标后单独定版 | 后续 | 明确协议和抓取深度；不能用静态链接提取冒充完整抓站 |
-| F-16 | Firefox 集成及更多浏览器交互 | 单独定版 | 后续 | 独立兼容测试与差异记录 |
-| F-17 | BT/磁力、多源镜像、远程控制、插件 | 扩展版本 | 后续 | 各自立项、威胁模型及可撤销权限 |
-| F-18 | Linux/macOS、NAS、无界面服务 | 扩展版本 | 后续 | 独立构建、安装和平台验收 |
+| F-01 | HTTP/HTTPS, redirects, proxies, headers, authentication | 1.0 | M2 | Local success, timeout, authentication, proxy, and redirect fixtures |
+| F-02 | Adaptive segments, connection limits, single-stream fallback | 1.0 | M3 | Matching hashes with correct, ignored, and invalid Range responses |
+| F-03 | Pause, resume, crash recovery, remote-change detection | 1.0 | M3 | Identical recovered bytes after forced termination/restart |
+| F-04 | Queues, priorities, concurrency, global/task rate limits | 1.0 | M4 | Quotas respected; rate error meets the test contract |
+| F-05 | History, search, categories, directory rules, batch import/export | 1.0 | M4 | Persistence across restart; corrupt imports preserve tasks |
+| F-06 | Scheduled start/stop, scheduled queues, completion actions | 1.0 | M4 | Timezone, wake, missed-schedule, and exit tests |
+| F-07 | Chrome/Edge extension, context-menu sending, download takeover | 1.0 | M6 | Installed-extension public/login downloads and browser fallback |
+| F-08 | New task/details/settings, tray, notifications, shortcuts | 1.0 | M5 | Real main paths, high DPI, and keyboard checks |
+| F-09 | Static page links, batch filtering, URL templates | 1.0 | M6 | Previews, deduplication, count limits, cancellation |
+| F-10 | Web media discovery, HLS/DASH VOD, merging | 1.0 | M7 | Owned fixtures for audio, quality, missing segments, merge failures |
+| F-11 | Supported-site media extraction adapters | 1.0 | M7 | Explicit supported list and diagnosable failures; no arbitrary-site promise |
+| F-12 | Temporary-link refresh and safe retry | 1.0 | M3/M6 | Revalidate identity; never combine resource versions |
+| F-13 | File verification, conflicts, disk failures, error logs | 1.0 | M2/M3 | Determinate full-disk, permission, duplicate, and digest-failure outcomes |
+| F-14 | Chinese/English, installation, portable package, upgrade migrations | 1.0 | M5/M8 | Clean-machine operation; readable tasks after upgrade |
+| F-15 | FTP/FTPS, site rules, recursive site capture | Separately versioned after comparison | Later | Explicit protocols/depth; link extraction is not complete site capture |
+| F-16 | Firefox integration and further browser interaction | Separately versioned | Later | Independent compatibility tests and recorded differences |
+| F-17 | BT/magnets, mirrors, remote control, plugins | Extension release | Later | Separate projects, threat models, revocable permissions |
+| F-18 | Linux/macOS, NAS, headless services | Extension release | Later | Independent build, installation, platform acceptance |
 
-1.0 不包含 DRM 绕过、任意付费内容访问、无限深度爬站、云账户或无边界插件执行。媒体下载以用户可访问、工具明确支持的内容为边界。视频解析和浏览器接管必须分别验收，不能互相替代。
+Version 1.0 excludes DRM bypass, arbitrary paid-content access, unbounded crawling, cloud accounts, and unrestricted plugin execution. Media downloads are limited to content the user can access and tools explicitly support. Accept media extraction and browser takeover separately; neither substitutes for the other.
 
-## 3. 技术基线与依赖政策
+## 3. Technical baseline and dependency policy
 
-| 范围 | 建议决策 | 边界 |
+| Area | Proposed choice | Boundary |
 |---|---|---|
-| 语言 | C++20；C 主要用于调用现有 C 库 | 不同时维护两套核心实现 |
-| 界面 | Qt 6 Widgets、Model/View、资源与翻译系统 | 不在控件槽函数中实现下载或数据库逻辑 |
-| 网络 | libcurl multi，封装为 transport adapter | 自研任务与分段策略，不自研 TLS/HTTP 协议栈 |
-| 持久化 | SQLite，版本化 migration | 单一写入所有者；不把 SQL 散落到业务/UI |
-| 构建 | CMake + Ninja + MSVC；依赖采用 vcpkg manifest | Qt 获取方式、编译器与 CRT 必须一致并锁定 |
-| 测试 | CTest + GoogleTest；Qt Test 测试界面适配 | 网络集成测试使用可控本地服务 |
-| 媒体 | 独立适配器调用 yt-dlp/FFmpeg，按功能可选 | 不经 shell 拼接命令；有版本、超时与取消管理 |
-| 浏览器 | TypeScript 扩展 + C++ Native Messaging host | 扩展需要浏览器语言，核心仍采用 C++ |
+| Language | C++20; C primarily for existing C libraries | No duplicate core implementations |
+| Interface | Qt 6 Widgets, Model/View, resources, translations | No download/database logic in widget slots |
+| Network | libcurl multi behind transport adapters | Own task/segment policy, not TLS/HTTP stacks |
+| Persistence | SQLite with versioned migrations | One write owner; no scattered business/UI SQL |
+| Build | CMake + Ninja + MSVC; vcpkg manifest | Pin compatible Qt acquisition, compiler, CRT |
+| Tests | CTest + GoogleTest; Qt Test for UI adapters | Controlled local network services |
+| Media | Separate optional yt-dlp/FFmpeg adapters | Structured arguments, versions, timeouts, cancellation |
+| Browser | TypeScript extension + C++ Native Messaging host | Browser language required; core remains C++ |
 
-M0 必须验证这些选择能在本机形成同一套可构建组合，再记录精确版本、来源、哈希和支持平台。版本未锁定前，不宣称命令可直接执行。QtNetwork 可以服务于 Qt 层的有限需要，不能和 libcurl 重复实现主下载引擎。
+M0 must prove a locally buildable combination, then record exact versions, sources, hashes, and platforms. Do not claim ready commands before locking versions. QtNetwork may serve limited Qt needs but cannot duplicate the main libcurl engine.
 
-原始工程代码采用根目录 MIT 许可证。发布前维护第三方清单、许可证文本与分发方式；Qt 模块和媒体工具须按实际版本/构建检查。依赖的源码及二进制分发须保留真实来源与法定声明，不能假定所有依赖适用同一许可证。当前工程没有复制参考项目的实现代码。
+Original project code uses the root MIT license. Maintain dependency inventories, license texts, and distribution methods before release; check actual Qt module/media-tool versions and builds. Dependency source/binary distributions retain real provenance and required notices. Do not assume every dependency shares one license. The project has not copied reference implementation code.
 
-## 4. 主要工程目录：预先规划与受控演进
+## 4. Major directories: planning and controlled evolution
 
-以下为当前主要目录；详细职责、实际子目录与 CMake 依赖见 [当前架构](architecture/overview.md)。不为未实现模块堆放空类或假接口。开发中可按实际职责和维护成本调整目录，调整前说明收益及影响，更新文档并验证依赖边界与已有行为。
+Current major directories follow below; see the [architecture overview](architecture/overview.md) for responsibilities, subdirectories, and CMake dependencies. Do not populate unimplemented modules with empty classes or fake interfaces. Adjust directories when responsibilities and maintenance costs justify it; explain benefits/impact, update documentation, and verify boundaries and existing behavior first.
 
 ```text
 .
-├── CMakeLists.txt / CMakePresets.json   # 目标与共享预设
+├── CMakeLists.txt / CMakePresets.json   # Targets and shared presets
 ├── vcpkg.json / vcpkg-configuration.json
 ├── .clang-format / .clang-tidy
-├── .github/workflows/                  # 平台构建和验证
+├── .github/workflows/                  # Platform builds and validation
 ├── apps/
-│   ├── desktop/                        # Qt、单实例、依赖组合
-│   ├── cli/                            # 验证客户端与站点命令
-│   ├── native_host/                    # 原生消息与本机 IPC
-│   └── media_guard/                    # 本地媒体组件启动器
+│   ├── desktop/                        # Qt, single instance, composition
+│   ├── cli/                            # Validation client and site commands
+│   ├── native_host/                    # Native Messaging and local IPC
+│   └── media_guard/                    # Local media component launchers
 ├── src/
-│   ├── domain/                         # 模型与不变量
-│   ├── application/                    # 协调器、用例、端口
-│   ├── infrastructure/                 # 协议、存储、系统适配
-│   └── ui/                             # 窗口、对话框、模型、样式
-├── browser_extension/                  # TypeScript、清单、构建与测试
-├── resources/                          # 应用静态资源
-├── database/migrations/                # 递增 SQL 迁移
-├── tests/                              # 单元／集成／系统／平台测试
-├── benchmarks/                         # 性能场景与报告
-├── cmake/                              # 原生依赖与编译／打包配置
-├── scripts/                            # 构建、验证、打包入口
-├── packaging/                          # 安装与浏览器注册材料
-├── docs/                               # 使用、产品、架构、协议与验收
-├── third_party/                        # 实际依赖声明
-└── out/                                # 忽略的生成内容
+│   ├── domain/                         # Models and invariants
+│   ├── application/                    # Coordinators, use cases, ports
+│   ├── infrastructure/                 # Protocol, storage, system adapters
+│   └── ui/                             # Windows, dialogs, models, styles
+├── browser_extension/                  # TypeScript, manifests, build/tests
+├── resources/                          # Static application resources
+├── database/migrations/                # Incremental SQL migrations
+├── tests/                              # Unit/integration/system/platform tests
+├── benchmarks/                         # Performance scenarios and reports
+├── cmake/                              # Native dependencies and build/package config
+├── scripts/                            # Build, validation, packaging entry points
+├── packaging/                          # Installation and browser registration
+├── docs/                               # Usage, product, architecture, protocols, acceptance
+├── third_party/                        # Actual dependency notices
+└── out/                                # Ignored generated content
 ```
 
-目录规则：
+Directory rules:
 
-1. 每个库一个明确 CMake target；公开头文件放 `include/maskpilot/...`，内部实现放模块自己的 `src/`，通过 `target_*` 声明依赖。
-2. `apps/` 只负责装配；`ui/` 只负责展示；跨模块调用公开接口，禁止相对路径穿透其他模块的私有头文件。
-3. 测试目录按验证层次划分，测试名表达被测模块与行为，例如 `download_recovery_test.cpp`。
-4. 禁止不明职责的 `common/`、`misc/`、万能 `utils` 和巨型 manager；确有通用抽象时先明确所有者与调用方。
-5. 构建输出统一放 `out/build/<preset>/`，安装产物放 `out/package/`，均不提交。`CMakeUserPresets.json` 和机器路径不提交。
-6. 用户数据库、日志、凭据和下载内容放系统用户目录及用户选定位置，不写源码目录；测试只写隔离临时目录。
-7. 在现有模块内增加文件无需重新审批；新增主要模块、改变依赖方向或移动公共接口时先补 ADR、影响范围和迁移方案。
+1. Give each library a CMake target. Public headers live in `include/maskpilot/...`, private implementations in the module's `src/`; declare dependencies through `target_*`.
+2. `apps/` assembles dependencies; `ui/` presents data. Use public interfaces across modules, never relative paths into private headers.
+3. Organize tests by validation layer. Names describe module/behavior, such as `download_recovery_test.cpp`.
+4. Avoid ownerless `common/`, `misc/`, universal `utils`, and giant managers. Identify ownership/callers before shared abstractions.
+5. Build into `out/build/<preset>/` and package into `out/package/`; commit neither. Keep `CMakeUserPresets.json` and machine paths private.
+6. Databases, logs, credentials, and downloads belong in system user directories or user-selected locations, never source directories. Tests use isolated temporary directories.
+7. Adding files within existing modules needs no new approval. New major modules, dependency reversals, or public-interface moves require an ADR, impact scope, and migration plan first.
 
-## 5. 模块依赖与接口契约
+## 5. Module dependencies and interface contracts
 
-允许的编译依赖方向：
+Allowed compile-time dependency direction:
 
 ```text
 apps/desktop ──> ui + application + infrastructure
 ui ───────────> application ──> domain
 infrastructure ──────────────> application ports + domain
-apps/native_host ────────────> 最小协议/平台适配；不链接整个 UI
-domain ─────────────────────> C++ 标准库
+apps/native_host ────────────> minimal protocol/platform adapters; no full UI linkage
+domain ─────────────────────> C++ standard library
 ```
 
-`domain`、`application` 不依赖 QWidget、libcurl、SQL 或 Windows API。Qt 与第三方库留在适配层；复查 CMake 目标与源码依赖，避免循环，当前没有独立的自动架构规则检查器。不要为了“纯 C++”重新实现成熟库已有的能力。
+`domain` and `application` depend on neither QWidget, libcurl, SQL, nor Windows APIs. Keep Qt/dependencies in adapters. Review CMake/source dependencies for cycles; there is no separate automated architecture-rule checker currently. Do not reimplement mature library capabilities merely to claim pure C++.
 
-核心端口建议包括 `ITransferTransport`、`ITaskRepository`、`IFileStore`、`ICredentialStore`、`IClock` 和 `IEventDispatcher`。只为已确定的边界建接口；不为每个小类机械增加接口。
+Proposed core ports include `ITransferTransport`, `ITaskRepository`, `IFileStore`, `ICredentialStore`, `IClock`, and `IEventDispatcher`. Introduce interfaces for established boundaries, not mechanically for every small class.
 
-命令携带稳定 task ID、request ID 和 attempt generation；事件携带序号与 generation。旧 attempt 的迟到回调不得改变新任务状态。命令使用明确结果与错误码；UI 不通过轮询数据库获取业务状态。
+Commands carry stable task IDs, request IDs, and attempt generations; events carry sequence numbers and generations. Late callbacks cannot alter new attempts. Commands return explicit results/error codes; the UI does not poll the database for business state.
 
-初版采用一个桌面进程承载后台下载：关闭窗口默认隐藏到托盘；“退出程序”走受控停止。Native host 负责消息校验、启动/寻找单实例并转发，不启动另一套下载管理器。独立 daemon 属于后续架构扩展。
+Initially, one desktop process hosts background downloads. Closing the window hides it to the tray by default; Quit performs controlled shutdown. The native host validates messages, finds/starts the single instance, and forwards requests rather than starting a second manager. A separate daemon is a later extension.
 
-## 6. 线程、资源与 C++ 规范
+## 6. Threads, resources, and C++ conventions
 
-- UI 线程只处理控件和展示；任务协调器在独立线程串行管理状态与 SQLite 写入；网络 reactor 独占 libcurl handles。
-- 有界磁盘工作队列处理数据写入；背压必须暂停/恢复网络接收，不能丢弃缓冲区或无限增加内存。M1/M2 用原型验证该接口。
-- 跨线程只传值、不可变快照和明确所有权的缓冲区；禁止持锁回调、UI 同步等待网络和不受控 detached threads。
-- 控制器、网络、磁盘之间用事件与取消令牌通信；每个阶段定义超时、退出顺序、队列容量及迟到事件处理。
-- 采用 RAII；裸指针表示不拥有，所有权默认 `unique_ptr`；只有真实共享生命周期才用 `shared_ptr`。
-- QObject 父子所有权与智能指针不能同时拥有同一对象；禁止跨线程直接操作 QWidget。
-- 文件使用 `snake_case`，类型使用 `PascalCase`，函数/变量使用 `camelCase`，私有成员加 `_` 后缀，常量使用 `kCamelCase`，命名空间 `maskpilot`。
-- 4 空格缩进，clang-format 统一格式；clang-tidy 和编译器告警检查新增代码。异常不跨 C 回调、线程入口或 IPC 边界传播。
-- 具体库版本、线程与容量默认值进入配置和架构文档，不散落魔法数字。不能用增加连接数替代性能分析。
+- The UI thread handles widgets/presentation only. A coordinator serializes state and SQLite writes; the network reactor exclusively owns libcurl handles.
+- The original M1/M2 prototype plan proposed a bounded disk work queue, with backpressure pausing/resuming reception instead of dropping buffers or growing memory. The implementation choice is recorded under networking, disk writes, and threading in the architecture decisions.
+- Pass values, immutable snapshots, and explicitly owned buffers across threads. No callbacks under locks, UI blocking on networking, or uncontrolled detached threads.
+- Controllers, networking, and disk work communicate through events/cancellation tokens. Define timeouts, shutdown order, capacity, and late-event handling for every stage.
+- Use RAII. Raw pointers are non-owning; prefer `unique_ptr`, using `shared_ptr` only for shared lifetimes.
+- QObject parenting and smart pointers cannot both own one object. Never manipulate QWidget across threads.
+- Files use `snake_case`, types `PascalCase`, functions/variables `camelCase`, private members a trailing `_`, constants `kCamelCase`, and namespace `maskpilot`.
+- Use 4-space indentation and clang-format. Apply clang-tidy/compiler diagnostics to new code. Exceptions cannot escape C callbacks, thread entries, or IPC boundaries.
+- Record versions, thread defaults, and capacities in configuration/architecture documents rather than magic numbers. More connections cannot substitute for performance analysis.
 
-## 7. 下载任务状态与恢复不变量
+## 7. Task states and recovery invariants
 
-持久化状态：`Queued`、`Scheduled`、`Probing`、`Downloading`、`Pausing`、`Paused`、`RetryWaiting`、`Verifying`、`Finalizing`、`Completed`、`Failed`、`Cancelling`、`Cancelled`、`NeedsAttention`。
+Persisted states: `Queued`, `Scheduled`, `Probing`, `Downloading`, `Pausing`, `Paused`, `RetryWaiting`, `Verifying`, `Finalizing`, `Completed`, `Failed`, `Cancelling`, `Cancelled`, `NeedsAttention`.
 
-| 触发 | 允许的主路径 | 关键要求 |
+| Trigger | Allowed main path | Required behavior |
 |---|---|---|
-| 立即下载 | Queued → Probing → Downloading → Verifying → Finalizing → Completed | 校验/文件发布完成后才算成功 |
-| 暂停 | 活跃状态 → Pausing → Paused | 停止新请求，收敛在途写入后提交安全进度 |
-| 恢复 | Paused/RetryWaiting → Queued → Probing | 重新验证资源和本地文件 |
-| 自动重试 | 可重试错误 → RetryWaiting → Queued | 有次数/时间预算，指数退避，尊重 Retry-After |
-| 用户处理 | 身份变化、认证失效、磁盘问题 → NeedsAttention | 给出继续、重建或更新链接的明确选项 |
-| 取消 | 非终态 → Cancelling → Cancelled | 停止请求和写入；删除文件是独立明确操作 |
-| 异常退出恢复 | 启动扫描未收敛任务 → 检查 → Paused/NeedsAttention | 不自动把不确定数据算成已完成 |
+| Immediate download | Queued → Probing → Downloading → Verifying → Finalizing → Completed | Success follows verification and publication |
+| Pause | Active → Pausing → Paused | Stop new requests, settle pending writes, commit safe progress |
+| Resume | Paused/RetryWaiting → Queued → Probing | Revalidate resource and local files |
+| Automatic retry | Retryable error → RetryWaiting → Queued | Bounded count/time, exponential backoff, honor Retry-After |
+| User attention | Identity change, expired authentication, disk issue → NeedsAttention | Explicit continue, rebuild, or refresh-link options |
+| Cancel | Nonterminal → Cancelling → Cancelled | Stop requests/writes; file deletion is separate and explicit |
+| Abnormal-exit recovery | Scan unsettled tasks → inspect → Paused/NeedsAttention | Never mark uncertain data complete automatically |
 
-状态转换由一个控制器决定。实现前补完整转换表，覆盖重复暂停/取消、所有阶段的失败、进程退出和恢复；表外转换必须拒绝或明确幂等处理。
+One controller owns transitions. Complete the transition table before implementation for repeated pause/cancel, failures at every stage, exit, and recovery. Reject unlisted transitions or define explicit idempotence.
 
-必须保持的不变量：
+Required invariants:
 
-1. 使用 64 位偏移；内部区间统一为 `[begin, end)`；分段不重叠、不越界。未知长度走单流，不能伪造百分比。
-2. 多段只在 Range 与资源身份得到验证后启用。收到 200、错误 Content-Range、416、长度变化时重新探测或安全降级，不能直接写入预期分段位置。
-3. 续传优先使用强 ETag/If-Range；弱验证器不能冒充强身份保证。无法证明资源一致时重新下载或要求处理。
-4. 分段请求使用一致的字节表示，避免透明解压使远端偏移与落盘偏移不一致。
-5. SQLite 事务不能同时保证下载文件写入原子性。进度分为已接收、已写入、已确认可恢复；持久化可恢复偏移不能超前于文件同步点。
-6. 恢复必须校对数据库、临时文件与分段记录；不确定区间回退重下。强制终止与断电是不同验证等级，不承诺所有硬件上的绝对断电安全。
-7. 临时文件与最终文件在同一目标卷。完成前执行长度/可用摘要验证，记录 finalization 意图，再发布文件并提交完成状态；重启能协调中间状态。
-8. 重名默认保留现有文件并生成新名称；覆盖、删除、清理任务与清理文件分开。不能无提示删除用户已有文件。
-9. 更新下载地址不能只凭文件名判断相同资源；认证或请求头跨来源重定向时不得无条件转发。
+1. Use 64-bit offsets and half-open `[begin, end)` ranges. Segments cannot overlap or exceed bounds. Unknown lengths use one stream without invented percentages.
+2. Enable segmentation only after validating Range and resource identity. On 200, invalid Content-Range, 416, or changed length, reprobe or safely fall back; never write blindly to expected offsets.
+3. Prefer strong ETag/If-Range for resume. Weak validators are not strong identity guarantees. Restart or request intervention when consistency cannot be established.
+4. Segmented requests use the same byte representation; transparent decompression cannot desynchronize remote/local offsets.
+5. SQLite transactions cannot make file writes atomic. Separate received, written, and confirmed-recoverable progress. Persisted recoverable offsets cannot precede file synchronization.
+6. Recovery cross-checks database, temporary files, and segments, redownloading uncertain ranges. Forced termination and power loss are different validation levels; no absolute power-loss guarantee on all hardware.
+7. Temporary/final files share a destination volume. Verify length/available digests, record finalization intent, publish, then commit completion. Restart reconciles intermediate states.
+8. Preserve existing files and generate a new name by default. Overwrite, delete, task cleanup, and file cleanup are separate; never silently delete existing user files.
+9. A refreshed URL's filename alone cannot establish identity. Never forward authentication/headers unconditionally across origins.
 
-## 8. 数据、协议与安全
+## 8. Data, protocols, and security
 
-数据模型至少包含 task、source、segment、queue、schedule、category、settings、schema_version；日志与短期事件不无限写入任务表。保存文件路径、验证器、预期长度、attempt 和已确认分段；数据库不保存明文密码或长期 Cookie。
+The model includes at least task, source, segment, queue, schedule, category, settings, and schema_version. Do not append unbounded logs/transient events to task tables. Store paths, validators, lengths, attempts, and confirmed segments; never plaintext passwords or long-lived Cookies.
 
-迁移文件编号递增，例如 `0001_initial.sql`。升级前备份元数据，事务内迁移；失败时保留旧库并报告。新版本数据库不能由旧程序静默降级打开。
+Number migrations incrementally, such as `0001_initial.sql`. Back up metadata before transactional migration. Preserve the old database and report failure. Older programs cannot silently downgrade/open newer schemas.
 
-浏览器协议先写到 `docs/protocols/`：协议版本、消息长度限制、request ID、允许命令、字段验证、响应和错误码。Native Messaging host 校验来源，桌面 IPC 限当前用户并做连接认证；不把无认证本地 HTTP 端口作为默认方案。
+Specify browser contracts in `docs/protocols/` first: version, message-size limits, request ID, commands, field validation, responses, and errors. Native Messaging validates callers; desktop IPC is current-user-only with connection authentication. An unauthenticated local HTTP port is not the default.
 
-只收集用户授权下载所需的 Cookie/头信息，不导出整份浏览器 Cookie 库。日志脱敏 URL 查询参数、认证头、Cookie 与本地敏感路径；默认无遥测。TLS 验证默认开启，任何例外都不能成为全局静默设置。
+Collect only Cookies/headers needed for authorized downloads, never the entire browser Cookie database. Redact URL queries, authentication headers, Cookies, and sensitive local paths from logs; no telemetry by default. TLS verification is enabled by default; exceptions cannot become silent global settings.
 
-媒体工具以结构化参数启动，禁止命令字符串拼接。固定允许的工具来源和版本，限制输出与运行时间，取消时回收进程树；解析失败保留可解释错误。自动升级执行代码前须设计真实性验证与回滚；在线更新发现和正式发行按当前授权延后，现有手动离线升级不等于在线服务已交付。
+Launch media tools with structured arguments, never shell command concatenation. Pin sources/versions, bound output/runtime, clean up process trees on cancellation, and retain understandable errors. Design authenticity checks/rollback before automatically upgrading executable code. Online update discovery and formal distribution are deferred; manual offline updates do not mean an online service is delivered.
 
-## 9. 界面与完整使用流程
+## 9. Interface and complete user workflows
 
-必须提前设计以下界面及空、加载、错误、禁用状态：主任务列表、新建任务、批量导入预览、任务详情、队列与计划、分类规则、媒体选择、设置、诊断/关于、浏览器扩展弹窗。
+Plan empty, loading, error, and disabled states for task lists, new tasks, batch-import previews, details, queues/schedules, category rules, media selection, settings, diagnostics/about, and extension popups. Fresh desktop settings default to English; saved English/Simplified Chinese choices are preserved. Changing language requires restart.
 
-主流程：新增/接管 → 检查 URL 与下载位置 → 选择立即/排队/计划 → 探测与下载 → 暂停/重试/处理错误 → 校验与完成 → 打开文件/目录。
+Main flow: add/take over → validate URL/destination → choose immediate/queued/scheduled → probe/download → pause/retry/resolve errors → verify/complete → open file/folder.
 
-任务详情展示来源、目标路径、速度、剩余量、连接与分段、恢复能力和最近错误。错误须区分网络、认证、资源变化、磁盘和工具缺失，并提供可执行操作；不向用户展示内部枚举作为说明。
+Details show source, destination, speed, remaining work, connections/segments, recovery capability, and recent errors. Distinguish network, authentication, resource changes, disk, and missing-tool failures with actionable options; internal enum names are not user explanations.
 
-扩展接管遵循用户启用的文件类型/站点规则，不能抢占所有浏览器请求。建立去重和确认机制；接管失败时回退浏览器路径，不能取消原下载后丢失任务。敏感请求不能跨站复用认证信息。
+Takeover follows user-enabled file/site rules, never all browser requests. Provide deduplication and acknowledgment. On failure, retain the browser path rather than losing a cancelled original. Sensitive requests cannot reuse authentication across sites.
 
-计划任务采用“时区 ID + 规则 + 下次执行点”，定义夏令时、错过计划和休眠恢复行为；默认唤醒后执行一次，不重复补跑。关机等动作默认关闭，由用户启用并提供倒计时取消。
+Schedules use timezone ID + rule + next execution point, defining daylight-saving, missed-run, and wake behavior. Execute once after wake by default without duplicate replay. Shutdown/similar actions are disabled by default, explicitly enabled, and cancellable during a countdown.
 
-## 10. 开发顺序与阶段交付门槛
+## 10. Development sequence and stage gates
 
-| 阶段 | 交付内容 | 退出门槛 |
+| Stage | Deliverables | Exit gate |
 |---|---|---|
-| M0 基线 | 功能对照、详细 PRD、目录与依赖、ADR、工具链探测、依赖锁定、测试设计 | 产品基线确认；构建验证入口清楚；关键未知有验证任务 |
-| M1 工程 | CMake 目标、应用启动、日志、设置、SQLite 初始迁移、测试服务、CI 定义 | 空白环境可配置构建并启动；依赖方向和线程原型通过 |
-| M2 单流完整链路 | F-01/F-13，命令→网络→落盘→完成与失败 | 正常、超时、认证、无权限、磁盘故障可验证 |
-| M3 可靠引擎 | F-02/F-03/F-12/F-13，分段、恢复、校验、最终发布 | 故障矩阵通过；重复操作和资源变化不损坏文件 |
-| M4 管理能力 | F-04/F-05/F-06，队列、分类、历史、计划 | 持久化、配额、时间边界与完成动作通过 |
-| M5 完整桌面 | F-08/F-14，所有主界面、托盘、翻译 | 主路径可实际操作，UI 无阻塞，高 DPI 检查通过 |
-| M6 浏览器与批量 | F-07/F-09/F-12，扩展、host、IPC、批量筛选 | Chrome/Edge 实装并验证认证、去重、失败回退 |
-| M7 媒体 | F-10/F-11，支持矩阵、工具 adapter、HLS/DASH | 自有音视频样例通过；缺工具与取消有完整处理 |
-| M8 发布候选 | F-14，全量回归、性能、安装/便携、迁移、许可证、文档 | 本文第 12 节全部有证据；剩余差异明确披露 |
+| M0 Baseline | Feature comparison, PRD, directories/dependencies, ADRs, toolchain, pins, test design | Confirmed baseline, clear build/validation entries, tasks for unknowns |
+| M1 Foundation | CMake targets, startup, logs/settings, SQLite migration, fixtures, CI | Clean configuration/build/startup, dependency/thread prototypes pass |
+| M2 Single stream | F-01/F-13, command → network → disk → completion/failure | Normal, timeout, authentication, permission, disk failures verified |
+| M3 Reliable engine | F-02/F-03/F-12/F-13, segments, recovery, verification, publication | Fault matrix passes; repeated operations/changes preserve files |
+| M4 Management | F-04/F-05/F-06, queues, categories, history, schedules | Persistence, quotas, time boundaries, completion actions pass |
+| M5 Desktop | F-08/F-14, main screens, tray, translations | Real main paths, responsive UI, high DPI checks |
+| M6 Browser/batch | F-07/F-09/F-12, extension, host, IPC, filtering | Installed Chrome/Edge authentication, deduplication, fallback |
+| M7 Media | F-10/F-11, support matrix, adapters, HLS/DASH | Owned media fixtures pass; missing-tool/cancel handling |
+| M8 Candidate | F-14, regressions, performance, installation/portable, migration, licenses/docs | Evidence for section 12; remaining differences disclosed |
 
-阶段之间允许为接口验证做小型原型；原型要明确标记和归档，不能成为未审核的正式实现。每个阶段保持可构建，完成当前任务的验证和记录后自动进入下一项，不要求用户逐次回复“继续”。
+Small interface-validation prototypes may cross stages when labeled and archived; they cannot become unreviewed production code. Keep every stage buildable. Complete current validation/records, then advance to the next authorized task without repeated continue replies.
 
-## 11. 测试策略与计划命令
+## 11. Test strategy and commands
 
-测试验证要求，不照抄实现。每个 F-* 至少有成功、失败、边界与持久化/取消案例（适用时）。网络测试独立控制 200/206/416、重定向、断流、限速、认证、远端内容变化和畸形响应；测试服务实现方式在 M0 确定，不使用公网作为唯一验收源。
+Tests validate requirements rather than mirror implementation. Each F-* needs applicable success, failure, boundary, persistence, and cancellation cases. Control 200/206/416, redirects, disconnects, throttling, authentication, remote changes, and malformed responses. Establish fixtures in M0; public networks cannot be the sole acceptance source.
 
-重点覆盖：零字节/未知长度/大于 4 GiB 文件、中文与长路径、目录重名、磁盘写满、任务删除与迟到回调、网络切换、重复接管、缺失数据库/临时文件、损坏导入、工具退出和程序强制终止。
+Prioritize zero-byte, unknown-length, and greater-than-4 GiB files; Chinese/long paths; duplicate directories; full disks; deletion/late callbacks; network changes; repeated takeover; missing databases/temporary files; corrupt imports; tool exit; and forced termination.
 
-以下是现有入口，在仓库根目录运行；Windows SDK、Qt、原生依赖及测试前置要求见 [README 构建说明](../README.md#从源码构建)。Linux／macOS 使用对应平台预设和指南，不能直接套用 Windows 命令：
+Run existing entries below from the root. See [README build instructions](../README.md#building-from-source) for Windows SDK, Qt, native dependencies, and test prerequisites. Linux/macOS use their own presets/guides rather than these Windows commands:
 
 ```powershell
 cmake --preset windows-msvc-debug
@@ -227,42 +227,42 @@ powershell -File scripts/package.ps1
 powershell -File scripts/smoke.ps1 -PackageDirectory out/package/MaskPilot-0.3.0-windows-x64
 ```
 
-`verify.ps1` 聚合 Windows 构建、CTest、发布路径／清单、离线更新恢复和扩展测试；失败返回非零，不能吞错。它不自动运行 clang-format／clang-tidy；仓库提供相应配置，修改者另行检查格式及适用静态诊断。浏览器扩展固定使用锁文件并提供 `npm ci`、`npm run build`、`npm test`。CI 配置存在不等于 CI 已运行；本地、CI、实机和人工检查证据分别记录。
+`verify.ps1` aggregates Windows build, CTest, release path/manifest checks, offline update recovery, and extension tests. Failures return nonzero. It does not automatically run clang-format/clang-tidy; apply repository formatting and applicable diagnostics separately. The extension uses a lockfile with `npm ci`, `npm run build`, and `npm test`. CI definitions do not prove executed CI. Record local, CI, real-machine, and manual evidence separately.
 
-不先设容易误导的全仓覆盖率数字；状态转换、区间计算、重试、恢复判定等关键分支必须有正反例并报告覆盖缺口。正式性能测试记录 CPU、磁盘、网络、依赖版本及样例，不使用“连接更多所以更快”作为结论。
+Avoid misleading repository-wide coverage percentages initially. Critical state, range, retry, and recovery branches need positive/negative cases and disclosed gaps. Performance records include CPU, disk, network, dependency versions, and fixtures; more connections alone do not prove performance.
 
-## 12. 发布验收与完成定义
+## 12. Release acceptance and definition of done
 
-1. 范围内 F-* 全部映射到任务和验收记录；未通过项不能静默延期或用占位按钮替代。
-2. 干净 Windows 测试环境安装与启动成功，机器无需开发环境；便携版、host 注册、升级和卸载分别检查。
-3. 文件正确性、恢复、资源变化、重复操作、认证与磁盘异常矩阵通过。文件哈希错误、静默丢任务、凭据泄露和任意命令执行是阻断项。
-4. 默认候选压力场景：100 个排队任务、8 个活跃任务、单任务最多 8 个连接并受全局上限约束；8 小时混合下载无崩溃和无界增长。M0 固定机器、样例和内存预算，运行前不能临时放宽标准。
-5. 候选响应目标：主界面常用动作在指定基准机器上 p95 不超过 200 ms，长操作可取消；目标须在 M0 明确测量方式后冻结。
-6. 发布包内依赖、许可证、版本信息和必要资源完整；没有机器绝对路径、真实凭据或测试下载内容。
-7. README、安装说明、开发说明、功能支持表、已知问题和恢复说明与实际程序一致；没有未说明的 TODO、假数据或无效入口。
-8. 交付包括源码、可运行包、可重复构建步骤、测试报告与已知限制。签名证书、商店账号和发布权限缺失时明确列为外部验证/发布阻碍，不能宣称已上架。
+1. Map every in-scope F-* to tasks/evidence. No silent deferral or placeholders for failed requirements.
+2. Install/start on clean Windows without developer tooling. Check portable operation, host registration, upgrades, and uninstall separately.
+3. Pass correctness, recovery, resource-change, repeated-operation, authentication, and disk-failure matrices. Digest mismatches, silent task loss, credential leaks, and arbitrary command execution block delivery.
+4. Default stress scenario: 100 queued tasks, 8 active, at most 8 connections per task under a global cap, and 8 hours of mixed downloads without crashes/unbounded growth. Freeze the machine, fixtures, and memory budget in M0; never loosen them before running.
+5. Candidate responsiveness: common UI actions at p95 ≤ 200 ms on the baseline machine, with cancellable long operations. Freeze measurement methods in M0.
+6. Packages contain complete dependencies, licenses, versions, and resources, with no machine absolute paths, credentials, or test downloads.
+7. README, installation/development guides, support tables, known issues, and recovery instructions match behavior, without unexplained TODOs, fake data, or dead entries.
+8. Deliver source, a runnable package, reproducible build steps, reports, and limitations. Missing certificates, store accounts, or publication permissions are explicit external blockers, never a published-availability claim.
 
-## 13. 执行、变更与会话恢复规则
+## 13. Execution, change, and session recovery rules
 
-- 编码前确定当前版本范围、主要目录、依赖方向、状态与协议契约、验收矩阵；根据实际职责、可维护性和验证证据有记录地演进。
-- 代码重构和目录调整始终遵守既定分层、安全边界与验收规则；先记录原因、收益、影响和迁移方式，同步设计及目录说明，再实施与验证。正在验收的候选程序保持一致，以保证证据对应同一版本。
-- 工作项写明需求编号、涉及文件、依赖、正常与异常行为、验证命令和完成条件；未读相关接口不得凭名称修改。
-- 常规实现细节由执行者决定。改变范围、数据格式、公共协议、顶层模块或验收标准时先记录原因、影响和替代方案；用户产品决策不能由实现便利性代替。
-- 验证失败先定位原因；不能删除测试、弱化断言或改动验收门槛来制造完成。修复后重复受影响检查，不无目的反复跑全套。
-- 当前任务未收敛前不随意切换功能。每个里程碑记录真实完成项、失败项、证据、剩余风险和下一条可执行动作。
-- 同会话内自动推进已授权且可逆的工作；仅在缺关键产品决策、凭据/工具、明确破坏性动作或外部发布条件时暂停相应步骤。独立工作仍可继续。
-- 不因到达消息长度或上下文边界重做规划。恢复时读取 `AGENTS.md`、本文、当前 `.idea-to-code/current.json` 指向的记录和最新任务，再从断点继续。
-- 提交、推送、公开发布不因规划确认而自动获得授权。既有明确授权可沿用，不重复请求。
-- 完成声明必须区分源码检查、测试替身、本地集成、实机产品路径和外部验证。单一执行者的自查不能描述为独立评审。
+- Before coding, establish scope, directories, dependency direction, state/protocol contracts, and acceptance matrices. Evolve them through recorded responsibilities, maintenance needs, and evidence.
+- Refactoring/layout changes retain layering, security boundaries, and acceptance rules. Record reasons, benefits, impact, and migration; update design/layout documentation first. Keep candidates consistent during acceptance so evidence corresponds to one version.
+- Work items identify requirements, files, dependencies, normal/error behavior, commands, and completion conditions. Read relevant interfaces before editing.
+- Implementers decide routine details. Record reasons, impact, and alternatives before changing scope, data formats, public protocols, major modules, or acceptance criteria. Convenience cannot replace user product decisions.
+- Diagnose failed checks. Never remove tests, weaken assertions, or change gates to manufacture completion. Repeat affected checks after fixes without purposeless full-suite repetition.
+- Resolve current work before switching features. Milestones record completed/failed items, evidence, risks, and the next action.
+- Advance authorized reversible work automatically. Pause dependent steps only for missing critical decisions, credentials/tools, destructive actions, or external publication conditions; independent work may continue.
+- Context boundaries do not require replanning. Read `AGENTS.md`, this blueprint, records selected by `.idea-to-code/current.json`, and the latest task, then resume.
+- Planning approval does not automatically authorize commits, pushes, or publication. Existing explicit authorization persists.
+- Distinguish source inspection, test doubles, local integration, real product paths, and external validation. One executor's self-review is not independent review.
 
-## 14. 基线确认与剩余未知
+## 14. Baseline confirmation and remaining unknowns
 
-用户已经确定 C++、Qt 和先规划再开发。建议确认的产品基线是：Windows 11 x64 首发、Qt Widgets、本文 1.0 范围以及 FTP/完整站点抓取/Firefox/跨平台等后续边界。
+The user selected C++, Qt, and planning first. The original proposed baseline was Windows 11 x64 first, Qt Widgets, the 1.0 scope above, and later FTP/full-site capture/Firefox/cross-platform boundaries. Consult current matrices for subsequent implementations.
 
-原始代码许可证已确定为 MIT；新增依赖仍需独立核对许可。依赖精确版本、安装器工具、网络故障服务和容量预算由工程配置与验收记录维护。未验证的库组合不能假定可用；若失败，在原目标下比较替代方案，不能擅自转为 Go 或其他 UI 技术。
+Original code uses MIT; new dependencies need separate checks. Engineering configuration and acceptance records maintain versions, installer tooling, fault fixtures, and budgets. Never assume untested combinations work. If they fail, compare alternatives under the same goal rather than silently switching to Go or another UI stack.
 
-本文完成不依赖上述决策全部已做出；进入相应应用实现前必须解决关联决策。蓝图确认后，执行应持续到既定发布验收完成或出现具体外部阻碍，而不是在第一个能运行的窗口处结束。
+This blueprint does not require every decision resolved immediately; resolve associated decisions before relevant implementation. Continue after confirmation until agreed release acceptance or a concrete external blocker, rather than stopping at the first runnable window.
 
-## 15. 技术与分发依据
+## 15. Technical and distribution evidence
 
-依赖的接口契约、版本、许可证和实际构建结果由工程配置、架构决策及必要的依赖声明记录。外部产品的研究资料不进入本工程；不复制其他产品名称、标识和研究笔记。
+Configuration, architecture decisions, and dependency notices record contracts, versions, licenses, and build outcomes. External-product research stays outside the repository; do not copy product names, identifiers, or research notes.

@@ -1,124 +1,128 @@
 # MaskPilot Download Manager
 
-基于 C++20 和 Qt 6 Widgets 的 Windows／Linux 下载管理器。HTTP/HTTPS、FTP/FTPS、SFTP、直播录制、媒体适配器及独立 BT 引擎负责传输、恢复、校验和安全落盘；桌面、命令行与浏览器共用任务调度和持久化层。Linux 的具体系统、运行库和验收边界见 [Linux 构建与验收](docs/testing/linux-acceptance.md)，不能将其视为所有发行版兼容。
+A C++20/Qt 6 Widgets download manager for Windows and Linux. HTTP/HTTPS, FTP/FTPS, SFTP, native live recording, media adapters, and an independent BT engine share task scheduling and persistence across desktop, CLI, and browser entry points. See the [Linux guide](docs/testing/linux-acceptance.md) for the tested systems/libraries; support is not universal across distributions.
 
-**当前主干 `master`**汇总已经完成的功能，包括浏览器辅助链接／登录恢复、周期站点同步、原生正文滚动额度和可选完成后扫描。日常开发直接在最新 `master` 上进行，按已验证的完整阶段提交；不保留功能各异的长期开发分支。冻结的 0.2.0／0.3.0 包保持独立；旧包的长期测试证据不代表当前开发代码。本轮以本地验证和候选包为目标，在线更新与正式发行延后。实际支持范围及剩余差距见 [功能与缺口](docs/product/feature-matrix.md)。
+**Current `master`** contains completed increments, including browser-assisted link/login recovery, periodic site synchronization, rolling native-payload budgets, and optional completion scanning. Daily work uses current `master` and focused verified commits, not divergent long-lived feature branches. Frozen 0.2.0/0.3.0 packages remain separate: their long-run evidence does not qualify current development code. Local validation/candidate packages are the present scope; online updates and formal release are deferred. See [features and gaps](docs/product/feature-matrix.md).
 
-macOS 已加入原生构建配置、平台适配及 GitHub Actions 双架构验证入口，**尚未在真实 macOS 上完成编译／运行验收**。推送代码后，`macOS` 工作流分别在 Apple Silicon 和 Intel 上构建全部目标、运行核心及平台测试、上传日志；失败应修正后重跑，不能仅凭配置文件宣称支持。操作方式、测试范围与待办见 [macOS 构建与验收](docs/testing/macos-acceptance.md)。
+Native macOS configuration, Apple adapters, and dual-architecture GitHub Actions entry points exist, but **actual macOS compilation/runtime qualification remains unverified**. The `macOS` workflow builds all targets, runs core/platform tests, and uploads logs on Apple Silicon and Intel. Failures require fixes/reruns; configuration alone does not prove support. See [macOS acceptance](docs/testing/macos-acceptance.md).
 
-## 阅读入口
+## Reading guide
 
-| 目的 | 入口 |
+| Goal | Entry points |
 |---|---|
-| 使用与支持范围 | [使用说明](#使用)、[协议与限制](docs/product/support-matrix.md)、[功能与缺口](docs/product/feature-matrix.md) |
-| 编译与开发 | [从源码构建](#从源码构建)、[当前架构](docs/architecture/overview.md)、[工程蓝图](docs/DEVELOPMENT_BLUEPRINT.md) |
-| 验证与平台 | [测试场景](docs/testing/scenarios.md)、[Linux](docs/testing/linux-acceptance.md)、[macOS 待验收入口](docs/testing/macos-acceptance.md) |
+| Usage and support | [Usage](#usage), [protocols and limits](docs/product/support-matrix.md), [features and gaps](docs/product/feature-matrix.md) |
+| Build and development | [Source builds](#building-from-source), [current architecture](docs/architecture/overview.md), [blueprint](docs/DEVELOPMENT_BLUEPRINT.md), [contributing](CONTRIBUTING.md) |
+| Validation and platforms | [Test scenarios](docs/testing/scenarios.md), [Linux](docs/testing/linux-acceptance.md), [pending macOS qualification](docs/testing/macos-acceptance.md) |
 
-## 使用
+## Language
 
-### 直播录制
+The desktop defaults to **English**, including on a Chinese-language system when no preference is saved. Choose English or Simplified Chinese in **Settings → Language (restart)**, save, and restart. Existing saved choices remain in effect; upgrades do not reset Chinese preferences. Canonical repository documentation and contribution templates are English. This is two-language desktop support, not a claim that every language or diagnostic is localized.
 
-新建下载后打开“直播录制”页，选择直接 HLS 或 HTTP-FLV 地址。HLS 保存为 `.ts`，HTTP-FLV 保存为 `.flv`。普通 TS／FLV 及非 DRM 的 AES-128 TS 无需媒体组件；fMP4、不连续片段和对齐的独立音轨需要在“媒体访问”选择可信本地处理组件。默认最长 1 小时、最大 1 GiB，可设 1 秒～48 小时、1 MiB～1 TiB。右键活动任务选择“结束并保存录制”，或等待来源正常结束／达到上限；只保存完整分片或 FLV 标签，不转码。
+## Usage
 
-暂停、取消、网络失败、缺失分片和不支持的格式不会生成最终文件。继续任务从当前直播重录，不拼接旧缓存或补回已错过内容。HLS 初次从列表末尾最多三个分片开始，按序号去重。每轨道最多保留 8192 个完整分片，到达后结束并保存。支持普通 MPEG-TS、AES-128 CBC（密钥轮换、显式／序号 IV）、严格字节范围、初始化映射／fMP4、不连续序列及清单序号／时长／不连续序列及 PROGRAM-DATE-TIME 节目时钟对齐的独立音轨。低延迟 HLS 仅回退下载完整分片，不捕获部分分片；拒绝增量／跳片清单、DRM、SAMPLE-AES、无法对齐的音轨。DASH 直播、RTMP 及网页直播解析仍未实现。
+### Live recording
 
-默认所有跳转、列表、密钥与分片须保持初始协议、主机和有效端口；如需其他来源，在“媒体访问”逐项明确授权，各来源使用独立登录材料，不跨来源继承凭据。高级页可填写 Cookie／Authorization，仅保留在内存，重启需重新输入。支持选定代理、动态限速、原生正文额度、最终摘要、发布前扫描和无覆盖发布。额度耗尽转策略等待，恢复后重录，已用量不返还。正文计量包含收到但未组成最终完整单位的媒体字节，不含播放列表或网络封装。
+In a new download, choose a direct HLS or HTTP-FLV URL on the live tab. HLS produces `.ts`; HTTP-FLV produces `.flv`. Ordinary TS/FLV and non-DRM AES-128 TS need no helper. fMP4, discontinuities, and aligned separate audio require a trusted local processor under Media access. Defaults: 1 hour/1 GiB; bounds: 1 second–48 hours and 1 MiB–1 TiB. Finish/save an active recording from its context menu, or let the source end/a limit stop it. Only complete segments/FLV tags are saved, without transcoding.
+
+Pause, cancellation, network errors, missing segments, or unsupported formats do not publish a final file. Resume records the current feed afresh, without joining old cache or recovering missed content. HLS starts at up to the last three segments and deduplicates by sequence. Each track retains at most 8192 complete segments, then finishes/saves. MPEG-TS, AES-128 CBC key rotation/explicit or sequence IVs, exact byte ranges, initialization maps/fMP4, discontinuities, and separate audio aligned by sequence/duration/discontinuity/PROGRAM-DATE-TIME are supported. Low-latency HLS falls back to complete segments; partial, delta/skip, DRM, SAMPLE-AES, and unaligned audio are rejected. DASH live, RTMP, and webpage live extraction remain unsupported.
+
+Redirects, playlists, keys, and segments stay on the initial protocol/host/effective port by default. Explicitly authorize additional origins under Media access; each has separate login material and never inherits another origin's credentials. Advanced Cookie/Authorization values remain in memory and need reentry after restart. Selected proxy, dynamic throttling, native-payload budget, final digest, pre-publication scan, and no-replace publication apply. Budget exhaustion causes policy waiting; later recording starts afresh and consumed bytes are not refunded. Metering includes media bytes that never form a final complete unit, excluding playlists/network framing.
 
 ```powershell
 maskpilot_cli.exe "https://example.test/live/index.m3u8" "D:\Downloads\record.ts" ".\live-data" --live-hls --live-duration 1800 --live-max-bytes 1073741824
 maskpilot_cli.exe "https://example.test/live/feed.flv" "D:\Downloads\record.flv" ".\flv-data" --live-flv --source-cookie-env LIVE_COOKIE --source-authorization-env LIVE_AUTH
 ```
 
-凭据环境变量按需提供，勿将真实凭据写入脚本。运行直播验收：`ctest --test-dir out/build/windows-msvc-protocols -R 'Live|live_recording_product_path' --output-on-failure`。真实视频测试要求测试 PATH 中有 `ffmpeg`／`ffprobe`，复杂 HLS 仅使用本地处理组件封装，全部网络请求仍由原生引擎完成。`--live-muxer <绝对路径>` 选择组件；`--live-origins-env MASKPILOT_MEDIA_ACCESS` 使用下述来源 JSON。
+Supply credential variables only as needed; never script real secrets. Run `ctest --test-dir out/build/windows-msvc-protocols -R 'Live|live_recording_product_path' --output-on-failure` for live checks. Real video fixtures need `ffmpeg`/`ffprobe` on the test PATH. Complex HLS is packaged locally; native code performs all network requests. `--live-muxer <absolute-path>` selects the processor; `--live-origins-env MASKPILOT_MEDIA_ACCESS` reads the origin JSON below.
 
-### 文件与站点下载
+### Files and site downloads
 
-静态站点项目处理公开、同来源 HTTP(S) 页面，使用 libxml2 和 CSS 分词器重写本地引用。实际响应类型用于分类；缺失、冲突或不安全的类型不按文件名猜测。支持 UTF-8、UTF-16、Latin-1／ASCII，移除脚本、表单、嵌入框架及外部自动加载引用，并设置限制内容安全策略；不还原动态应用、登录会话或受保护内容。
+Static site projects handle public same-origin HTTP(S) pages and rewrite local references using libxml2 and a CSS tokenizer. Actual response types determine classification; absent/conflicting/unsafe types are not guessed from filenames. UTF-8, UTF-16, Latin-1/ASCII are supported. Scripts, forms, embedded frames, and external automatic loads are removed and restrictive content-security policy is applied. Dynamic apps, login sessions, and protected content are not reconstructed.
 
-解压发布 ZIP 后直接运行 `maskpilot.exe`，或双击 `Install.cmd` 安装到当前用户目录，无需管理员权限。升级前退出安装目录内的程序；新版本提供带恢复记录的离线升级。`Uninstall.cmd` 保留任务数据库、配置和已下载文件。
+Extract a candidate ZIP and run `maskpilot.exe`, or use `Install.cmd` for current-user installation without administrator privileges. Exit installed programs before upgrading. Manual offline upgrades provide recovery records; `Uninstall.cmd` retains databases, settings, and downloads.
 
-1. 点击“新建下载”，填写地址和保存位置；高级选项提供连接数、校验值、代理、请求头、任务限速与计划时间。
-2. 使用工具栏或右键菜单暂停、恢复、调整优先级、重新下载、刷新链接或登录信息。删除记录保留最终文件；取消任务清理其缓存。
-3. 设置中调整并发、全局限速、分类目录、中英文、托盘和完成动作。关机／退出动作有可取消的倒计时。
-4. “批量添加”可提取文本链接或展开数字 URL 模板；任务清单先显示目录、路由与认证预览，确认后新增为暂停的独立任务，中途保存失败可重试剩余条目。见 [清单格式](docs/protocols/task-list.md)。
+1. Choose New download, enter a URL/destination, and set advanced connections, digest, proxy, headers, task rate, or schedule as needed.
+2. Use toolbar/context actions to pause, resume, reprioritize, redownload, or refresh links/login. Removing records preserves final files; cancellation cleans owned cache.
+3. Settings control concurrency, global rates, category directories, English/Simplified Chinese, tray behavior, and completion actions. Exit/shutdown has a cancellable countdown.
+4. Batch add extracts links or expands numeric templates. Task-list import previews paths/routes/authentication before adding paused independent tasks; failed saves allow retrying leftovers. See the [list format](docs/protocols/task-list.md).
 
-HTTP 文件只有在服务器提供可验证的强资源标识及 Range 支持时才续传；其余情况安全重下。开发代码在连接空闲时可拆分尚未完成的大段，每任务最多 8 个活动连接、256 个持久化分段；剩余段过小时保持原分段，不承诺所有服务器上都更快。认证头与 Cookie 仅保存在本次进程内，重启后需补充。带签名参数的原始 URL 保存在本机任务数据库和主动导出的任务清单中，请保护应用数据目录与导出文件。
+HTTP byte resume requires verifiable strong resource identity and Range support; otherwise restart safely. Idle connections can split a sufficiently large remaining extent, up to 8 active connections and 256 durable extents per task. Small remainders stay unsplit; throughput improvement is not universal. Authentication headers/cookies are process-local. Signed original URLs persist in the local database/explicit exports; protect data directories and exported files.
 
-## 静态站点项目
+## Static site projects
 
-在“工具 → 静态站点项目”新建项目，选择公开根地址、输出目录、队列、页面深度、路径前缀和资源类型。新建不访问来源；“预览”下载候选页面与 CSS，包含样式导入，以生成资源计划。已识别的图片、字体和媒体在明确“开始”后下载。未知候选链接可能在有界请求后被识别为其他类型，预览会显示跳过原因。
+Create a static site project from Tools, choosing a public root, output directory, queue, depth, path prefix, and resource types. Creation makes no request. Preview fetches candidate pages/CSS, including stylesheet imports, to plan resources. Recognized images/fonts/media download only after explicit Start. Bounded inspection may identify other types; preview shows skipped reasons.
 
-所有子任务共用现有队列、窗口、日额度、限速与恢复机制，普通任务列表仍显示其进度。项目暂停或重启后需明确恢复；删除、取消或修改子任务会触发重新核对，项目不会偷偷重建被取消的任务。项目代理密码只留在本次进程，重启后重新输入，不广播来源 Cookie 或登录材料。
+Children share queues, windows, daily budgets, rates, and recovery and appear in the ordinary task list. Project pause/restart requires explicit resume. Removed/cancelled/edited children are reconciled, not silently recreated. Project proxy passwords remain process-local and need reentry after restart; source cookies/login are not broadcast.
 
-成功结果位于所选目录的 `site-<项目编号>/r-<修订>/index.html`。“打开”先核验标记与文件哈希。“更新”重新获取并预览，确认后发布到新修订；失败或取消时仍可打开上一版。旧修订、原始下载和普通任务记录保留，删除项目历史也保留文件。存储正文与输出上限按修订计算，不代表线路流量或总磁盘限额。
+Completed exports are `<selected-directory>/site-<project-id>/r-<revision>/index.html`. Open verifies markers/hashes. Update fetches/previews anew and confirmation publishes a new revision; error/cancellation preserves the previous one. Old revisions, original downloads, and task records remain; deleting project history preserves files. Per-revision stored-body/output caps are not traffic/total-disk quotas.
 
-首次导出完成后，可在项目窗口明确“启用同步”，选择 5～10080 分钟间隔和 1～100 次自动运行。该操作允许按**已保存的项目范围**自动获取页面和资源，生成完整新修订；当前编辑框中的其他改动须先手动“更新”。下次时间从每次成功完成起计算，错过多个周期只运行一次，次数耗尽自动停止。旧版本不自动删除，即使来源内容未变也会保留新的完整版本，请预留磁盘空间。
+After the first export, explicitly enable synchronization with 5–10080 minute intervals and 1–100 runs. This authorizes complete automatic revisions within the **saved scope**; other draft changes need a manual Update first. Next time is measured from successful completion; missed cycles coalesce into one and the finite count stops automatically. Old versions are retained even for unchanged sources, so allow disk space.
 
-周期同步仅在程序打开时运行。已完成项目的等待计划跨关闭保留；中断的活动修订重启后暂停，需明确恢复。手动暂停、取消、子任务暂停或同步失败会关闭周期；缺少必要代理凭据时停止并提示，不改成直连。时钟回退时从新时间重新等待一个间隔。“停止周期”只关闭后续运行，当前已接受的工作继续；要停止当前下载请用“暂停”。等待下一周期期间不会执行全部完成后的退出／关机动作。
+Synchronization runs only while the app is open. Completed projects retain waiting schedules across closure; interrupted revisions restart paused and need resume. Manual/project-child pause, cancellation, or failure disables cycles. Missing proxy credentials stop with an error, never direct fallback. A backward clock jump restarts the interval. Stop cycle affects future runs, while Pause stops current work. Waiting for a cycle blocks all-complete exit/shutdown.
 
-本地验证客户端使用 `maskpilot_cli.exe --project REQUEST_JSON DATA_DIRECTORY`，支持 `create`、`preview`、`start`、`pause`、`resume`、`cancel`、`update`、`status`、`list`、`open`、`remove`。请求为有界 JSON，代理凭据仅通过指定的环境变量名传入。UI 与客户端使用同一数据目录锁，不能同时打开同一目录。
+The local verification client uses `maskpilot_cli.exe --project REQUEST_JSON DATA_DIRECTORY` with `create`, `preview`, `start`, `pause`, `resume`, `cancel`, `update`, `status`, `list`, `open`, and `remove`. Requests are bounded JSON; proxy secrets use named environment variables. UI/CLI share the data-directory lock and cannot concurrently open the same directory.
 
-## 升级与恢复
+## Upgrade and recovery
 
-从可信渠道独立取得 ZIP 的 SHA-256，使用已信任的安装目录或已校验解压目录中的更新脚本：
+Obtain the ZIP SHA-256 independently from a trusted channel, then use the updater from an already trusted installation or verified extraction:
 
 ```powershell
-$expectedHash = '填写独立取得的64位十六进制SHA256'
+$expectedHash = 'REPLACE_WITH_INDEPENDENTLY_VERIFIED_64_HEX_SHA256'
 ./scripts/update.ps1 -Action Apply -Package D:/downloads/MaskPilot-0.3.0-windows-x64.zip -PackageSha256 $expectedHash -InstallDirectory D:/Apps/MaskPilot
 ./scripts/update.ps1 -Action Recover -InstallDirectory D:/Apps/MaskPilot
 ./scripts/update.ps1 -Action Rollback -InstallDirectory D:/Apps/MaskPilot
 ./scripts/update.ps1 -Action Finalize -InstallDirectory D:/Apps/MaskPilot
 ```
 
-`Apply` 在同一个只读文件句柄上校验 ZIP，再验证解压路径、完整文件清单和原安装归属。安装目录中的程序须先退出；遇到未知冲突、文件修改或目录联接会停止并保留现场。包内清单用于一致性检查，独立取得的外部哈希决定本次选择的包。
+`Apply` hashes the ZIP through the same read-only handle, then checks extraction paths, full manifest, and prior ownership. Installed programs must exit first. Unknown conflicts, modifications, or junctions stop and retain evidence. The internal manifest checks consistency; the independently obtained external hash selects the trusted package.
 
-中断后用 `Recover` 恢复原安装。升级成功保留一份回滚材料：确认效果后 `Finalize` 清理；需要撤销时 `Rollback` 恢复安装文件。下一次升级前应处理这份记录。配置、下载文件和旧浏览器注册记录按归属保留。
+`Recover` restores the old installation after interruption. Successful upgrades retain rollback material: `Finalize` cleans it after acceptance, or `Rollback` restores files. Resolve that record before the next upgrade. Settings, downloads, and old browser registration retain ownership rules.
 
-可核验的持久检查点支持自动恢复；捕获到写入错误时只清理本次独占创建的半成品。若强制终止或存储故障留下无法核验的截断暂存／日志，工具保留现有安装、备份与现场并报告冲突，需要先人工核验，不猜测删除。新增浏览器的注册按下文步骤另行执行。
+Verifiable durable checkpoints support automatic recovery. Caught write failures clean only partial files exclusively created by that call. Unverifiable truncated staging/journals from termination/storage errors preserve installation, backup, and evidence for manual inspection, not guessed deletion. Register new browsers separately below.
 
-回滚只恢复安装文件。新程序已迁移数据库后，旧程序的数据兼容性另行处理；迁移备份为数据目录中的 `tasks.db.before-v<版本>-<编号>.db`，更新工具不覆盖任务数据库或自动回退下载数据。当前提供手动离线升级，在线发现、签名与商店发行仍需发布配置。
+`Rollback` restores installation files only. Older-program compatibility after migration is separate. Backups are `tasks.db.before-v<version>-<id>.db`; the updater never overwrites task databases or automatically rolls back downloads. Online discovery, signing, and store release remain separate work.
 
-## 代理与凭据
+## Proxy and credentials
 
-新建／编辑请求提供单独的“代理”页，地址中禁止嵌入账号密码。直接文件支持 HTTP／HTTPS／SOCKS5 代理，SOCKS5 的目标主机名由代理解析；HTTPS 代理校验证书与主机名。留空表示明确直连，指定代理后不受环境中的 `NO_PROXY` 绕过规则影响。
+New/edit requests have a separate Proxy tab; URL-embedded credentials are forbidden. Files support HTTP/HTTPS/SOCKS5, proxy-side target DNS for SOCKS5, and certificate/hostname checks for HTTPS proxies. Empty means explicit direct. Selected proxies cannot be bypassed by environment `NO_PROXY`.
 
-代理账号密码默认仅存内存。可在代理页明确勾选“记住代理凭据”，由当前用户的系统凭据库保存（Windows 凭据管理器／Linux 已解锁的 Secret Service），不提供明文回退。macOS 已增加 Keychain 适配，真实运行仍待 CI 验收。任务库与导出清单不保存密码。未保存的凭据在重启或导入后须通过“更新请求”补充，缺少所需凭据时不会开始传输。右键“忘记代理凭据”会清除安全保存及当前会话的代理账号密码，并保留必须认证的标记。认证协商仍遵循代理服务器的协议。
+Credentials default to memory only. Explicit Remember proxy credentials uses current-user Windows Credential Manager/unlocked Linux Secret Service with no plaintext fallback. macOS Keychain exists but real runtime qualification is pending. Databases/exports never contain passwords. Unsaved required credentials need reentry after restart/import and block transfer until supplied. Forget clears saved/in-memory username/password but retains the authentication-required flag. Negotiation follows the proxy protocol.
 
-BT 支持 HTTP CONNECT 与 SOCKS5 代理；不同路由或凭据使用隔离会话。代理 BT 使用 TCP，关闭 DHT、本地发现、自动端口映射和 uTP，不支持 UDP Tracker 或 HTTPS 代理。代理主机本身可能需要本机 DNS；不承诺匿名性。主动 FTP 不能与代理组合。媒体支持认证 HTTP／SOCKS5 代理，代理秘密和原始来源地址经私密标准输入传递，不放进解析组件启动参数。
+BT uses HTTP CONNECT/SOCKS5 with separate route/credential sessions. Proxied BT uses TCP and disables DHT, local discovery, automatic mapping, and uTP; UDP trackers/HTTPS proxies are unsupported. Proxy hostname resolution may be local; anonymity is not promised. Active FTP cannot use proxies. Authenticated HTTP/SOCKS5 media passes secrets/original URLs through private stdin, not helper arguments.
 
-CLI 可使用 `--proxy-user-env <变量名>` 与 `--proxy-password-env <变量名>` 读取当前进程环境中的凭据。`--proxy-user`／`--proxy-password` 也可用，但参数可能被进程检查工具或 shell 历史记录看到。
+CLI `--proxy-user-env <name>`/`--proxy-password-env <name>` read process credentials. `--proxy-user`/`--proxy-password` also work but can appear in process inspection or shell history.
 
-## 下载队列（开发代码）
+## Download queues (development code)
 
-工具栏“下载队列”可新建、修改、暂停、启用和删除空队列；每队列可设置 1–8 个活动任务及下载／BT 上传限速，仍遵守全局和任务限制。顶部队列筛选与环境筛选独立，新建独立下载可选择队列；浏览器及环境任务默认进入默认队列。暂停任务后可通过右键“移动到队列”整批移动，环境、代理、凭据引用和缓存保持原配置。包含记录的队列须先移动或移除记录后才能删除。
+Manage named queues from Tools: create/edit/pause/enable/delete empty queues. Each admits 1–8 active tasks and download/BT-upload rates within global/task limits. Queue/profile filters are independent. New standalone downloads can choose queues; browser/profile tasks use Default. Move paused tasks without changing ownership, route, vault references, or cache. Move/remove records before deleting nonempty queues.
 
-暂停队列不会改变手动暂停的意图。重新启用队列只恢复因队列策略等待的任务，不会自动启动手动暂停、失败或已完成任务。媒体辅助进程的限速在启动时确定；降低限制若与活动媒体任务冲突，须先暂停相关任务，设置不会假装即时生效。
+Queue pause preserves manual task intent. Enabling resumes only policy-waiting tasks, not manually paused, failed, or completed tasks. Media rates are reserved at startup; conflicting reductions require pausing, rather than pretending to update active helpers live.
 
-每队列可启用每周运行窗口，选择开始星期、当地起止时间和明确的 IANA 时区（例如 `Asia/Shanghai`）。结束时间不晚于开始时间时跨午夜，时间相同表示从所选日期开始的 24 小时。窗口外任务保留运行意图并等待；窗口内仍遵守一次性计划、重试、环境授权和手动暂停。夏令时缺失分钟不会运行，重复分钟均按当地窗口判断；不可用时区会阻止运行，不会改用系统时区。窗口不会重复创建已完成下载；站点周期同步单独在项目窗口开启。
+Queues can set weekly weekdays/local start/end and explicit IANA zone, e.g. `Asia/Shanghai`. End at/before start crosses midnight; equal times mean 24 hours from selected dates. Outside windows, running intent waits; inside, schedules/retries/profile authority/manual pause still apply. Missing DST minutes do not run; repeated minutes both follow local windows. Unknown zones block, not system fallback. Windows do not recreate completed downloads; project cycles are separate.
 
-队列的“原生正文额度”为 0 时关闭，正数时允许 HTTP/FTP/SFTP 和原生直播录制。窗口设为 0 使用 UTC 日；1～168 使用保守滚动小时。它限制原生回调获准接收的正文（包含探测、重试与重新接收的数据），已有分片、校验和合并不重复扣减。额度耗尽后保留运行意图，窗口释放后可继续；手动暂停不会自动恢复。修改额度或窗口前须暂停该队列所有活动任务。BT／磁力和组件点播媒体任务可放入普通队列；严格预算队列会在启动引擎前明确拒绝，本地种子导入需先选择普通队列。
+Native-payload budget 0 disables it. Positive budgets allow HTTP/FTP/SFTP/native live. Window 0 means UTC day; 1–168 means conservative rolling hours. Admitted payload includes probes/retries/repeated data, not cached extents/hashing/assembly again. Exhaustion retains running intent for later credit; manual pause never auto-resumes. Pause all active queue tasks before edits. BT/magnet/helper media can use ordinary queues but strict budgets reject them before engine startup; local torrent import needs an ordinary queue.
 
-这不是运营商流量计：不计 TLS、协议头、套接字缓冲等开销。界面分别显示已确认接收、已扣额度及预留／未核实量；运行中确认量可能滞后。额度先持久化预留，正常结束仅返还未使用部分；崩溃后不退还无法核实的预留。删除历史、移动任务或修改配置不会抹去既有用量；回拨时钟不会重新获得旧日期额度。
+This is not an ISP traffic meter: TLS/headers/socket buffers/overhead are excluded. UI separates confirmed, charged, and reserved/unverified bytes; confirmation can lag. Reservations persist first; normal completion refunds only unused credit, crashes do not refund unverifiable reservations. Removing history/moving tasks/editing configuration does not erase usage; clock rollback restores no old credit.
 
-滚动模式持续计入所有活动传输的预留额；正常结束后，确认正文从**该次传输结束时间**起保留一个窗口。崩溃后未核实的预留从恢复时间起保留一个窗口。长任务的较早正文因此可能晚些释放，不能等同于逐字节时间戳计量；跨午夜不会重置，回拨时钟也不会补发额度。滚动窗口内的计量不受删除任务历史影响。
+Rolling mode continuously counts active reservations. Confirmed payload remains charged for a window from **that attempt's end**; crash reservations remain for a window from recovery. Early bytes in long transfers can therefore expire later than byte-timestamp metering. Midnight does not reset rolling budgets, clock rollback adds no credit, and deleting history changes no usage.
 
 ## FTP / FTPS
 
-在新建任务中粘贴 `ftp://` 或 `ftps://` 地址，“FTP / FTPS”页提供用户名、密码、主动模式与私有 CA 证书。`ftp://` 默认明文／被动模式，勾选“必须使用显式 TLS”可要求 AUTH TLS；`ftps://` 使用隐式 TLS。始终校验证书和主机名，不自动降级为明文。请勿将账号密码写进 URL；账号密码不保存，重启后通过“更新请求”重新输入。
+Enter `ftp://`/`ftps://` and configure login, active mode, and private CA on FTP / FTPS. `ftp://` defaults to cleartext/passive; require explicit TLS for AUTH TLS. `ftps://` uses implicit TLS. Certificates/hostnames are always checked, without cleartext downgrade. Never embed login in URLs. Credentials are not saved; reenter after restart.
 
-FTP 使用单数据连接。只有提供预期 SHA-256 且 URL、大小、修改时间、TLS 模式匹配时才尝试 REST 续传，最终摘要必须一致；服务器拒绝续传则重下。不满足条件时安全重下。支持文件下载，不提供 FTP 上传或远程目录浏览。浏览器扩展目前仍只接管 HTTP/HTTPS。
+FTP uses one data connection. REST resume requires expected SHA-256 and matching URL/size/modification time/TLS mode, with final digest verification. Refused resume or insufficient identity restarts safely. File downloads only: no upload/remote directory browser. Extension interception remains HTTP/HTTPS.
 
 ```powershell
 maskpilot_cli ftp://example.test/file.zip C:/Downloads/file.zip C:/Downloads/state --ftp-user user --ftp-explicit-tls --sha256 <expected-sha256>
 ```
 
-有密码的登录优先使用桌面密码框；命令行参数可能出现在系统进程列表和 shell 历史中。
+Prefer desktop password fields; command arguments may be visible in process listings/history.
 
 ## SFTP
 
-新建任务粘贴 `sftp://` 地址，在“SFTP”页填写可信服务器的 SHA-256 主机指纹，并选择密码或本地私钥登录。支持 `SHA256:` 前缀及无填充的常见指纹形式；指纹在发送登录信息前核对，不自动接受未知主机。私钥须是本地普通文件，支持加密密钥口令；不使用 SSH 代理、默认密钥或交互式认证。
+Enter `sftp://`, a trusted SHA-256 server fingerprint, and password or explicit local private-key login. Common unpadded fingerprints accept optional `SHA256:`. Pins are checked before sending credentials; unknown hosts are never auto-trusted. Keys must be ordinary local files; encrypted-key passphrases work. No SSH agent, ambient keys, or interactive authentication.
 
-用户名、密码及私钥口令只存内存，重启后需通过“编辑请求 / 登录信息”重新输入。仅保存认证方式、主机指纹和私钥路径，不复制私钥内容。单流传输；只有提供预期文件 SHA-256，且 URL、主机指纹、长度、修改时间及缓存一致时才续传，发布前再次验证摘要，否则从头下载。支持现有队列、限速、原生正文额度及完成后扫描。HTTP／HTTPS 代理须允许 CONNECT 到 SSH 端口，SOCKS5 保留代理侧解析；不回退直连。
+Username/password/key passphrase remain in memory and need request/login editing after restart. Only method, fingerprint, and key path persist, not key contents. Single-stream resume needs expected file SHA-256 plus matching URL/pin/length/modification time/cache and final digest; otherwise restart from zero. Queues, rates, native budgets, and scanning apply. HTTP/HTTPS proxies must permit SSH-port CONNECT; SOCKS5 keeps proxy-side DNS, without direct fallback.
 
 ```powershell
 $env:SFTP_LOGIN = 'example-user'
@@ -127,38 +131,38 @@ maskpilot_cli sftp://example.test/files/archive.zip C:/Downloads/archive.zip C:/
 Remove-Item Env:SFTP_LOGIN, Env:SFTP_SECRET
 ```
 
-私钥方式改用 `--sftp-private-key C:/Keys/download.pem` 和可选的 `--sftp-key-passphrase-env NAME`；`--sha256 DIGEST` 启用验证后的续传。指纹示例必须替换为已核实的真实值。仅下载文件，不提供远程浏览、上传或递归同步。
+Use `--sftp-private-key C:/Keys/download.pem` and optional `--sftp-key-passphrase-env NAME` for keys; `--sha256 DIGEST` permits verified resume. Replace sample fingerprints with independently trusted values. File download only: no remote browsing, upload, or recursive synchronization.
 
-## BT / 磁力
+## BT / magnets
 
-工具菜单可打开本地 `.torrent` 或添加 `magnet:?` 链接；新建任务的 BT 页可设置全部文件、先获取元数据再选择文件、完成后做种及上传限速。任务详情提供文件勾选、上传和连接信息，设置中提供全局上传预算。v1／v2／混合种子、磁力及纯 Tracker 元数据获取已通过本地真实传输验证。0.2.0 候选包包含 FTP/FTPS 和 BT 引擎，验证范围见 [验收记录](docs/releases/acceptance.md)。
+Tools opens local `.torrent` files or `magnet:?` links. The BT tab supports all files or metadata-first selection, seeding, and upload rate. Details expose selection/upload/connections; Settings controls global upload. Local real-transfer checks cover v1/v2/hybrid torrents, magnets, and tracker-only metadata. The 0.2.0 candidate includes FTP/FTPS/BT; see [acceptance](docs/releases/acceptance.md).
 
-每个 BT 任务使用独立目标目录，保留种子内部目录结构。选择的内容校验完成后才整体发布，已有同名目录不会被覆盖。暂停保留缓存；取消清理该任务拥有的未发布缓存，已发布文件始终保留。做种占用活跃任务名额，可暂停或选择“结束做种”。恢复时重新校验已有分片。
+Each task owns a new destination directory, retaining torrent paths. Verified selected content publishes as a whole, never replacing existing same-name directories. Pause keeps cache; cancel removes owned unpublished cache while preserving final files. Seeding uses an active slot and can be paused/stopped. Resume rechecks pieces.
 
-原始种子元数据随任务保存，删除原 `.torrent` 不影响任务恢复。元数据可能包含私有 Tracker 地址或 passkey，**也会包含在主动导出的任务清单中**，请保护数据库与清单。自动导入的原始种子文件必须位于直接挂载的本地磁盘，不读取网络共享、设备或重解析路径；可先复制到本地再添加。
+Metadata persists with tasks; deleting the original torrent does not block recovery. It may contain private tracker URLs/passkeys and **is included in explicit exports**; protect databases/lists. Local torrent sources must be on directly mounted disks, not network shares/devices/reparse paths. Copy them locally first if necessary.
 
-单个种子元数据上限 16 MiB、文件上限 20,000。BT 支持隔离的 HTTP CONNECT／SOCKS5 TCP 代理，具体限制见前文；浏览器扩展只接管 HTTP/HTTPS。公网连通性受网络、系统端口限制、Tracker 和种源影响，本地夹具不代表所有公网种子可用。
+Per-torrent metadata/file bounds are 16 MiB/20,000. Isolated HTTP CONNECT/SOCKS5 TCP routing follows the limits above; browser interception remains HTTP/HTTPS. Public reachability depends on network/OS ports/trackers/seeds; local fixtures do not prove every public torrent works.
 
 ```powershell
 maskpilot_cli C:/Downloads/example.torrent C:/Downloads/example C:/Downloads/state --select-files 0,2 --upload-limit 65536
 ```
 
-命令行是限时验证客户端；需要持续下载或做种时使用桌面程序。
+CLI is a bounded verification client; use desktop for sustained downloading/seeding. Ordinary non-live verification pauses unfinished tasks after 180 seconds; live tasks use recording bounds and finalization.
 
-原生 HTTP 任务可设置正文文件上限及同来源重定向策略，例如：
+Native HTTP can cap stored payload and same-origin redirects, for example:
 
 ```powershell
 maskpilot_cli https://example.test/docs C:/Downloads/page.html C:/Downloads/state --max-stored-bytes 1048576 --same-origin-redirects
 ```
 
-`--max-stored-bytes 0` 保持默认不限大小；正数在已知总长和实际写入时检查。`--same-origin-redirects` 只允许原始协议、主机和有效端口相同的重定向；实际响应地址作为任务观察结果保存。它们仅适用于原生 HTTP，不是线路流量或磁盘配额。已有分片不会因降低上限被删除，但超限文件不能发布。站点项目通过这些约束管理普通下载子任务，操作流程见上文“静态站点项目”。
-在命令前加 `--bt-no-discovery` 可关闭 DHT、局域网发现和自动端口映射；显式 Tracker 与 Peer 仍启用，这不是禁止联网的开关。
+`--max-stored-bytes 0` is unrestricted; positive values are checked against known total and writes. `--same-origin-redirects` requires original protocol/host/effective port; actual response URL is an observation. These are native-HTTP policies, not traffic/disk quotas. Lower caps preserve cache but block oversized publication. Site projects apply them to ordinary children.
+Prefix `--bt-no-discovery` disables DHT/local discovery/automatic mapping; explicit trackers/peers remain enabled. This is not an offline switch.
 
-## POST 文件下载
+## POST file downloads
 
-HTTP／HTTPS 代理必须允许 CONNECT 到来源端口，代理认证在 POST 提交前完成；代理或隧道失败不回退直连。SOCKS5 保留代理侧解析与认证。
+HTTP/HTTPS proxies must allow source-port CONNECT and authenticate before POST. Proxy/tunnel failures never fall back direct; SOCKS5 keeps proxy-side DNS/authentication.
 
-桌面“添加下载 → 请求”可选择 POST，填写已经编码的表单、JSON 或其他正文及内容类型，并明确确认单次提交。请求体最多 1 MiB，只在内存中使用，不写入任务库、导出列表或设置；修改来源、代理、登录材料或正文会撤销确认。命令行可从环境变量读取 UTF-8 正文：
+Choose POST on the request tab, enter already encoded form/JSON/other body and content type, and confirm one submission. Body cap is 1 MiB, memory only, never database/export/settings. Source/route/login/body edits revoke approval. CLI reads UTF-8 content from an environment variable:
 
 ```powershell
 $env:DOWNLOAD_REQUEST = '{"format":"zip"}'
@@ -166,65 +170,65 @@ maskpilot_cli https://example.test/export C:/Downloads/export.zip C:/Downloads/s
 Remove-Item Env:DOWNLOAD_REQUEST
 ```
 
-`--confirm-empty-post` 明确提交空正文；`--post` 仅标记请求方法。POST 不做前置请求探测、分段、断点续传或自动重试；同源 301／302／303 仅转为无正文 GET，307／308 和跨源跳转拒绝。暂停、失败、重启或重新下载后须重新输入正文并确认，原提交可能已经在服务器生效，取消下载不能撤销服务器操作。已有目标文件会在提交前拒绝；结果仍通过摘要、大小上限及可选扫描后发布。导入任务保持暂停且不含正文。仅支持独立 HTTP(S) 文件任务，浏览器表单正文自动接管、媒体、站点项目和上下文授权不支持 POST。
+`--confirm-empty-post` explicitly submits empty content; `--post` only selects the method. No preliminary probe, segmentation, byte resume, or automatic retry. Same-origin 301/302/303 become bodyless GET; 307/308/cross-origin redirects fail. Pause/error/restart/redownload requires new body/approval: the server may already have processed the request and cancellation cannot undo it. Existing targets fail before submission. Digest/size/scan gates remain. Imports are paused/body-free. Only standalone HTTP(S) files support POST, not browser body interception, media, site projects, or context grants.
 
-## 浏览器
+## Browser integration
 
-安装脚本注册当前用户 Chrome／Edge／Firefox 通道。便携版可运行：
+Installation registers current-user Chrome/Edge/Firefox channels. For portable installations:
 
 ```powershell
 ./scripts/register-browser.ps1 -InstallDirectory 'C:/Apps/MaskPilot'
 ```
 
-Chrome／Edge 在扩展管理页启用开发者模式，加载包内 `browser_extension/`。Firefox 150+ 在 `about:debugging#/runtime/this-firefox` 临时加载 `browser_extension_firefox/manifest.json`；临时扩展重启后失效，商店签名安装包尚未发布。源码构建 `npm --prefix browser_extension run build` 同时生成 `dist/` 和 `dist-firefox/`。
+Enable Chrome/Edge developer mode and load packaged `browser_extension/`. Firefox 150+ temporarily loads `browser_extension_firefox/manifest.json` through `about:debugging#/runtime/this-firefox`, disappearing on browser restart. No signed store package is published. `npm --prefix browser_extension run build` generates `dist/` and `dist-firefox/`.
 
-右键发送链接，或点击扩展图标发现资源。自动接管、页面浮动面板及 Cookie 传递均默认关闭，分别开启。部分发送成功后保留已接受项，重试剩余项不会重复同批次的已接受请求。页面重载／导航后需重新查找。
+Send links by context menu or discover resources through the extension. Auto-interception, page panel, and Cookie forwarding are separately opt-in. Partial batches retain accepted requests; retrying leftovers avoids duplicates. Reload/navigation requires rediscovery.
 
-自动接管及恢复时选择浏览器记录，仅接受明确观察到 GET 的同一 URL、时间及浏览器容器；POST、其他方法、冲突或未知记录保留在浏览器，不能当作 GET 重放。扩展新增 `webRequest` 观察权限，仅在内存中保留有界的请求方法及匹配信息，不读取正文或请求／响应头，不修改网络请求。观察信息最多 256 条、十分钟，浏览器后台重启或记录淘汰后可能需要重新触发下载；已保存确认的恢复流程仍可继续或取消。隐私记录不自动接管。手动发送普通链接仍按明确的 GET 请求处理；POST 可在桌面“请求”页配置。
+Interception/recovery requires observed GET with matching URL/time/container. POST/other/conflicting/unknown records stay in-browser, never replayed as GET. `webRequest` observes bounded in-memory method/matching metadata, not bodies/headers, and never modifies requests. At most 256 observations live ten minutes; restart/eviction may require a new browser download. Confirmed recovery can continue/cancel. Private records are not auto-intercepted. Manual ordinary-link sending is explicit GET; configure POST on desktop.
 
-Cookie 仅查询所选 URL 与浏览器提供的容器。隐私窗口登录材料、分区 Cookie／第一方隔离暂不转发，失败时保留浏览器下载，不改用默认容器。即使匹配 URL 的 Cookie 属于另一个分区，也会保守拒绝。注销仅在通道仍属于本安装时恢复原值，保留外部修改。两种扩展都使用独立下载区，协议和回退规则见 [浏览器协议](docs/protocols/browser.md)。
+Cookie queries use only selected URL/browser container. Private-window login, partitioned cookies, and first-party isolation are refused, retaining browser downloads rather than using defaults. Another partition's cookie for the same URL also causes refusal. Unregister restores only installation-owned values, preserving external edits. Both extensions use standalone downloads; see [protocol/fallback rules](docs/protocols/browser.md).
 
-独立 HTTP 文件链接过期或需要重新登录时，先暂停任务，再右键“在浏览器恢复链接／登录…”。在扩展“桌面任务”中明确选择原任务，登录打开的来源页并重新点击下载；“恢复下载”页会列出本次浏览器记录，选择对应记录后更新原任务，保留原编号和保存位置。需要 Cookie 时先开启 Cookie 传递。更新保存确认后才取消所选浏览器副本，再检查令牌并启动原任务；取消失败会保持原任务暂停。手动提供新链接只更新并保持暂停，需在桌面核对后开始。
+For expired/relogin standalone HTTP tasks, pause and start browser link/login recovery. Explicitly select the original desktop task, log in on the opened source tab, and trigger download again. Select the exact session record on the recovery page to preserve ID/destination. Enable Cookie forwarding if needed. Durable update acknowledgement precedes cancelling the browser duplicate, token validation, and resume. Cancel failure keeps desktop paused. Manually supplied links update but remain paused for review.
 
-恢复会话有效十分钟，仅存于扩展内存和桌面进程；浏览器重启后需重新开始。会话期间自动接管暂缓，取消会话不会删除原任务或已完成文件。支持可直接重新获取的 HTTP(S) GET 文件，不重放表单／POST，不保证任意登录站点、媒体或上下文任务恢复；新地址的旧分段仍须通过 HTTP 身份校验。
+Recovery lives ten minutes in extension/desktop memory; browser restart requires a new session. Auto-interception pauses meanwhile. Cancelling recovery deletes neither original task nor final file. Only reacquirable HTTP(S) GET files are supported, not form/POST replay or arbitrary authenticated/media/context recovery. HTTP identity checks still decide cache reuse.
 
-## 登录媒体与独立来源授权
+## Authenticated media and explicit origins
 
-独立媒体任务可在请求高级选项中明确填写 Cookie、Authorization 或自定义头，再探测和选择格式。凭据只保留在当前进程内；重启后需要重新填写，不能自动转为匿名下载。对既有任务补充登录材料后，再恢复下载。
+Standalone media can explicitly supply Cookie/Authorization/custom headers before inspection/selection. Secrets stay process-local and require reentry after restart, without anonymous downgrade. Refresh missing login material before resume.
 
-默认登录请求只允许原始来源的同协议、主机与有效端口。独立点播／直播任务可在“媒体访问”明确添加最多 16 个额外 HTTP(S) 来源，逐项设置独立 Cookie／Authorization／自定义头或匿名访问，并勾选确认；跳转时也不会继承另一来源的登录头。来源及登录需求可持久保存，凭据与确认状态不保存；重启、导入或编辑 URL 后须重新核对确认并补充材料。CLI 可用 `--media-origins-env MASKPILOT_MEDIA_ACCESS`（直播用 `--live-origins-env`）从环境变量读取 JSON，例如 `[{"origin":"https://cdn.example.com","authenticationRequired":false}]`；变量名须以 `MASKPILOT_MEDIA_` 开头，不要把真实材料写进脚本。显式点播模式支持 GET／HEAD，拒绝 POST、其他协议和未授权来源。受限的临时本机请求网关保留所选代理路由，HTTPS 不解密，仍由媒体组件验证证书；不安装本地根证书。HTTP 代理须允许到目标端口的 CONNECT。普通公开媒体保留既有多来源行为。浏览器的自动媒体入口仍不把精确 URL 的 Cookie 授权扩展成整个来源授权，请在桌面明确配置。此功能不处理 DRM、交互式登录或任意网站适配。
+Authenticated requests default to the initial protocol/host/effective port. Media access can explicitly approve up to 16 extra HTTP(S) origins for standalone on-demand/live tasks, each with independent Cookie/Authorization/headers or anonymous access. Redirects never inherit another origin's credentials. Origins/login requirements persist; secrets/approval do not, requiring review/approval/material after restart/import/URL edits. CLI `--media-origins-env MASKPILOT_MEDIA_ACCESS` (live: `--live-origins-env`) reads JSON such as `[{"origin":"https://cdn.example.com","authenticationRequired":false}]`; names start `MASKPILOT_MEDIA_`. Never script real secrets. Explicit on-demand mode permits GET/HEAD, rejects POST/other protocols/unapproved origins, and uses a bounded temporary gateway preserving proxy routes. HTTPS remains encrypted and helper-validated, without local root installation. HTTP proxies need target-port CONNECT. Ordinary public media retains multi-origin behavior. Browser auto-media does not expand exact-URL Cookie authority into whole-origin grants; configure on desktop. DRM, interactive login, and universal site extraction are unsupported.
 
-已安装可信媒体测试组件时，CMake 注册 `authenticated_media_product_path` 与 `media_origins_product_path`，使用本地 MP4／HLS／DASH 及 HTTP／SOCKS5 代理验证登录、独立来源凭据、跳转隔离、未授权来源拒绝和文件输出；不访问真实站点。
+With trusted test components, CMake registers `authenticated_media_product_path`/`media_origins_product_path`. Owned MP4/HLS/DASH and HTTP/SOCKS5 services test login, origin/redirect isolation, refusal, and output without real sites.
 
-## 下载完成扫描（开发核心）
+## Completion scanning (development core)
 
-原生核心支持可选外部扫描：HTTP／FTP、媒体文件及 BT 目录在下载、完整性校验后，发布前检查私有暂存内容。默认关闭，不附带杀毒程序。扫描工具须为可信本地命令行 `.exe`，使用独立参数且包含一个完整的 `{file}` 参数；不经过 shell，也不传入来源 URL／登录材料。工具应检查传入的暂存文件或目录，而非按暂存扩展名跳过。退出码 0 只代表该工具报告通过，不代表无恶意内容的保证。
+Optional external scanning checks staged HTTP/FTP/media files and BT directories after transfer/integrity checks, before publication. Off by default, without bundled antivirus. On Windows choose a trusted local command-line `.exe`; pass separate arguments with exactly one complete `{file}`, without shell/URL/login material. Scan actual staging instead of skipping temporary extensions. Exit 0 is the tool's reported pass, not a malware-free guarantee.
 
-验证客户端的扫描选项放在命令之前，例如：
+Scanner options precede the verification-client command, for example:
 
 ```powershell
 maskpilot_cli.exe --scan-program 'C:/Tools/scanner.exe' --scan-arg '--check' --scan-arg '{file}' --scan-timeout 120 'https://example.test/file.zip' 'D:/Downloads/file.zip' 'D:/AppData/MaskPilot-test'
 ```
 
-超时为 1～3600 秒，包含扫描前后文件核对；取消／暂停会终止自有扫描进程组。拒绝、崩溃、超时或暂存内容被工具修改时，不发布文件或报告完成，保留可恢复材料。任务的扫描要求和结果持久保存，重启后缺少扫描配置会等待处理；显式 `--waive-scan --resume TASK_ID DATA_DIRECTORY` 可跳过该停止任务的要求，并记录“明确跳过”，不会冒充扫描通过。扫描参数不写入任务清单。
+Timeout is 1–3600 seconds including before/after content checks; pause/cancel terminates the owned group. Rejection/crash/timeout/content mutation prevents completion/publication and retains recovery. Requirements/results persist; missing configuration waits for repair. `--waive-scan --resume TASK_ID DATA_DIRECTORY` records an explicit waiver for that stopped task, not a scan pass. Arguments are not exported.
 
-桌面端在“工具 → 完成后扫描”中配置可信 `.exe`、每行一个的原样参数及超时。必须有且仅有一行完整的 `{file}`，不要额外添加 shell 引号；BT 传入临时目录。配置保存在本地设置中并在下次启动时加载。修改前需暂停活动任务；程序被删除时仍可打开界面修复配置。关闭全局扫描不会解除已有任务的要求，可在停止中任务的右键菜单明确跳过，或重新要求扫描；操作后任务保持暂停，需手动恢复。列表显示扫描进度，详情和提示显示结果及 UTC 时间；“报告通过”仅表示外部程序退出码为 0，不保证文件安全。已发布的 BT 内容不会重新交给外部工具扫描。
+Configure trusted scanner, one literal argument per line, and timeout through Tools. Exactly one line is `{file}`, without shell quotes; BT supplies a staging directory. Settings reload at startup. Pause active tasks before editing; a missing program remains repairable. Disabling global scanning does not waive prior requirements. Explicit waive/require actions keep stopped tasks paused for manual resume. Lists show progress and details/tooltips show result/UTC time. Exit 0 is not a safety guarantee. Published BT content is not rescanned externally.
 
-开启扫描不追溯已有完成记录或已发布的 BT 内容。已扫描通过的 BT 在内容核对后可继续做种；无法确认扫描要求的已发布内容会等待明确处理，不将用户最终目录重新交给外部扫描程序。
+Scanning is not retroactive for completed/published BT content. Previously scanned BT can seed after content checks. Unverifiable requirements on published content wait for an explicit decision instead of handing the user's final directory to a scanner again.
 
-## 媒体
+## Media
 
-工具菜单提供“媒体组件”，可选择已有的可信可执行文件；Windows 还可下载校验过的解析／合并组件，Linux 使用系统安装或用户指定的原生组件。组件可选，默认安装包不捆绑。新建媒体任务可先探测该地址的实际视频／音频格式，再选择精确格式 ID 和兼容的输出容器；自动模式仍提供画质上限预设。支持 MKV／MP4／WebM 及音频 M4A／MP3／Opus／FLAC，具体取决于源格式和本地组件。来源或网络配置改变会使探测结果失效；开始下载前重新核实所选格式，失效时明确失败。
+Tools selects trusted media components. Windows can also download checksum-verified parser/muxer binaries; Linux uses native system/user tools. Optional components are not bundled. Inspect actual audio/video formats and select exact IDs/compatible containers, or use automatic quality caps. MKV/MP4/WebM and M4A/MP3/Opus/FLAC depend on sources/components. Source/network edits invalidate inspection; download revalidates and fails explicitly if selections disappear.
 
-探测在后台执行，可取消；只显示有界的格式信息。解析器使用原生网络下载，本程序自带的 `media_guard/` 启动器将 FFmpeg／ffprobe 限于任务专属目录内的普通媒体文件，阻止外部下载回退和伪装播放列表的网络读取。它不构成对任意不可信可执行文件的沙箱；组件路径须指向可信程序。媒体暂停后恢复、重试或更改带宽会重新下载。独立媒体登录遵循上述确切来源授权；点播组件不处理直播，直播由独立原生引擎负责。DRM 不支持。网站适配取决于组件和站点当前行为，详见 [支持矩阵](docs/product/support-matrix.md)。
+Inspection is asynchronous, cancellable, and bounded. The parser uses its native downloader; `media_guard/` limits FFmpeg/ffprobe to ordinary files in owned task directories, denying external-download fallback/disguised remote playlists. This is not a hostile-executable sandbox; tools must be trusted. Pause/resume/retry/rate changes redownload. Login follows the origin rules above. On-demand helpers do not record live; the native engine does. DRM is unsupported; site behavior depends on source/components. See [support limits](docs/product/support-matrix.md).
 
-## 从源码构建
+## Building from source
 
 ### Windows
 
-Windows x64，Visual Studio 2022 C++ 桌面工具、Windows SDK、CMake ≥3.25、Ninja、Qt **6.11.3 MSVC x64**、vcpkg、Python 3、Node ≥22。设好环境变量，仓库脚本会初始化编译器环境：
+Windows x64, Visual Studio 2022 C++ desktop tools/Windows SDK, CMake ≥3.25, Ninja, **Qt 6.11.3 MSVC x64**, vcpkg, Python 3, and Node ≥22 are required. Set these variables; repository scripts initialize compiler tools:
 
-完整测试还要求 PATH 中有 `ffmpeg` 和 `ffprobe`（用于生成、核验自有视频夹具，普通 TS／FLV 不是原生直播运行依赖；复杂 HLS 的本地封装需要可信媒体处理组件）。Python 测试依赖须在 CMake 配置前安装；建议使用独立虚拟环境。CI 使用固定版本及 SHA-256 校验的媒体工具，配置见 `.github/workflows/windows.yml`。可选登录媒体测试还需可信解析组件，详见 [验证场景](docs/testing/scenarios.md)。
+Full tests need `ffmpeg`/`ffprobe` on PATH for owned video fixtures. They are not ordinary TS/FLV runtime dependencies; complex HLS needs a trusted processor. Install Python dependencies before CMake, preferably in a venv. CI pins/checksums media tools in `.github/workflows/windows.yml`; optional login-media cases need a trusted parser. See [scenarios](docs/testing/scenarios.md).
 
 ```powershell
 $env:QT_ROOT_DIR = 'C:/Qt/6.11.3/msvc2022_64'
@@ -239,17 +243,17 @@ npm.cmd --prefix browser_extension test
 ./scripts/smoke.ps1 -PackageDirectory out/package/MaskPilot-0.3.0-windows-x64
 ```
 
-已有独立 Release 构建时，可用 `./scripts/package.ps1 -SkipBuild -BuildDirectory out/build/windows-msvc-portable` 明确选择产物。Release 使用 `x64-windows-portable` 和独立的 `out/dependencies-portable/`；Debug 保留原有依赖目录。脚本检查项目版本、运行客户端、Qt、编译器及所选依赖配置。
+Select existing Release output with `./scripts/package.ps1 -SkipBuild -BuildDirectory out/build/windows-msvc-portable`. Release uses `x64-windows-portable`/`out/dependencies-portable/`; Debug retains separate dependencies. Scripts check project/client/Qt/compiler versions and dependency configuration.
 
-Release 编译前会实测编译器的相对源码路径映射，私有 PDB 留在构建目录。打包审计本机路径、PE 调试记录和文件清单；Qt／微软运行库还须与 SDK／工具链原件哈希一致且签名有效。供应商原有的构建诊断标识保留并单独记录，不修改签名二进制。依赖补丁及许可证随包提供。
+Release probes relative source-path mapping; private PDBs stay in builds. Packaging audits private paths, PE debug records, and manifests. Qt/MSVC bytes must match SDK/toolchain originals with valid signatures. Supplier build identifiers remain preserved/reported rather than modifying signed binaries. Required patches/licenses accompany packages.
 
-Windows 固定依赖由 vcpkg 清单获取；生成文件全部放在 `out/`。更换 Windows Qt 版本时同步更新依赖源码清单和哈希，打包脚本会拒绝版本不一致。Windows 安装包包含所用 Qt 模块源码与许可证；原始工程代码采用 [MIT](LICENSE)，Windows 实际依赖见 [NOTICES](third_party/NOTICES.md)。Linux 使用系统运行库，候选包另有实际构建信息与 BT 许可证，不沿用 Windows 版本清单。
+Pinned Windows dependencies come from vcpkg; generated content stays in `out/`. Qt changes require matching source manifests/hashes; packaging refuses mismatch. Windows packages contain used Qt module sources/licenses. Original code is [MIT](LICENSE); dependencies are in [NOTICES](third_party/NOTICES.md). Linux uses system libraries and its own build/BT-license materials, not Windows version lists.
 
-脚本选取已安装的最新 MSVC 工具集。更换 Qt 安装位置或编译工具集后，在初始化的编译环境中执行 `cmake --fresh --preset windows-msvc-release` 再编译；打包会检查构建使用的 Qt、编译器及 Release 配置，并拒绝检测构建。
+Scripts choose the newest installed MSVC toolset. After Qt/toolset changes, run `cmake --fresh --preset windows-msvc-release` in an initialized compiler environment and rebuild. Packaging checks actual Qt/compiler/Release configuration and refuses instrumented builds.
 
 ### Linux
 
-当前验收用户态为 Ubuntu 26.04 x64；完整辅助进程保护要求内核 6.9+，源码要求 Qt ≥6.8、libxml2 ≥2.14 和具备 HTTP/HTTPS/FTP/FTPS/SFTP 的 curl。普通用户准备原生 SDK 和测试依赖后运行：
+Qualified userspace is Ubuntu 26.04 x64. Full helper protection needs Linux 6.9+; source requires Qt ≥6.8, libxml2 ≥2.14, and HTTP/HTTPS/FTP/FTPS/SFTP curl. Prepare native SDK/test prerequisites as an ordinary user:
 
 ```sh
 python3 -m venv out/python-linux
@@ -259,22 +263,22 @@ export PYTHON="$PWD/out/python-linux/bin/python"
 sh scripts/verify-linux.sh
 ```
 
-入口完成构建、扩展、私有钥匙串中的完整 CTest 及实际媒体专项。构建预设为 `linux-gcc-release`；本地包使用 `python scripts/package_linux.py --build-directory out/build/linux-gcc-release --output-directory out/package/MaskPilot-0.3.0-linux-x64-local`。输出已存在即拒绝。所需系统运行库、离线源码、浏览器配置及当前资格限制见 [Linux 指南](docs/testing/linux-acceptance.md)。正式发行仍延后。
+This builds, tests extension/full CTest in private keyrings, and runs real media checks. Preset: `linux-gcc-release`. Package with `python scripts/package_linux.py --build-directory out/build/linux-gcc-release --output-directory out/package/MaskPilot-0.3.0-linux-x64-local`; existing output is refused. See [Linux](docs/testing/linux-acceptance.md) for runtime/source/browser prerequisites and qualification limits. Formal release is deferred.
 
-### macOS（待实际验收）
+### macOS (qualification pending)
 
-原生构建预设为 `macos-clang-release`。所需 Qt／原生依赖、手动构建子集与 GitHub 双架构检查步骤见 [macOS 指南](docs/testing/macos-acceptance.md)。完整 CI 使用一次性测试钥匙串，不应在个人机器伪造 CI 环境运行。当前没有可分发的 macOS 安装包或已通过的 macOS 编译结论。
+Use `macos-clang-release`; [macOS instructions](docs/testing/macos-acceptance.md) cover Qt/native dependencies, manual subset, and dual-architecture CI. Full CI uses a disposable keychain; never impersonate CI on a personal machine. No distributable installer or actual successful Mac build is claimed.
 
-## 工程与验证
+## Engineering and validation
 
-`apps/` 为桌面、命令行、本机桥接入口及本地媒体启动器，`src/domain/` 为模型，`src/application/` 为调度，`src/infrastructure/` 为网络／SQLite／媒体，`src/ui/` 为窗口、模型和对话框，`browser_extension/` 为浏览器扩展，`tests/` 为单元、故障与真实应用测试，`packaging/` 为安装流程。业务层不依赖 Qt UI 或具体网络实现。
+`apps/` contains desktop/CLI/native-host/media-guard roots; `src/domain/` models; `src/application/` coordination; `src/infrastructure/` network/SQLite/media; `src/ui/` windows/models/dialogs; `browser_extension/` browser integration; `tests/` unit/fault/product cases; `packaging/` installation. Business logic does not depend on Qt UI/concrete network implementations.
 
-实际目录、依赖方向及调用流程见 [当前架构](docs/architecture/overview.md)；产品目标、开发顺序与状态不变量见 [工程蓝图](docs/DEVELOPMENT_BLUEPRINT.md)。具体测试命令见 [验证场景](docs/testing/scenarios.md)，发布证据与待验收项见 [验收记录](docs/releases/acceptance.md)。未完成的压力、干净系统或商店验证不代表已通过。
+See [architecture](docs/architecture/overview.md) for real paths/dependencies/flow, [blueprint](docs/DEVELOPMENT_BLUEPRINT.md) for goals/invariants, [scenarios](docs/testing/scenarios.md) for tests, and [acceptance](docs/releases/acceptance.md) for evidence/pending items. Unexecuted stress/clean-system/store qualification is not a pass.
 
-[历史 Windows 仓库审计](docs/testing/repository-audit.md) 保留对应提交的修复与验收证据，不代表后续全部代码已通过同一轮测试。当前支持范围以功能／支持矩阵为准，功能回归通过不等于最初的完整产品目标已经实现。
+The [historical Windows audit](docs/testing/repository-audit.md) records fixes/evidence at named commits, not full qualification of later code. Current matrices define support; regression passes do not deliver the original complete product goal.
 
-贡献代码使用 C++20、4 空格缩进与 `.clang-format`（LLVM 基线，110 列）；类型用 `PascalCase`，函数和局部变量沿用 `camelCase`。`.clang-tidy` 提供静态检查配置，但 `verify.ps1` 不自动运行它。GoogleTest 测试采用 `TEST(Suite, DescriptiveBehavior)`，网络场景优先使用本地故障服务；新增行为须说明验证方法。提交主题使用简短的祈使句；PR 说明行为变化、关联问题及验证结果，界面变化附截图。既有 `AGENTS.md` 按用户要求保留，当前工程说明以本文与蓝图补充。
+Use C++20, four spaces, `.clang-format` (LLVM/110 columns), `PascalCase` types, and existing `camelCase` functions/locals. `.clang-tidy` is available but not automatically run by `verify.ps1`. GoogleTest uses `TEST(Suite, DescriptiveBehavior)`; prefer local fault services and explain new-behavior validation. Use imperative commits, describe behavior/issues/results in PRs, and attach UI screenshots. `AGENTS.md` stays unchanged by instruction; current guidance is here, in the blueprint, and [Contributing](CONTRIBUTING.md).
 
-## 本地上下文协议（开发代码）
+## Local context protocol (development code)
 
-当前代码包含独立下载区的 v1 接口及面向可信本机浏览器桥接方的 v2 上下文接口。管理方通过独立 broker 权限配置目录、路由与短期源站授权，普通客户端只能使用签发的单一上下文会话；失败不会转用其他权限。接口、帧和接管顺序见 [本机协议](docs/protocols/browser.md)。工具栏“环境与凭据”可新增、修改、撤销和恢复环境，并重试凭据清理；顶部环境筛选器限定列表和新建下载的归属。已接受任务保留原路由，右键“重新绑定”仅允许尚未完成且未运行的任务采用新配置。环境新建入口目前支持 HTTP/HTTPS 与磁力，独立媒体入口仍创建独立任务。撤销会先停止工作，再清理该环境保存的凭据；失败保持禁用并报告重试需求。实际浏览器端签发仍须在对应浏览器工程验收。
+Current code has v1 standalone and v2 context interfaces for trusted local browser brokers. Admin authority configures directories/routes/short-lived source grants; ordinary clients get one context session without authority fallback. See [protocol](docs/protocols/browser.md). Profile/credential controls create/edit/revoke/reactivate profiles and retry cleanup. Filters limit list/new-task ownership; accepted tasks retain routes. Rebind applies only to inactive unfinished tasks. Profile creation supports HTTP/HTTPS/magnets; independent media stays standalone. Revocation stops work before vault cleanup; failures retain disabled state/retry requirements. Actual browser-side issuance needs separate browser-project acceptance.

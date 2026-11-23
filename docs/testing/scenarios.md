@@ -1,93 +1,93 @@
-# 验证场景
+# Testing scenarios
 
-## macOS 验证入口（待实际运行）
+## macOS entry (real execution pending)
 
-GitHub `macOS` 工作流分别构建 arm64／x86_64 的全部目标，执行显式核心测试集、浏览器扩展单元测试及 `macos_platform_product_path`；后者使用真实钥匙串、无覆盖目录发布、本地种子和实际进程树验证。CI 钥匙串在临时目录隔离，失败也恢复原搜索列表及默认项；`macos_ci_fixture` 仅证明该脚本的模拟故障／恢复流程，不替代原生结果。首次实际编译、运行及视觉资格仍未证明；详见 [macOS 验收](macos-acceptance.md)。
+GitHub `macOS` builds all arm64/x86_64 targets and runs an explicit core set, extension units, and `macos_platform_product_path` for real keychain/no-replace/local-torrent/process-tree checks. Disposable keychains restore original search/default settings even on failure. `macos_ci_fixture` proves simulated script failure/recovery only, not native behavior. Actual initial compile/runtime/visual qualification remains pending; see [macOS](macos-acceptance.md).
 
-## Linux 原生验证
+## Native Linux checks
 
-以普通用户运行 `sh scripts/verify-linux.sh`，使用 `linux-gcc-release` 预设、独立 HOME／会话总线／加密测试钥匙串，完成原生构建、扩展、完整 CTest 和真实媒体专项。`linux_package_product_path` 验证实际安装字节、完整许可证、内部库链接、禁止覆盖输出以及移出构建目录后的 Qt／浏览器桥接／BT CLI；它清除开发运行库路径，不冒充干净系统认证。
+Run `sh scripts/verify-linux.sh` as an ordinary user: `linux-gcc-release`, isolated HOME/bus/encrypted keyring, native build/extension/full CTest/real media cases. `linux_package_product_path` checks installed bytes/licenses/internal links/no-overwrite and Qt/native bridge/BT CLI outside build paths. It clears development library overrides, not a substitute for a clean machine.
 
-Linux 内核／SDK／运行库要求、完整日志和未验收范围见 [Linux 指南](linux-acceptance.md)。旧 Windows 发布资格清单和长期测试不能替代 Linux 结果；也不能将一次 300 秒检查称作 8 小时验收。
+See [Linux](linux-acceptance.md) for kernel/SDK/runtime/logs/unqualified scope. Old Windows manifests/long runs cannot replace Linux results, and 300 seconds cannot be called eight hours.
 
-## 发布资格基线（Windows）
+## Windows qualification baseline
 
-`python scripts/release_manifest.py create --root . --build-directory <build> --output <新基线.json>` 为 Release 构建建立不可覆盖的本地资格清单，记录原生源码、程序、依赖、媒体启动器、版本和环境。实际外部组件与 Qt 插件使用重复的 `--external 名称=绝对路径` 加入。`verify --root . --build-directory <build> --manifest <基线.json>` 核对完整文件集合及哈希；这类私有测试基线包含本机路径，不放进发行包，也不证明发布者身份。
+`python scripts/release_manifest.py create --root . --build-directory <build> --output <new-baseline.json>` creates a no-overwrite local Release manifest covering native source/programs/dependencies/guards/version/environment. Add actual helpers/Qt plugins with repeated `--external name=absolute-path`. `verify --root . --build-directory <build> --manifest <baseline.json>` checks the complete set/hashes. Private manifests include machine paths, stay out of packages, and do not authenticate publishers.
 
-长测使用 `python benchmarks/run.py --desktop <build>/maskpilot.exe --native-host <build>/maskpilot_native_host.exe --build-directory <build> --release-manifest <基线.json> --duration 28800 --report out/qa/stress-0.3.json`；媒体阶段另传 `--media-parser`、`--media-muxer` 和 `--media-fixtures`。部署了本地 Qt／运行库／插件的资格目录还应传入 `--isolated-runtime`，只清除受测子进程的开发环境路径，保留测试器核对源码所需的 Git。复制的构建缓存仅作私有资格证据，不随包分发。
+Long runs use `python benchmarks/run.py --desktop <build>/maskpilot.exe --native-host <build>/maskpilot_native_host.exe --build-directory <build> --release-manifest <baseline.json> --duration 28800 --report out/qa/stress-0.3.json`, adding `--media-parser`, `--media-muxer`, and `--media-fixtures` for media. Use `--isolated-runtime` for self-contained qualification runtimes: only product child overrides are removed, retaining Git for source checks. Copied caches are private evidence, never distributed.
 
-基线在启动前及清理后核对，变化会使测试失败；同时检查桌面实际映射的 DLL，系统模块豁免限于 Windows 系统二进制目录。先执行 300 秒预检；短测或中断不能记为 8 小时通过。独立的发布脚本／文档变动不会改变冻结的原生源码集合，新增或变化的原生输入会被拒绝。
+Verify baseline before startup/after cleanup; any change fails. Inspect actually mapped desktop DLLs, exempting only Windows system binary directories. First run a 300-second preflight; short/interrupted runs are not eight-hour passes. Independent release-script/docs edits need not alter frozen native inputs; new/changed native inputs fail.
 
-`python tests/system/release_manifest_test.py` 覆盖资格清单的哈希、文件集合、路径、构建缓存和版本反例，不替代实际负载。最终报告还须与发行包内同一组程序字节对应。历史版本长测、当前功能回归和新版长测分别记录。
+`python tests/system/release_manifest_test.py` covers hash/set/path/cache/version counterexamples, not real load. Final reports must bind the same package bytes. Historical long runs, current regressions, and new long runs are separate.
 
-## 功能回归
+## Functional regression
 
-配置前在同一个 Python 环境执行 `python -m pip install -r tests/requirements.txt`，并确认 `ffmpeg -version`、`ffprobe -version` 可运行。SFTP 的本地服务器和 TLS 夹具只使用测试依赖；原生直播用媒体工具生成与核验夹具。可选登录点播测试需要受信任的解析／合并组件；使用 `ctest --test-dir <build> -N -R authenticated_media_product_path` 核对是否注册，未注册不能报告为通过。
+Before configure, install `python -m pip install -r tests/requirements.txt` in the same Python environment and verify `ffmpeg -version`/`ffprobe -version`. SFTP/TLS use test dependencies; live tools generate/verify owned fixtures. Optional authenticated media needs trusted parser/muxer: check registration with `ctest --test-dir <build> -N -R authenticated_media_product_path`; unregistered is not passed.
 
-以下命令中的 `<build>` 应替换为当前独立构建目录，不能将旧构建结果算作本轮验收：
+Replace `<build>` with the current independent build directory; old binaries do not qualify new work:
 
-| 增量能力 | 实际产品路径与边界 |
+| Increment | Product path and boundaries |
 |---|---|
-| 独立来源登录媒体 | `ctest --test-dir <build> -R 'MediaAuthenticated|MediaOrigins|authenticated_media_product_path|media_origins_product_path' --output-on-failure --no-tests=error`；本地 MP4／HLS／DASH、真实 Qt、认证代理、秘密不落库、确切来源凭据／跳转隔离、匿名来源及未授权来源零连接；不验证真实登录网站 |
-| 明确 POST 下载 | `ctest --test-dir <build> -R 'HttpPost|http_post_product_path' --output-on-failure --no-tests=error`；单次请求、正文／方法校验、取消、不可自动重试与实际文件；浏览器 POST 正文仍归浏览器处理 |
-| SFTP | `ctest --test-dir <build> -R 'Sftp|sftp_product_path' --output-on-failure --no-tests=error`；真实本地 SSH 服务、主机指纹拒绝、密码／加密私钥、代理、续传／重下、额度与扫描，不自动接受未知主机 |
-| 有界原生直播 | `ctest --test-dir <build> -R 'Live|live_recording_product_path|live_compatibility_product_path' --output-on-failure --no-tests=error`；实际 TS-HLS／HTTP-FLV、AES-128／轮换、精确范围、fMP4／对齐独立音轨／不连续本地封装、完整分片回退、逐来源登录／代理、时长／大小／手动结束、暂停重录、扫描／额度；序号回退、空媒体标签和无媒体内容不发布，正常空标签填充仍可播放 |
-| 共享摘要生命周期 | `ctest --test-dir <build> -R '^Checksums\.' --output-on-failure --no-tests=error`；Windows 原生提供程序、独立已知向量、空／Unicode／1 MiB 文件、8 线程重复计算及取消／读错后恢复 |
+| Explicit-origin authenticated media | `ctest --test-dir <build> -R 'MediaAuthenticated\|MediaOrigins\|authenticated_media_product_path\|media_origins_product_path' --output-on-failure --no-tests=error`: local MP4/HLS/DASH, actual Qt/auth proxies, no persisted secrets, origin/redirect isolation, anonymous origins, zero unapproved connections; not real login sites |
+| Explicit POST | `ctest --test-dir <build> -R 'HttpPost\|http_post_product_path' --output-on-failure --no-tests=error`: single request/body/method/cancel/no-retry/files; browser POST bodies stay in-browser |
+| SFTP | `ctest --test-dir <build> -R 'Sftp\|sftp_product_path' --output-on-failure --no-tests=error`: real local SSH, bad pin, password/encrypted keys/proxies/resume/restart/budget/scan, no auto-trust |
+| Bounded native live | `ctest --test-dir <build> -R 'Live\|live_recording_product_path\|live_compatibility_product_path' --output-on-failure --no-tests=error`: TS-HLS/HTTP-FLV/AES-128/rotation/exact ranges/fMP4/aligned audio/discontinuity local mux/complete fallback/origin login/proxy/time/size/finish/restart/scan/budget; rollback/empty-only media refused, valid padding remains playable |
+| Shared hash lifetime | `ctest --test-dir <build> -R '^Checksums\.' --output-on-failure --no-tests=error`: Windows provider/independent vectors/empty/Unicode/1 MiB/8 threads/cancel/read-error recovery |
 
-当前全工程审计证据及未完成需求见 [仓库审计](repository-audit.md)。
+Historical full-audit evidence and original gaps are in [repository audit](repository-audit.md).
 
-离线升级运行 `powershell -NoProfile -ExecutionPolicy Bypass -File tests/system/package_update_test.ps1 -SourceRoot .`。受控临时目录覆盖旧／新包替换、移除旧文件、回滚与清理、摘要／ZIP 路径／大小写冲突、修改与未知文件、实际进程占用、阶段故障及进程终止恢复。内部故障回调为 fixture-only；ZIP、文件锁、原子替换和恢复使用真实 Windows 文件操作。测试载荷不代表程序或数据库兼容性，实际包与旧数据库升级另验。
+Offline recovery: `powershell -NoProfile -ExecutionPolicy Bypass -File tests/system/package_update_test.ps1 -SourceRoot .`. Owned temp cases cover old/new replacement/removal/rollback/finalization/hash/ZIP paths/case collisions/modified-unknown files/actual locks/stage faults/termination recovery. Internal callbacks are fixture-only; ZIP/locks/atomic replace/recovery use real Windows files. Test payloads do not prove program/database compatibility; actual upgrades are separate.
 
-另覆盖 64 KiB 写入后的异常、独占临时文件清理及已存在临时文件保留。实际子进程在完整检查点后被终止时验证自动恢复；在暂存流真正截断时验证保留现场与原负载，只有测试器明确修复其自有截断文件后才继续恢复。后一场景不记为自动修复通过，也不推断任意断电／磁盘故障均可自动恢复。
+Also cover failures after 64 KiB writes, exclusive partial cleanup, and preexisting-temp preservation. Real termination after a full checkpoint proves recovery; truly truncated staging proves retained scene/original payload, resuming only after explicit fixture-owned repair. That case is not automatic repair or proof against arbitrary power/disk failures.
 
-`scripts/package.ps1 -SkipBuild -BuildDirectory <build> -OutputDirectory out/package/preflight-03 -QualificationManifest out/qa/qualification-0.3-long.json -QualificationRuntimeDirectory out/qualification/MaskPilot-0.3.0-runtime` 核对冻结资格并生成独立候选目录、ZIP 和外部 `.sha256`。已有产物不覆盖，重试使用新的输出父目录。私有资格清单不随包分发。
+`scripts/package.ps1 -SkipBuild -BuildDirectory <build> -OutputDirectory out/package/preflight-03 -QualificationManifest out/qa/qualification-0.3-long.json -QualificationRuntimeDirectory out/qualification/MaskPilot-0.3.0-runtime` verifies frozen qualification and creates independent candidate/ZIP/external `.sha256`. Existing outputs refuse; retries need a fresh output parent. Private baselines are excluded.
 
-`scripts/smoke.ps1 -PackageDirectory <解压目录> -PackageArchive <ZIP>` 移除开发 PATH／Qt 覆盖值，运行实际桌面、客户端与原生桥接，核对库／插件／版本／许可证，执行安装、同版重装、离线 ZIP 更新、回滚、清理和卸载。保留下载文件，并确认临时进程与目录清理。包的 smoke 和功能测试均不能替代新版本完整长测。
+`scripts/smoke.ps1 -PackageDirectory <extracted-directory> -PackageArchive <ZIP>` removes development PATH/Qt overrides, runs actual desktop/CLI/bridge, checks libraries/plugins/version/licenses, and tests install/reinstall/offline update/rollback/finalization/uninstall. Downloads survive, owned processes/directories are cleaned. Smoke/regression cannot replace current-version long runs.
 
-站点项目运行 `python tests/integration/site_project_test.py --exercise <cli.exe>`，覆盖真实创建零请求、HTML／CSS 预览与资源计划、同源／路径／循环限制、明确启动、不可覆盖发布、手动更新、失败或取消后旧版本保留，以及下载中强制退出与明确恢复。设置 `MASKPILOT_TEST_BROWSER=<chromium.exe>` 并传入 `--browser tests/system/site_project_test.mjs`，会在关闭来源后用真实浏览器验证已发布文件、图片解码、CSS 导入、页面往返、零来源请求和无活动脚本。
+`python tests/integration/site_project_test.py --exercise <cli.exe>` covers create/no contact, HTML/CSS preview/plan, same-origin/path/cycle bounds, explicit start, no-replace, updates, old revision after failure/cancel, forced exit/resume. Set `MASKPILOT_TEST_BROWSER=<chromium.exe>` and `--browser tests/system/site_project_test.mjs` to check published files/image decoding/CSS imports/round-trip navigation/zero-origin requests/no active scripts after shutting down the source.
 
-`ctest --test-dir <build> -R 'SiteProject|ProjectTask|site_project_' --output-on-failure --no-tests=error` 包含 SQLite 12→13、原子项目清单、发布回执、实际 Windows 目录联接拒绝及 Qt 项目控件流程。原生队列窗口／日额度由测试所属时钟和真实 Curl 传输驱动，不修改系统时间。保存失败、旧代回调及精确状态交错属于 fixture-only，补充实际协议、文件和界面证据。`maskpilot_site_project_system_tests.exe --screenshot <绝对路径.png>` 可保存项目视图；设置 `MASKPILOT_TEST_NATIVE_UI=1` 使用原生窗口。测试不执行真正关机。
+`ctest --test-dir <build> -R 'SiteProject|ProjectTask|site_project_' --output-on-failure --no-tests=error` includes SQLite 12→13/atomic manifests/receipts/real Windows junction refusal/Qt controls. Owned clocks and real curl drive windows/daily budgets, never system time. Save faults/old callbacks/exact interleavings are fixture-only supplements. `maskpilot_site_project_system_tests.exe --screenshot <absolute-path.png>` captures the view; `MASKPILOT_TEST_NATIVE_UI=1` uses native windows. No real shutdown.
 
-内容类型观察使用 `python tests/integration/response_metadata_test.py --exercise <cli.exe>`，覆盖实际无扩展名 HTML／CSS、字符集、最终地址、探测与正文冲突、重复／不安全／缺失头、空资源、8 路范围与动态拆分、完整缓存恢复。`ctest --test-dir <build> -R 'SiteContent|ResponseContentType' --output-on-failure --no-tests=error` 覆盖实际 SQLite 11→12、当前事件与旧代回调、HTML 树／CSS 转义、调用方异常、输出膨胀限额及声明类型与二进制签名不符。
+`python tests/integration/response_metadata_test.py --exercise <cli.exe>` covers extensionless HTML/CSS/charset/final URLs/probe-body conflicts/duplicate-unsafe-missing headers/empty resources/8 ranges/dynamic splits/full-cache recovery. `ctest --test-dir <build> -R 'SiteContent|ResponseContentType' --output-on-failure --no-tests=error` covers SQLite 11→12/current-old events/HTML-CSS escaping/caller errors/output amplification/type-signature mismatch.
 
-运行 `node tests/system/site_content_test.mjs --build-directory <build> --browser <chromium.exe>` 验证生产解析器与真实 `file://` 浏览器：关闭来源后，本地图片、CSS 导入和锚点跳转仍有效，页面网络请求为零，活动代码不执行。夹具保留输出、截图和 `evidence.json`，不修改真实浏览器配置或注册表。这些验证属于内容处理基础，不替代完整站点项目状态机与更新流程验收。
+`node tests/system/site_content_test.mjs --build-directory <build> --browser <chromium.exe>` checks production parsing in real `file://` browser after origin closure: local images/imports/anchors, zero page network, no active code. Owned outputs/screenshots/`evidence.json` remain, without real browser/registry edits. This foundation does not replace full project/update state-machine acceptance.
 
-原生资源约束使用 `python tests/integration/transfer_constraints_test.py --exercise <cli.exe>`：本地实际服务器覆盖已知／分块／未知长度、8 路范围、崩溃恢复及降低上限、发布同名保护、相对重定向最终地址，以及外来源 TCP 零连接；记录代理下默认端口、主机大小写和 IPv6 的来源等价。探测请求仍可能接收正文并计入流量。CTest `TransferConstraints|RequestConstraints|ResponseMetadata|TransferConstraintStorage` 覆盖隐藏 Qt 字段、严格清单、SQL 10→11 迁移及响应元数据生命周期；协调器桩属 fixture-only，不能替代真实传输。
+`python tests/integration/transfer_constraints_test.py --exercise <cli.exe>` uses actual servers for known/chunked/unknown length, 8 ranges, crash/reduced-cap recovery, no-replace, relative redirect final URL, and zero foreign TCP connections; proxy default-port/case/IPv6 origin equivalence is checked. Probes may receive/count payload. CTest `TransferConstraints|RequestConstraints|ResponseMetadata|TransferConstraintStorage` adds hidden Qt fields/strict lists/SQL 10→11/observation lifetime; coordinator stubs are fixture-only.
 
-浏览器开发代码另运行 `node tests/system/browser_test.mjs --build-directory <build> --browser <chromium.exe>` 与 `python tests/system/firefox_test.py --build-directory <build> --extension browser_extension/dist-firefox --browser <firefox.exe> --evidence-directory out/qa/firefox`。二者使用真实扩展、隔离配置和本机桌面，覆盖持久暂停确认、输出哈希、接管与回退、容器及页面面板。实际可信点击与网页 DOM 篡改／程序化点击分开验证；Firefox 实际隐私及分区 Cookie 拒绝保留浏览器文件。临时加载不证明签名发行。
+Run `node tests/system/browser_test.mjs --build-directory <build> --browser <chromium.exe>` and `python tests/system/firefox_test.py --build-directory <build> --extension browser_extension/dist-firefox --browser <firefox.exe> --evidence-directory out/qa/firefox`. Real isolated extensions/desktops cover durable pause acknowledgement/hash/interception/fallback/containers/panel. Trusted clicks and page DOM/synthetic tampering are distinct. Firefox private/partition refusal retains browser files. Temporary loading is not signed release.
 
-注册所有权测试 `tests/system/browser_registration_test.ps1` 覆盖原值类型、重复注册、外部修改和写日志失败；CTest 将其标记为串行。三个固定 HKCU 默认值在 `finally` 恢复。不要与其他真实浏览器夹具并行运行，防止各自恢复记录交错。纯状态／Cookie 模块负例使用 `npm --prefix browser_extension test`，不替代真实浏览器验收。
+`tests/system/browser_registration_test.ps1` checks original types/repeat registration/external changes/journal failure; CTest marks it serial. Three fixed HKCU defaults restore in `finally`. Never run alongside other real-browser fixtures: restoration journals could interleave. `npm --prefix browser_extension test` negative state/Cookie modules do not replace real-browser checks.
 
-常规回归运行 `scripts/verify.ps1 -Configuration Release` 和 `npm.cmd --prefix browser_extension test`。CTest 中的调度器控制桩测试为 fixture-only；本地 HTTP、原生主机、真实组件和浏览器测试调用实际产品二进制。
+Ordinary regression uses `scripts/verify.ps1 -Configuration Release` and `npm.cmd --prefix browser_extension test`. Scheduler stubs are fixture-only; local HTTP/native host/real components/browser tests execute actual product binaries.
 
-| 场景 | 命令／证据 |
+| Scenario | Command/evidence |
 |---|---|
-| 原生文件故障矩阵 | CTest `local_http_product_path`：Range、降级、空／未知长度、身份变化、重定向清除凭据、代理、登录、重试、重名和 SHA 失败 |
-| 动态分段 | CTest `adaptive_http_product_path`：不均速本地服务记录实际尾段内新切点、2／8 活动连接边界，布局提交后强制退出并改为单连接恢复，旧偏移迁移、损坏布局及 Windows 元数据替换失败后恢复；逐块不同内容的 SHA-256 防止组装顺序错误被重复数据掩盖 |
-| 命名队列 | CTest `QueuePolicy.*`、`QueueStorage.*`、`QueueUi.*`：队列轮转／优先级／并发与带宽、媒体启动预留、手动与策略暂停、重试与一次性计划边界、真实 SQLite 6→7 迁移／版本检查／整批移动回滚，以及真实 Qt 控件和 TCP HTTP 输出校验 |
-| FTP/FTPS | CTest `ftp_product_path`，或 `python tests/support/ftp_fixture.py --exercise <cli.exe>`：实际匿名／认证、主动／被动、显式／隐式 TLS、CA／主机名拒绝、摘要、远端变化、REST 回退及强制退出恢复；只对受控本地服务器作保证 |
-| 原生代理 | CTest `proxy_product_path`，或 `python tests/integration/proxy_test.py --exercise <cli.exe>`：记录实际 HTTP CONNECT／SOCKS5 转发与认证，验证远端 DNS、环境绕过污染、错误／缺失凭据、代理不可用不直连、FTPS 两种 TLS 模式及强制退出后的凭据标记 |
-| BT 代理隔离 | CTest `TorrentProxy.*`：实际元数据与分片通过代理，直连／不同端点／同端点不同凭据并发隔离；坏节点与坏 Tracker 不妨碍有效备用源和同路由其他任务 |
-| BT／磁力 | `ctest --test-dir <build-dir> -R TorrentEngine --output-on-failure`：本地真实种源、v1/v2/混合种子、磁力、纯 Tracker、选择、恢复、并发、做种、限速、发布冲突、实际 CLI 与 SQLite。禁用公开发现，不访问公共种源 |
-| 强制退出恢复 | 同一实际 CLI 进程被终止，读取持久化 offset，再续传并比对完整文件；不是仅测分段计算 |
-| 大文件 | `python tests/support/http_fixture.py --exercise out/build/windows-msvc-release/maskpilot_cli.exe --large`，实际下载 4 GiB+257 字节并验证 SHA-256 |
-| 原生消息 | CTest `native_bridge_product_path`：来源／大小限制、持久化后 ACK、恢复、记录移除保留最终文件 |
-| 媒体 | `python tests/integration/native_host_test.py <host.exe> <desktop.exe> --media-parser <parser.exe> --media-muxer <ffmpeg.exe>`；实际 MP4、HLS、DASH、音频提取及登录头拒绝 |
-| 媒体实际格式与代理 | `python tests/integration/media_inventory_test.py --exercise <cli.exe> --parser <parser.exe> --muxer <ffmpeg.exe> --ui <build/tests/maskpilot_media_system_tests.exe>`；自有多清晰度 DASH、实际选流／容器输出、认证 HTTP／SOCKS5 及远端 DNS、错误认证不直连、私密参数和真实 Qt 操作。构建须包含 `media_guard/` |
-| 浏览器实装 | Node ≥22：`node tests/system/browser_test.mjs --browser <test-chromium.exe> --build-directory <build-or-package-dir>`；独立 profile，备份并恢复专属原生主机注册项 |
-| 独立部署 | `scripts/smoke.ps1 -PackageDirectory <dir>` 移除开发 PATH，运行桌面／CLI／原生消息；仍不等于一台全新虚拟机 |
-| 稳定性 | `python benchmarks/run.py --help` 查看固定预算；短运行不代替 8 小时门槛 |
-| 压力报告可靠性 | CTest `stress_report_publication_failure`：实际 Windows 读取占用下的原子报告发布，以及真实桌面负载结束时注入报告失败；错误必须保留失败状态和诊断材料。用例位于 `tests/system/stress_report_test.py` |
+| Native file faults | CTest `local_http_product_path`: Range/fallback/empty-unknown length/identity/redirect credential stripping/proxy/login/retry/conflicts/hash refusal |
+| Adaptive extents | `adaptive_http_product_path`: uneven local transfers, real new tail split, 2/8 connection bounds, forced exit after layout commit then one-stream resume, old offsets/corrupt layout/Windows replace failure. Distinct blocks/hashes catch reordered assembly |
+| Named queues | `QueuePolicy.*`, `QueueStorage.*`, `QueueUi.*`: rotation/priority/concurrency/rates/media reservations/manual-policy intent/retries/schedules, actual SQLite 6→7/version checks/transactional moves, Qt and TCP payload checks |
+| FTP/FTPS | `ftp_product_path` or `python tests/support/ftp_fixture.py --exercise <cli.exe>`: real anonymous/login/active-passive/explicit-implicit TLS/CA-hostname refusal/hash/change/REST fallback/forced recovery; controlled local scope |
+| Native proxy | `proxy_product_path` or `python tests/integration/proxy_test.py --exercise <cli.exe>`: actual CONNECT/SOCKS5/auth/remote DNS/environment contamination/bad-missing credentials/no direct fallback/FTPS modes/forced-restart flags |
+| BT proxy isolation | `TorrentProxy.*`: actual metadata/pieces through proxy, concurrent direct/different endpoints/same endpoint different credentials; bad peers/trackers do not poison alternates or other jobs |
+| BT/magnets | `ctest --test-dir <build-dir> -R TorrentEngine --output-on-failure`: real local seed/v1-v2-hybrid/magnets/tracker-only/selection/resume/concurrency/seeding/rates/publication/CLI/SQLite, public discovery off |
+| Forced recovery | Kill actual CLI, read durable offset, resume/check full file; not merely extent arithmetic |
+| Large file | `python tests/support/http_fixture.py --exercise out/build/windows-msvc-release/maskpilot_cli.exe --large`: actual 4 GiB+257 bytes/SHA-256 |
+| Native messaging | `native_bridge_product_path`: source/size/durable ACK/resume/remove preserving final files |
+| Media | `python tests/integration/native_host_test.py <host.exe> <desktop.exe> --media-parser <parser.exe> --media-muxer <ffmpeg.exe>`: MP4/HLS/DASH/audio/login-header refusal |
+| Media formats/proxy | `python tests/integration/media_inventory_test.py --exercise <cli.exe> --parser <parser.exe> --muxer <ffmpeg.exe> --ui <build/tests/maskpilot_media_system_tests.exe>`: owned multi-quality DASH/streams/containers/auth HTTP-SOCKS5/remote DNS/no bypass/private input/Qt. Build requires `media_guard/` |
+| Browser installation | Node ≥22, `node tests/system/browser_test.mjs --browser <test-chromium.exe> --build-directory <build-or-package-dir>`, isolated profile/owned registration backup-restoration |
+| Independent deployment | `scripts/smoke.ps1 -PackageDirectory <dir>` clears development PATH and runs desktop/CLI/native messages; not a fresh VM |
+| Stability | `python benchmarks/run.py --help` lists fixed budgets; short runs never replace eight hours |
+| Stress reporting | `stress_report_publication_failure`: actual Windows read contention/atomic reports and injected report failure at real desktop-load end; failure/diagnostics must survive, in `tests/system/stress_report_test.py` |
 
-某些自动化测试浏览器环境无法启用沙箱，只有明确传入 `--allow-unsandboxed-fixture` 才关闭测试实例沙箱；该结果不证明生产沙箱兼容，产品启动不使用此参数。
+Some automated browser environments cannot enable sandboxing. Only explicit `--allow-unsandboxed-fixture` disables the test instance sandbox; this proves no production-sandbox compatibility and is never a product launch option.
 
-测试隔离应用数据、下载目录和本地服务。正常测试不修改实际用户下载或浏览器 profile。禁止实际触发关机来验证倒计时。截图须使用原生 Windows 渲染；offscreen 平台适合控制测试，不能证明字体／DPI 视觉正确。
+Isolate app data/downloads/services. Do not change real downloads/browser profiles or trigger actual shutdown to test countdowns. Native Windows screenshots prove visuals; offscreen control tests do not prove font/DPI correctness.
 
-FTP TLS 夹具每次生成短期证书，不修改系统证书库。测试环境需提供 Python `cryptography` 或 PATH 中的 OpenSSL 命令；缺少两者时测试失败，不静默跳过 TLS。它们仅用于测试，产品运行不需要 Python 或 OpenSSL 命令行程序。
+FTP TLS fixtures generate short-lived certificates without system trust changes. Require Python `cryptography` or PATH OpenSSL; absence fails, never silently skips TLS. These are fixture tools, not product Python/OpenSSL-CLI runtime requirements.
 
-BT 种源正常校验全部测试数据，不使用跳过校验的种源模式。回环端口同时探测 TCP／UDP，避免 Windows 两种协议保留区不同；绑定失败只在原准备时限内重试，不延长传输断言。桌面文件对话框测试操作实际文件名输入框，检查选择路径，并保留阻塞诊断时限；不依赖有焦点时可能被忽略的 `selectFile()`。
+BT seeds normally verify all test data, never skip checking. Probe loopback TCP/UDP together to avoid different Windows exclusions; bind retries stay within original preparation limits. Real file-dialog tests operate filename fields/check resulting paths with bounded diagnostics, not unreliable focused-dialog `selectFile()`.
 
-混合压力测试先在 `out/qa/media-fixtures/` 准备自有小型 `source.mp4`，或用以下命令生成合成样例。默认 300 秒只是短检查，完整计时传入 `--duration 28800`：
+Prepare owned `source.mp4` under `out/qa/media-fixtures/` or generate the synthetic sample below. Default 300 seconds is a short check; full timing needs `--duration 28800`:
 
 ```powershell
 New-Item -ItemType Directory -Force out/qa/media-fixtures
@@ -95,27 +95,36 @@ ffmpeg -y -f lavfi -i testsrc2=size=160x90:rate=10 -f lavfi -i sine=frequency=44
 python benchmarks/run.py --desktop out/package/MaskPilot-0.1.0-windows-x64/maskpilot.exe --native-host out/package/MaskPilot-0.1.0-windows-x64/maskpilot_native_host.exe --duration 28800 --media-parser out/tools/yt-dlp.exe --media-muxer 'C:/Tools/ffmpeg/bin/ffmpeg.exe'
 ```
 
-预算在运行前固定：桌面进程采样私有／工作集 <512 MiB、首尾季度私有内存漂移 <64 MiB、GUI IPC p95 <200 ms，观察间隔不能超过 30 秒。输出为增量 JSON，包含二进制哈希和复现命令。外部组件／夹具进程内存不在桌面预算内，结果不宣称外部站点、TLS 或所有可见 UI 操作的压力表现。脚本默认 offscreen；原生视觉验收单独执行。
+Freeze budgets before running: sampled desktop private/working set <512 MiB, first/last-quarter private drift <64 MiB, GUI IPC p95 <200 ms, observation gap ≤30 seconds. Incremental JSON includes binary hashes/reproduction. Helper/fixture memory is outside desktop budgets; no external-site/TLS/all-visible-UI stress claim. Default offscreen; native visual qualification is separate.
 
-原生界面可用 `maskpilot.exe --data-dir <isolated-dir> --window-size 850x560 --screenshot <file.png>` 捕获；截图使用 Windows 平台，弹出对话框时捕获当前模态窗口。示例任务只用于布局检查，不作为传输成功证据。
+`maskpilot.exe --data-dir <isolated-dir> --window-size 850x560 --screenshot <file.png>` captures Windows-native windows, or the active modal. Sample tasks illustrate layout, not successful transfer.
 
-包内协议复测可设置 `MASKPILOT_TEST_CLEAN_CLI_ENV=1`，让 FTP 夹具及 BT 实际 CLI 用例仅清理产品子进程的 PATH／Qt 环境；BT 用例另以 `MASKPILOT_TEST_CLI` 指向包内客户端。父进程的 TLS／种源环境保持完整。
+For package tests, `MASKPILOT_TEST_CLEAN_CLI_ENV=1` clears only product-child PATH/Qt in FTP/actual BT CLI cases; `MASKPILOT_TEST_CLI` points BT at the packaged client. Parent TLS/seeding environment stays intact.
 
-做种上传夹具使用两个回环地址区分原种源与接收端，避免把同一 IP 下的多个本地进程误当成独立远端节点。保留原有 60 秒期限、上传限速与完整数据校验；失败时输出监听及连接诊断。浏览器凭据审计包含所有 SQLite 列和二进制字段，并直接检查数据库及其日志文件。
+Seeding fixtures use two loopback addresses to distinguish seed/receiver instead of treating same-IP local processes as independent remotes. Keep the 60-second bound, rate limit, and full verification, with listener/connection diagnostics. Browser credential audits inspect all SQLite columns/binary fields and database/journal bytes.
 
-发布前额外人工／环境验收：Windows 10/11 干净系统、不同 DPI、多显示器、休眠唤醒、受限磁盘与不可写目录、真实 Chrome/Edge 安全策略。没有运行的项目必须留在验收记录中。
+Before release also check clean Windows 10/11, DPI/screens, sleep/wake, constrained/unwritable disks, and real Chrome/Edge policies. Unexecuted items stay in records.
 
-## 上下文原生消息验证
+## Context/native-message validation
 
-原生正文预算验证使用 `ctest --test-dir <build> -R 'PayloadBudget|TrafficStorage|QueueTraffic|QueueUi|native_payload_budget_product_path' --output-on-failure`。实际 CLI 和本地来源覆盖 HTTP 1／8 连接额度耗尽、已有分片恢复、FTP REST 拒绝后的重新接收、强制终止保留预留量、账本写入故障前不访问来源，以及严格预算对磁力引擎的启动前拒绝。SQLite 测试覆盖并发最后额度、重复高水位、一次性未用返还、历史／移动保留、UTC 日切换与回拨。实际 Qt/Curl 流程推进测试专用时钟，验证日额度重开、手动暂停不恢复及界面用量；不修改系统时间。`MASKPILOT_TEST_TRAFFIC_SCREENSHOT=<绝对路径.png>` 可保存该真实预算对话框。
+`ctest --test-dir <build> -R 'PayloadBudget|TrafficStorage|QueueTraffic|QueueUi|native_payload_budget_product_path' --output-on-failure` tests actual CLI/local HTTP1/8 budgets/cache/FTP REST re-receive/forced reservations/no-contact ledger failures/pre-engine magnet refusal. SQLite covers concurrent last-credit/high-water idempotence/one-time refund/history-move retention/UTC rollover/backward clocks. Actual Qt/curl uses owned test clocks for reopening/manual pause/UI usage, never system time. `MASKPILOT_TEST_TRAFFIC_SCREENSHOT=<absolute-path.png>` captures the dialog.
 
-周期窗口验证使用 `ctest --test-dir <build> -R 'QueueSchedule|QueuePolicy|QueueStorage|QueueUi' --output-on-failure`。真实 QtCore 时区适配器覆盖纽约春季缺失分钟、秋季重复分钟和上海跨日期转换；受控时间只注入测试拥有的调度器，不修改系统时间。实际 Qt 队列管理器保存并重开星期／起止时间／时区，真实本地 HTTP 流程验证窗口关闭后分片保留、重开后完整落盘，手动暂停任务不访问来源。另验证 schema7→8 备份、CAS 及启动首个工作线程已采用配置限额。工作桩只证明调度语义，不替代协议或授权测试。
+`ctest --test-dir <build> -R 'QueueSchedule|QueuePolicy|QueueStorage|QueueUi' --output-on-failure` checks actual QtCore New York missing/repeated DST minutes and Shanghai date changes with owned scheduler clocks. Qt saves/reopens weekday/time/zone; real HTTP preserves cache across closed windows and verifies full output after reopening, without contacting manually paused sources. Also schema7→8 backup/CAS/first-worker limits. Work stubs prove scheduling only, not transport/grants.
 
-`ctest --test-dir <build> -R scoped_native_bridge_product_path --output-on-failure --no-tests=error` 调用实际桌面与 host。夹具验证独立管理权限、两个会话、请求去重、跨上下文拒绝、旧客户端隔离、撤销／重新签发／重启及真实代理和 Cookie 路由。大历史数据只在夹具所属桌面关闭时写入；运行时不另起数据库写入器。它也验证 v1 登录任务重启后不匿名下载、精确 URL 改变时不请求新目标，以及可选授权任务重新绑定后仍要求授权。不能据此推断浏览器侧签发已完成。
+`ctest --test-dir <build> -R scoped_native_bridge_product_path --output-on-failure --no-tests=error` runs real desktop/host: separate admin/two sessions/deduplication/cross-context refusal/v1 isolation/revoke-reissue-restart/real proxy-Cookie routing. Large histories are seeded only while the owned desktop is stopped, not by another runtime DB writer. It checks no anonymous v1 restart/no contact after exact-URL change/rebound optional grants still required. Browser-side issuance is not inferred.
 
-`ctest --test-dir <build> -R 'ContextUi\.|TaskList|DesktopFlow\.|DownloadContexts\.' --output-on-failure --no-tests=error` 覆盖实际环境管理、筛选、新建／重新绑定、撤销／恢复／清理按钮，独立任务安全记住／忘记、重开编辑器保留认证需求，以及导入取消／中途保存失败／剩余重试。原生凭据用随机安装命名空间，结束时仅删除所属日志记录。控件测试默认 offscreen；设置 `MASKPILOT_TEST_NATIVE_UI=1` 使用真实 Windows 窗口，并可用 `MASKPILOT_TEST_CONTEXT_SCREENSHOT=<绝对路径.png>` 保存环境对话框截图。
+`ctest --test-dir <build> -R 'ContextUi\.|TaskList|DesktopFlow\.|DownloadContexts\.' --output-on-failure --no-tests=error` covers real profile/filter/create/rebind/revoke/reactivate/cleanup, standalone native remember/forget/reopened requirements, import cancel/save failure/retry. Random installation namespaces clean only owned entries. Default offscreen; `MASKPILOT_TEST_NATIVE_UI=1` uses native Windows, `MASKPILOT_TEST_CONTEXT_SCREENSHOT=<absolute-path.png>` captures profiles.
 
-队列控件复测使用 `ctest --test-dir <build> -R '^Queue' --output-on-failure --no-tests=error`。原生截图设置 `MASKPILOT_TEST_NATIVE_UI=1`、`MASKPILOT_TEST_QUEUE_SCREENSHOT=<绝对路径.png>`，运行 `QueueUi.ActualManagerAddFilterMoveAndReopenPreservePausedMembership`。实际 HTTP 窗口测试验证队列启用不会启动手动暂停任务、保留已下载数据并完整落盘；设置失败测试只用受控媒体工作桩验证保存顺序，不替代实际媒体组件回归。测试不触发真正退出或关机动作。
+`ctest --test-dir <build> -R '^Queue' --output-on-failure --no-tests=error` checks queues. Native captures: `MASKPILOT_TEST_NATIVE_UI=1`, `MASKPILOT_TEST_QUEUE_SCREENSHOT=<absolute-path.png>`, `QueueUi.ActualManagerAddFilterMoveAndReopenPreservePausedMembership`. Real HTTP verifies enable does not start manual pauses and retains/completes data. Save-order failure uses controlled media stubs, not real-helper regression. Tests never trigger actual exit/shutdown.
+
+## Desktop language preferences
+
+Run `ctest --test-dir <build> -R '^LanguageUi\.' --output-on-failure --no-tests=error`
+to check fresh English defaults, cancelling settings without creating a preference,
+and saving/reopening both English and Simplified Chinese through the real settings dialog.
+The fixture uses an isolated data directory and a Chinese process locale; it does not
+simulate changing the operating system locale. Native startup screenshots separately
+check unset and saved-language preferences. Existing user settings must not be reset.
 
 ## Portable build verification
 

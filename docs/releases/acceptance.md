@@ -1,136 +1,136 @@
-# 发布候选验收
+# Release candidate acceptance
 
-状态：下面的 **0.3.0 历史冻结基线**通过了本机功能与独立 8 小时运行资格验收；之后增加登录媒体、POST、SFTP、直播及审计修复的开发代码不继承这份长期资格。当前代码须按 [仓库审计](../testing/repository-audit.md) 的具体提交、构建与本地验收证据判断。0.2.0／0.3.0 旧包保持冻结，在线更新和正式发行延后。外部平台、生产浏览器、商店及签名门槛尚未验证，未公开发布。最初的完整功能目标尚未全部实现，详见 [功能缺口](../product/feature-matrix.md)。
+The **historical frozen 0.3.0 baseline** below passed local functionality and an independent eight-hour run. Later authenticated media/POST/SFTP/live/audit code does not inherit that qualification. Judge current commits/builds from specific [audit evidence](../testing/repository-audit.md). Old 0.2.0/0.3.0 packages remain frozen; online updates/formal release were deferred. External platforms/production browsers/stores/signing remain unverified; these candidates were not publicly released. The complete original goal remains unfinished: see [gaps](../product/feature-matrix.md).
 
-## 0.3.0 最终运行资格（2026-11-19）
+## Final 0.3.0 runtime qualification (2026-11-19)
 
-受测源码提交为 `a982b6fa3be245173d224038e7ff900b8fded0bb`，启动时工作区干净。不可覆盖的私有基线 `out/qa/qualification-0.3-portable-final.json` 绑定 **154** 项原生／构建策略输入、**38** 个运行文件及 **3** 个明确提供的外部媒体工具；其 SHA-256 为 `9bf147b0c13dd3810b68b73e9640addab5633a46c8576c1d86e7a5d04f2df525`。受测桌面 SHA-256 为 `eeb9605233a8347ce8a729ce3f017d4532baad22e1d809b39cd98e2aa879edd9`。本机路径只保留在私有证据中。
+Tested source `a982b6fa3be245173d224038e7ff900b8fded0bb`, clean at startup. No-overwrite private baseline `out/qa/qualification-0.3-portable-final.json` binds **154** native/build-policy inputs, **38** runtime files, and **3** explicit external media tools; SHA-256 `9bf147b0c13dd3810b68b73e9640addab5633a46c8576c1d86e7a5d04f2df525`. Desktop SHA-256 `eeb9605233a8347ce8a729ce3f017d4532baad22e1d809b39cd98e2aa879edd9`. Machine paths remain private.
 
-| 项目 | 当前运行文件的实际证据 |
+| Check | Evidence for those runtime bytes |
 |---|---|
-| 功能回归 | 完整 **269/269 CTest**，626.40 秒；扩展 **26/26**；实际媒体选择／容器／代理／Qt **13 项**通过；离线页面在真实 Chromium 中 **零远端请求** |
-| 浏览器 | Chromium **8 项**、Firefox **9 项**实际断言通过，涵盖持久化接管、恢复、Cookie 隔离、可信页面面板和主机故障回退；临时注册项恢复。生产沙箱／商店安装不由这些测试证明 |
-| 大文件 | 实际下载 **4,294,967,553 字节**，61.39 秒；SHA-256 `c1a2510f41f6fc63bd169116662b1a514c66b43fab60b3dc656d114cfe83145a` |
-| 原生界面 | Windows 默认 Qt 平台上的上下文／队列控件 **2/2** 通过；实际窗口 PNG 已检查。界面样例为合成配置，不代替传输证据 |
-| 旧版数据 | 实际冻结的 0.2.0 程序创建完成／暂停 HTTP 任务；停止后复制隔离数据，由新版从 **schema 4 升至 13**。原任务编号、旧列和默认值保留，升级备份与旧库一致；没有自动联网，同编号手动恢复后文件哈希正确，原库及旧包不变。该结果不代表所有历史协议／凭据／部分缓存组合 |
-| 连续负载 | 新的一次连续负载 **28,824.66 秒**，含结束核验总耗时 **28,831.14 秒**；908 轮、**90,800 个文件哈希**、**2,716 次暂停恢复**、峰值 8 活跃；91 轮媒体、**273 个输出**校验 |
-| 内存与响应 | 采样私有内存峰值 **23.49 MiB**、工作集峰值 **45.97 MiB**，首尾季度私有内存漂移 **1.70 MiB**；GUI IPC p95 **19.64 ms**，最大采样间隔 **3.82 秒**，均满足原预算 |
-| 清理与一致性 | 原生进程和临时工作目录清理通过；启动前及清理后的源码／策略／运行文件／工具哈希、实际映射模块检查均通过；测试进程退出码 0 |
+| Regression | **269/269 CTest**, 626.40 seconds; extension **26/26**; **13** actual media/format/container/proxy/Qt cases; real Chromium offline pages made **zero remote requests** |
+| Browsers | Chromium **8**, Firefox **9** assertions: durable handoff/recovery/Cookie isolation/trusted panel/host fallback; registrations restored. Not production sandbox/store qualification |
+| Large file | **4,294,967,553 bytes**, 61.39 seconds; SHA-256 `c1a2510f41f6fc63bd169116662b1a514c66b43fab60b3dc656d114cfe83145a` |
+| Native UI | Windows-native profile/queue controls **2/2**, PNGs inspected. Synthetic settings illustrate UI, not transfer |
+| Old data | Actual frozen 0.2.0 created completed/paused HTTP tasks; isolated stopped data migrated **schema 4→13**, preserving IDs/old fields/defaults and matching backup. No automatic contact; explicit same-ID resume verified hashes; original DB/package unchanged. Not every legacy protocol/credential/cache combination |
+| Continuous load | **28,824.66 seconds**, **28,831.14** including final checks; 908 cycles, **90,800 hashes**, **2,716 pause/resumes**, peak 8; 91 media cycles/**273 outputs** |
+| Memory/response | Peak private **23.49 MiB**, working set **45.97 MiB**, first/last-quarter drift **1.70 MiB**, IPC p95 **19.64 ms**, max observation gap **3.82 seconds**, within original budgets |
+| Cleanup/parity | Native processes/temp cleaned; source/policy/runtime/helper hashes and mapped modules matched before/after, exit 0 |
 
-长测报告为 `out/qa/stress-0.3-portable-final.json`，SHA-256 为 `a2b4db432da747d49a6617a0817ecd8469dd889fbb60223c5393a67973be029c`。负载为隔离 offscreen 桌面上的 HTTP 循环和本地合成 MP4/HLS/DASH；不构成 8 小时公网 FTP／BT／真实站点兼容测试。既定 512 MiB 内存、64 MiB 季度漂移、200 ms GUI IPC p95、30 秒观察间隔预算未放宽。所有旧短测和中断记录继续保留，不拼接计时。
+Long-run report `out/qa/stress-0.3-portable-final.json`, SHA-256 `a2b4db432da747d49a6617a0817ecd8469dd889fbb60223c5393a67973be029c`. Isolated offscreen HTTP loops/local synthetic MP4/HLS/DASH are not eight-hour public FTP/BT/real-site qualification. Budgets stayed 512 MiB memory/64 MiB quarterly drift/200 ms GUI IPC p95/30-second observations. Earlier short/interrupted records remain; timings are never joined.
 
-最终包使用 `scripts/package.ps1 -SkipBuild`，明确传入 portable 构建目录、上述资格清单与受测运行目录；包内 **38 个运行文件必须逐字节匹配**。文档提交可能使 `sourceCommit` 晚于 `qualifiedSourceCommit`，不得改变已冻结的原生输入。阶段目录和 ZIP 必须通过路径／PE／供应商签名来源、完整文件清单及许可／源码补丁审计，再运行 `scripts/smoke.ps1`，验证移除开发 PATH 后的桌面、CLI、原生接管、安装、重装、离线升级、回滚、清理和卸载，保留未知文件及注册项所有权。最终 ZIP 的外部摘要不写入包内文档，避免循环自哈希。
+Final packaging used `scripts/package.ps1 -SkipBuild` with explicit portable build/baseline/qualified runtime. All **38 runtime files must match byte-for-byte**. Docs can make `sourceCommit` later than `qualifiedSourceCommit` but cannot change frozen native inputs. Staging/ZIP must pass paths/PE/supplier provenance/full manifests/licenses/source-patch audits, then `scripts/smoke.ps1` checks desktop/CLI/native handoff/install/reinstall/offline update/rollback/cleanup/uninstall without development PATH, retaining unknown files/registration ownership. External ZIP digest stays outside internal docs to avoid circular self-hashing.
 
-剩余观察：先前站点完成测试两次等待超时的原因仍未确认；失败诊断、原断言与五秒预算保持不变，随后 70 次重复及完整回归通过，不据此声称根因已修复。干净 Windows、生产浏览器沙箱／商店签名、发布签名、可信在线更新发现、真实站点长期兼容及实际指纹浏览器集成仍未验证；本轮不改名、不公开发布。
+Remaining observation: two earlier site-completion waits had unconfirmed causes. Diagnostics/assertions/five-second budget stayed intact; 70 repeats/full regression later passed without claiming root-cause repair. Clean Windows/production sandbox/store signatures/release signing/trusted online discovery/long real-site compatibility/browser integration remained unverified; no renaming/public release at this stage.
 
-## 0.3.0 资格冻结（历史过程记录）
+## 0.3.0 freeze: historical work record
 
-版本统一到 CMake、扩展清单／锁文件、Windows 程序集及原生文件版本资源。`scripts/release_manifest.py` 建立不可覆盖的本地资格基线，绑定原生构建输入、运行文件与明确提供的媒体工具／Qt 插件。测试器在启动前及清理后检查集合、哈希与自身脚本；本机路径仅留在私有测试证据，不作为公开发布清单。
+Versions were unified across CMake, extension manifests/lock, Windows assemblies/native resources. `scripts/release_manifest.py` creates no-overwrite local baselines binding native inputs/runtime/explicit helpers/plugins. Tester checks sets/hashes/its own scripts before/after; private machine paths are not public release manifests.
 
-升级／恢复工具、最终包、当前环境功能验证和新版完整 8 小时长测均为本轮必要工作，完成前不能凭版本号宣称验收通过。内部清单用于一致性核对，不能替代从可信渠道独立取得的安装包哈希或发布签名。
+Update/recovery tools, final package, environment functionality, and a new eight-hour run were required before acceptance, regardless of version labels. Internal manifests never replace independently trusted package hashes/signatures.
 
-0.3.0 构建的五个原生程序均已核对 Windows 版本资源，当前完整功能回归 **269/269** 通过（667.09 秒）。部署了本地运行库的隔离预检通过：请求 300 秒，实际约 329.12 秒，校验 1,000 个文件、30 次暂停恢复、2 轮本地媒体阶段；GUI IPC p95 18.65 ms，首尾季度私有内存漂移 2.04 MiB，进程与临时文件清理完成。启动前／清理后资格清单及实际映射模块检查均通过。这些是短测证据，**不算新版 8 小时验收**。
+Five native 0.3.0 programs had version resources checked; **269/269** regression passed in 667.09 seconds. Isolated runtime preflight requested 300 seconds/ran about 329.12, verified 1,000 files/30 pause-resumes/2 media cycles, IPC p95 18.65 ms/private drift 2.04 MiB, cleanup and before/after/mapped-module parity passed. **Not eight-hour qualification**.
 
-本轮离线更新工具与候选包验收仍在进行。成功升级保留一份安装文件回滚材料，明确完成后才清理；外部文件修改会阻止覆盖或回滚并保留记录。包内 `release.json`、完整清单和 ZIP 外部摘要分别提供版本、内部一致性及所选 ZIP 的字节标识，不等同于签名或在线更新服务。
+At this historical point, offline-tool/candidate acceptance was ongoing. Successful upgrades retained file rollback materials until explicit finalization; external modifications blocked replacement/rollback and kept journals. `release.json`, complete manifest, and external ZIP digest describe version/consistency/bytes, not signatures or online service.
 
-当前 Windows 文件操作夹具通过了替换／移除／回滚、检查点故障、真实文件占用、目录联接、实际进程占用和子进程终止等场景。中途写入异常仅清理本次独占创建的半成品；真正截断且无法核验的暂存／日志会保留并要求人工处理，测试器的明确修复步骤不计为自动恢复。实际完整安装包和旧数据库兼容性仍需后续验收。
+Windows fixtures passed replacement/removal/rollback/checkpoint faults/real locks/junctions/process occupancy/child termination. Mid-write errors clean only newly exclusive partials; unverifiable truncation preserves the scene for manual repair. Fixture-owned repairs are not automatic recovery. Real full-package/old-database acceptance remained separate.
 
-升级工具的完整候选包 smoke 已通过：开发 PATH／Qt 覆盖移除后，实际桌面、客户端、原生桥接、安装、同版重装、离线 ZIP 应用、回滚、清理与卸载完成，未知下载文件保留。候选 `out/package/preflight-0.3-001/MaskPilot-0.3.0-windows-x64.zip` 的 SHA-256 为 `576127b7716f0a546ad910badd67bab247456c41fc81cb8a317eeff3351516b3`；这是工具验收产物，源码状态如实标记为 dirty，不作为最终发布。
+Candidate smoke passed desktop/CLI/bridge/install/reinstall/offline ZIP apply/rollback/finalize/uninstall without development PATH/Qt, retaining unknown downloads. Artifact `out/package/preflight-0.3-001/MaskPilot-0.3.0-windows-x64.zip`, SHA-256 `576127b7716f0a546ad910badd67bab247456c41fc81cb8a317eeff3351516b3`, accurately dirty source state; a tool-validation artifact, not final release.
 
-该运行时的正式长测尝试因发布审计发现本机编译／诊断路径而主动中断：约 2,411.18 秒、7,400 个文件，报告为 failed／Interrupted，未计为 8 小时通过。接下来修正可移植构建，重新核验运行文件并从零开始新长测；旧版本包与程序保留。
+That runtime’s long-run attempt was deliberately stopped after private compiler/diagnostic paths were found: about 2,411.18 seconds/7,400 hashes, failed/Interrupted, not eight hours. Portable-build repair/new byte qualification/new timing from zero followed; old programs/packages stayed intact.
 
-## 2026-11-18：开发分支原生代理切片
+## 2026-11-18: native proxy development slice
 
-独立 Release 构建位于 `out/build/windows-msvc-completion/`，桌面 SHA-256：`9f3e46f354d5ccb80312e5075c20a1c3da999c30fae2f21ff041b0310500bbc0`。完整 **77/77 CTest** 通过（323.72 秒），扩展 **14/14** 通过。原生代理密码框、凭据需求标记和任务创建操作通过实际 Qt 控件验证，Windows 平台截图为 `out/qa/completion-proxy-dialog-final.png`。
+Independent Release `out/build/windows-msvc-completion/`, desktop SHA-256 `9f3e46f354d5ccb80312e5075c20a1c3da999c30fae2f21ff041b0310500bbc0`. **77/77 CTest** in 323.72 seconds and extension **14/14** passed. Actual Qt tested password fields/required-login/task creation, screenshot `out/qa/completion-proxy-dialog-final.png`.
 
-实际 CLI 的记录型 HTTP／SOCKS5 代理验证通过，包括 HTTP／FTP、远端 DNS、重定向、代理认证头不进入源站、环境代理与 `NO_PROXY` 污染、错误／缺失凭据、代理不可用时不直连，以及两种 FTPS TLS 模式。强制退出后，持久化凭据需求标记使缺少秘密的恢复请求在联网前失败；SQLite／日志／任务清单检查未发现测试凭据。数据库升级前备份，旧任务、协议类型和下载数据保留。
+Actual CLI recording HTTP/SOCKS5 proxies checked HTTP/FTP/remote DNS/redirects/no proxy-auth leakage/environment `NO_PROXY` contamination/wrong-missing credentials/no direct bypass/both FTPS modes. Required-login survived forced exit and refused secret-free resume before contact; SQLite/journals/task lists had no fixture credentials. Migrations backed up, preserving tasks/protocols/data.
 
-BT 实际元数据与分片经 HTTP CONNECT／SOCKS5 传输，验证直连／不同代理／同地址不同凭据并发隔离。错误密码、无 Tracker 的显式节点磁力链接及缓存元数据、坏节点／坏 Tracker 的备用源，以及同路由坏任务不妨碍正常任务四组边界各连续通过 **3 次**，共 37.73 秒。缓存元数据保留 URI web seed、去重及 256 项上限另有解析／往返测试；该解析证据不等同于公网 web seed 兼容验收。
+Real BT metadata/pieces used CONNECT/SOCKS5 with concurrent direct/different proxies/same-endpoint different-credential isolation. Four boundary groups—bad password, explicit-peer trackerless magnet/cached metadata, bad-node/tracker alternates, and same-route bad-job isolation—each passed **3** repeats in 37.73 seconds. URI web seeds/deduplication/256-entry caps had separate parser/round-trip tests, not public web-seed qualification.
 
-过程中的失败与修正保留在工作记录：认证错误曾未映射到所属任务；原生出站连接告警实际表示开始尝试，不能当作成功；端口 1 会被原生库静默忽略，不能冒充真实坏节点。最终夹具使用实际绑定但不监听的端口，并检查代理确实尝试坏／好候选。没有放宽原 30 秒看门狗、数据校验或故障隔离断言，临时诊断代码已移除。最终日志为 `out/qa/completion-proxy-ctest-final.log` 和 `out/qa/completion-proxy-final-repeats2.log`。
+Failure/repair history remained: auth errors initially lacked owning-task mapping; outbound alerts meant attempts, not successful connection; port 1 was silently ignored, not a real bad node. Final fixtures bound non-listening ports and checked actual bad/good attempts. Original 30-second watchdog/hash/isolation assertions stayed; temporary diagnostics removed. Logs: `out/qa/completion-proxy-ctest-final.log`, `out/qa/completion-proxy-final-repeats2.log`.
 
-这只是第 1 阶段的原生代理切片：浏览器上下文隔离与安全凭据管理仍须继续实现，随后还有动态分段／队列、媒体／浏览器体验及交付阶段。媒体认证代理当前明确拒绝，等待私密进程输入通道。代理 BT 不支持 HTTPS 代理或 UDP Tracker；系统 DNS、复杂公网拓扑、干净系统、实际指纹浏览器集成及新版长测未由本轮本地夹具验收。没有重打或覆盖冻结的 0.2.0 ZIP，也没有借用其历史 8 小时结果。
+This was only stage 1 native proxies. Context/vault, adaptive queues, media/browser UX, and delivery followed. Authenticated media proxies were then explicitly refused pending private stdin. BT HTTPS/UDP proxies, system DNS/public topology/clean systems/browser integration/new long run were unqualified. Frozen 0.2.0 ZIP was neither overwritten nor lent its eight-hour evidence.
 
-## 0.2.0 协议、界面与部署候选
+## 0.2.0 protocol/UI/deployment candidate
 
-独立 Release 构建为 `out/build/windows-msvc-protocols/`，使用 Qt 6.11.3 与同一 MSVC 工具集。桌面 SHA-256：`3877ce864625bdb0ce2c4ac92bb506dd7d96fc59318cf850e4b15d41f1dc7b46`。本地包为 `out/package/MaskPilot-0.2.0-windows-x64.zip`；版本号、Windows 清单、客户端和扩展均为 0.2.0。
+Release `out/build/windows-msvc-protocols/`, Qt 6.11.3/same MSVC. Desktop SHA-256 `3877ce864625bdb0ce2c4ac92bb506dd7d96fc59318cf850e4b15d41f1dc7b46`. Package `out/package/MaskPilot-0.2.0-windows-x64.zip`; project/Windows/client/extension versions all 0.2.0.
 
-| 项目 | 实际结果 |
+| Check | Recorded result |
 |---|---|
-| 完整回归 | **63/63 CTest** 通过，240.70 秒；扩展 **14/14** 通过 |
-| 做种复测 | 独立接收端上传用例连续 **3 次**通过，66.65 秒；保留原 60 秒期限、限速观察、完整文件校验及暂停后文件保留检查 |
-| 包内协议 | 移除实际 CLI 子进程的开发 PATH／Qt 环境后，FTP／显式与隐式 FTPS **7 组**验证通过；包内 BT CLI 实际捕获元数据并完成校验下载 **1/1**，5.08 秒 |
-| 包内运行与安装 | 清除开发环境后桌面、CLI、原生消息通过；安装、升级、卸载均通过，未知下载文件保留 |
-| 包内浏览器 | 隔离 Chromium **7 项**实际断言通过，含 Cookie 隔离、不落库、持久化先于取消、故障恢复和弹出界面；注册项已恢复。证据 `out/qa/browser-1794940249334/evidence.json` |
-| 短混合负载 | 60 秒工作负载总耗时 61.02 秒，300 个文件校验、9 次暂停恢复、峰值 8 活跃、2 轮媒体／6 个输出；GUI IPC p95 19.92 ms，私有内存季度漂移 0.10 MiB，进程及临时文件清理通过 |
-| 原生视觉 | Windows 平台检查 1180×750 空状态／中文任务列表、850×560 窄窗口及 FTP 对话框；紧凑导航、协议来源、进度及上传信息可读，空状态提示无裁切 |
-| 依赖与源码 | 包含七个原生传输／存储 DLL、Qt/MSVC 运行库、完整依赖许可、Qt 对应源码／SBOM 和文件哈希；源码格式与差异检查通过，受保护的 AGENTS.md 未修改 |
+| Regression | **63/63 CTest**, 240.70 seconds; extension **14/14** |
+| Seeding repeats | **3** strict repeats, 66.65 seconds; original 60-second bound/rate/full hash/pause-file preservation |
+| Packaged protocols | Actual CLI without development PATH/Qt: FTP/explicit-implicit FTPS **7 groups**, BT metadata/verified download **1/1**, 5.08 seconds |
+| Runtime/install | Desktop/CLI/native messages/install/upgrade/uninstall passed without developer environment, unknown files preserved |
+| Browser | Isolated Chromium **7** assertions: Cookie isolation/no persistence/durable-before-cancel/fallback/popup; registration restored, `out/qa/browser-1794940249334/evidence.json` |
+| Short mixed load | 60-second workload, 61.02 total, 300 hashes/9 pause-resumes/peak 8/2 media cycles/6 outputs; IPC p95 19.92 ms/private drift 0.10 MiB; cleanup passed |
+| Native visuals | 1180×750 empty/Chinese tasks, 850×560 narrow/FTP dialog; readable compact navigation/source/progress/upload, unclipped empty hint |
+| Dependencies/source | Seven native transport/storage DLLs, Qt/MSVC, full notices/Qt sources/SBOM/hashes; formatting/diff passed, `AGENTS.md` unchanged |
 
-完整回归日志为 `out/qa/protocols-02-ctest-final.log`，短负载报告为 `out/qa/stress-protocols-02-final.json`。视觉示例中的暂停任务为明确标注的合成数据，仅证明布局；传输结论来自实际协议夹具与产品进程。
+Logs: `out/qa/protocols-02-ctest-final.log`, `out/qa/stress-protocols-02-final.json`. Paused visual samples are marked synthetic and prove layout only; transfers come from actual product/protocol fixtures.
 
-首轮 63 项曾有做种接收端超时。诊断显示接收监听正常、连接后 EOF；原种源与接收端共用同一回环 IP，与默认同 IP 连接去重策略存在冲突。接收夹具改用独立回环地址后，三次严格复测及完整回归均通过；未修改产品策略，也不宣称已通过产品端告警证明每次历史断开的具体原因。浏览器审计也曾因 schema 4 的二进制列无法 JSON 序列化而失败，修正后保留全部列及数据库／日志原始字节凭据检查。早期打包与环境变量检查失败均已修正后重跑。
+Initial 63-case run had a seed-receiver timeout. Listener worked, then EOF; original seed/receiver shared loopback IP, conflicting with same-IP deduplication. Separate loopback receiver passed three strict repeats/full regression without changing product policy or claiming alerts established every historical disconnect cause. Schema-4 binary-column JSON failure was fixed while retaining all-column/raw DB-journal credential checks. Early package/environment failures were repaired/rerun.
 
-此包没有重跑 8 小时长测，也没有完成公网 DHT／公共或私有 Tracker、干净 Windows 虚拟机、多 DPI 与生产浏览器沙箱验收。浏览器夹具使用显式测试无沙箱选项。BT 代理及既有完整功能缺口仍未实现；本阶段通过不改变这些边界。
+No new eight-hour run/public DHT/public-private tracker/clean Windows VM/multi-DPI/production sandbox qualification. Browser fixtures explicitly disabled sandboxing. BT proxies and original full-feature gaps were still missing at this stage.
 
-## BT／磁力阶段回归
+## BT/magnet regression stage
 
-协议构建 `out/build/windows-msvc-protocols/` 的完整 CTest **62/62** 通过（232.98 秒），包括 18 项本地真实 BT 引擎／服务／CLI 用例及现有 HTTP、FTP/TLS、媒体、原生消息和 Qt 流程。磁力 v1/v2/混合种子、纯 Tracker、全局上传预算、桌面任务清单往返四项各连续通过 3 次，合计 82.53 秒。扩展协议 **14/14** 通过。
+Protocol build `out/build/windows-msvc-protocols/`: **62/62 CTest**, 232.98 seconds, including 18 real local BT engine/service/CLI and existing HTTP/FTP-TLS/media/native/Qt cases. Magnet v1/v2/hybrid, tracker-only, global upload, and desktop task-list roundtrip each passed 3 repeats, 82.53 seconds total. Extension **14/14**.
 
-后续仅增加一个原生监听失败用例并通过 **1/1**（6.19 秒），覆盖明确错误、启动中暂停／取消和暂存文件保留；功能二进制未变。本阶段因此具有 62 项完整回归及这项单独负向验证，下一阶段应运行包含它的全套 63 项。
+One later native-listener failure case passed **1/1**, 6.19 seconds: clear errors/startup pause-cancel/staging retention, with unchanged functional bytes. Thus 62 full cases plus one separate negative check, not an already executed 63-case suite.
 
-此阶段桌面 SHA-256：`7524011b2d6fa4e6a842727d97be5ee60828fbc58971b3f2b215af930757db19`。旧发布 ZIP 不含本次扩展；整体界面整理与新包仍待下一阶段。没有重跑 8 小时长测或验证公网 DHT、公共／私有 Tracker、干净系统与生产浏览器策略。
+Desktop SHA-256 `7524011b2d6fa4e6a842727d97be5ee60828fbc58971b3f2b215af930757db19`. Old ZIP lacked these additions; UI/new package were later. No new eight-hour/public DHT/tracker/clean-system/production-policy qualification.
 
-初次测试保留失败结论：元数据零选中文件状态导致重连退避、部分 v2 分片层不能作为完整种子序列化，均已修正并通过严格复测。Windows 的 TCP／UDP 保留区不同，曾导致种源及客户端自动监听失败；夹具验证两种绑定，产品增加有界自动端口恢复和可取消的监听准备检查。桌面测试也曾超时：Qt 保留有焦点的文件名编辑器内容，测试改为操作实际输入框并检查目标路径。没有放宽原传输时限或跳过数据校验。
+Initial failures remained recorded: zero-selected metadata reconnect backoff and incomplete v2 piece-layer serialization were fixed/retested. Different Windows TCP/UDP exclusions caused auto-listener failures; fixtures checked both, product added bounded port recovery/cancellable preparation. File-dialog timeout came from focused editor text; tests now operate actual input/check paths, preserving transfer bounds/full hashes.
 
-种子元数据与私有 Tracker/passkey 的本地保存边界见支持矩阵。BT 代理、多源镜像、远程控制等未实现能力不因本轮通过而算作完成。
+Local torrent/private-tracker/passkey storage limits are in the support matrix. Missing BT proxy/mirror/remote features were not counted complete by these passes.
 
-## FTP/FTPS 阶段回归
+## FTP/FTPS regression stage
 
-独立 Release 构建 `out/build/windows-msvc-protocols/`，完整 CTest **36/36** 通过（102.59 秒），扩展协议 **14/14** 通过。FTP 真实夹具涵盖匿名／认证、主动／被动、空文件／Unicode、缺失元数据、失败登录、截断数据、远端变化、摘要不符、同名保护、SHA 条件续传、无摘要重下、REST 拒绝回退、强制退出恢复、显式／隐式 TLS、CA 信任与主机名拒绝；另有直接适配器测试覆盖传输／最终发布时的暂停与取消，以及恢复后摘要一致。
+Independent Release `out/build/windows-msvc-protocols/`, **36/36 CTest**, 102.59 seconds, extension **14/14**. Real FTP covered anonymous/auth/active-passive/empty-Unicode/missing metadata/bad login/truncation/change/hash/conflict/SHA resume/no-hash restart/REST refusal/forced recovery/explicit-implicit TLS/CA-hostname refusal. Direct adapter checks covered transfer/finalizing pause-cancel and resumed digest.
 
-桌面任务流程验证了 FTP 密码框和暂停任务，数据库／导出不保存 FTP 账号密码。schema 1/2 升级到 3 前创建备份。此阶段桌面 SHA-256：`2232ac4358f9ac7c0dac92845a3f77924f69f58b1b6440dfc6f3e35eb7bde9b5`。没有重跑 8 小时长测、重新打包或完成公共 FTP 服务器兼容矩阵；BT 与整体界面优化尚待后续阶段，不能归入本阶段已交付功能。
+Desktop checked password fields/paused task; DB/export excluded FTP login. Schema 1/2 backed up before 3. Desktop SHA-256 `2232ac4358f9ac7c0dac92845a3f77924f69f58b1b6440dfc6f3e35eb7bde9b5`. No new eight-hour/package/public FTP matrix; BT/UI remained future work.
 
-## 2026-11-17 源码审计回归
+## 2026-11-17 source-audit regression
 
-修正 SQLite 文本中的 NUL 被截断、大小写任务编号共用 Windows 缓存、媒体最终发布前忽略暂停／取消三项缺陷。数据库异常值保留完整长度以供验证；非小写任务编号显式拒绝，已有正常小写编号不变。
+Fixed SQLite NUL truncation, case-variant IDs sharing Windows caches, and media publication ignoring pause/cancel. Preserve full text length for validation; reject non-lowercase IDs without altering valid existing ones.
 
-独立 Release 构建位于 `out/build/windows-msvc-audit/`，桌面 SHA-256 为 `45bbfc1e41d4ca93f520e7b58d209c95e98325284f1a50ee01dfd7d5088ac012`。完整 CTest **30/30** 通过（63.85 秒）；媒体辅助进程改为 UTF-8 路径后，另以中文缓存路径重跑相关 **2/2** 通过。扩展协议 **14/14** 通过，隔离 Chromium **7 项**实际断言通过，仍使用显式测试无沙箱选项。
+Release `out/build/windows-msvc-audit/`, desktop SHA-256 `45bbfc1e41d4ca93f520e7b58d209c95e98325284f1a50ee01dfd7d5088ac012`. **30/30 CTest**, 63.85 seconds; UTF-8 media-path repair then **2/2** Chinese-cache checks. Extension **14/14**, isolated Chromium **7** assertions, explicit unsandboxed fixture.
 
-60 秒短压力工作负载总耗时 67.16 秒，完成 300 个文件校验、9 次暂停恢复、峰值 8 活跃、2 轮媒体／6 个输出；GUI IPC p95 14.39 ms，私有内存季度漂移 0.55 MiB，进程及临时文件清理通过，报告为 `out/qa/stress-audit-report.json`。此轮仅为修改后的短回归，**未重跑 8 小时长测、未重新生成发布包**；下述历史 ZIP 及冻结长测不包含本次修复。
+60-second short load: 67.16 total, 300 hashes/9 pause-resumes/peak 8/2 media cycles/6 outputs; IPC p95 14.39 ms/drift 0.55 MiB/cleanup pass, `out/qa/stress-audit-report.json`. **No new eight-hour run/package**; historical frozen ZIP/results below exclude these fixes.
 
-审计不是任意环境中不存在其他缺陷的证明。动态拆段、多队列／周期调度、递归抓取等功能仍未实现，不能把修复通过当作完整功能验收。
+An audit never proves no other defects in every environment. Dynamic splitting/multiple queues/periodic scheduling/recursive crawling were not implemented at this historical point; fixes were not full-feature acceptance.
 
-## 冻结历史候选
+## Frozen historical candidate
 
-| 项目 | 实际证据 |
+| Check | Recorded evidence |
 |---|---|
-| Release 回归 | 25/25 CTest 通过，含实际控件新增、媒体导出／导入往返、混合带宽预算、取消缓存、缓存缺失时的组装临时文件清理、无效 Unicode／设备名及损坏持久化路径保护，以及压力结束报告失败回归 |
-| 扩展协议 | 14/14 Node 测试通过 |
-| 文件路径 | 实际 HTTP 故障矩阵通过，含中文目标／数据库路径、目标文件系统错误、凭据、代理、重名和强制终止恢复 |
-| 大文件 | 最终候选包实际下载 4,294,967,553 字节，62.25 秒；SHA-256 `c1a2510f41f6fc63bd169116662b1a514c66b43fab60b3dc656d114cfe83145a` |
-| 媒体 | 实际解析组件与合并组件完成 MP4、HLS、DASH、音频提取和凭据拒绝 |
-| 浏览器 | 隔离 Chromium 7 项实际断言通过：含 Cookie 登录下载、所选地址 Cookie 隔离、不落库、持久化先于取消、主机故障回退和真实弹出界面 |
-| 部署 | 移除开发 PATH 后桌面／CLI／原生消息通过；清单安装、升级、卸载保留未知下载和修改过的文件 |
-| 短压力预检 | 60 秒短预检总耗时 70.35 秒，400 个文件哈希、9 次暂停恢复、峰值 8 活跃、1 轮媒体；GUI IPC p95 32.93 ms，私有内存季度漂移 1.92 MiB |
-| 完整稳定性 | 连续工作负载 28,809.97 秒（8 小时 9.97 秒），2,098 轮、209,800 个文件哈希、5,674 次暂停恢复；210 轮媒体阶段、630 个媒体输出验证。进程及临时文件清理通过 |
-| 内存与响应 | 采样私有内存峰值 19.51 MiB、工作集峰值 39.93 MiB、首尾季度私有内存差 3.50 MiB；GUI IPC p95 24.88 ms，最大采样间隔 10.08 秒，均通过既定预算 |
-| 视觉 | 原生 Windows Qt 窗口截图已检查；offscreen 截图不作为字体／DPI 证据 |
+| Release regression | 25/25 CTest: real create/media list roundtrip/mixed rate/cancel cache/missing-cache assembly cleanup/invalid Unicode-device/corrupt paths/final-report failure |
+| Extension | 14/14 Node tests |
+| File paths | Actual HTTP fault matrix, Chinese target/DB paths, filesystem errors/login/proxy/conflict/forced recovery |
+| Large file | 4,294,967,553 bytes, 62.25 seconds; SHA-256 `c1a2510f41f6fc63bd169116662b1a514c66b43fab60b3dc656d114cfe83145a` |
+| Media | Real parser/muxer MP4/HLS/DASH/audio/login refusal |
+| Browser | Isolated Chromium 7 assertions: authenticated Cookie/isolation/no persistence/durable-before-cancel/fallback/popup |
+| Deployment | Desktop/CLI/native messages without developer PATH; manifest install/upgrade/uninstall preserved unknown/modified files |
+| Short preflight | 60 requested/70.35 seconds total, 400 hashes/9 pause-resumes/peak 8/1 media cycle; IPC p95 32.93 ms/drift 1.92 MiB |
+| Full stability | 28,809.97 seconds (8 hours 9.97), 2,098 cycles/209,800 hashes/5,674 pause-resumes/210 media cycles/630 outputs; cleanup passed |
+| Memory/response | Peak private 19.51 MiB/working set 39.93 MiB/drift 3.50 MiB/IPC p95 24.88 ms/max gap 10.08 seconds, original budgets passed |
+| Visuals | Native Windows Qt screenshots inspected; offscreen images not font/DPI evidence |
 
-受测桌面 SHA-256：`b236e713bf630ca3743af1de2daea3cf49e4492ee06efc7601cd9dc64f86f852`。完整结果在 `out/qa/stress-final-report-release.json`，报告 SHA-256 为 `27a4101c69ff4cf5c8e1ad78589b98536c59d6e9a3b62484ec6ff3ccb1695c2a`。结束后确认 33 个运行时文件、81 个源输入及外部组件与冻结指纹一致，`AGENTS.md` 保持原样。
+Desktop SHA-256 `b236e713bf630ca3743af1de2daea3cf49e4492ee06efc7601cd9dc64f86f852`. Report `out/qa/stress-final-report-release.json`, SHA-256 `27a4101c69ff4cf5c8e1ad78589b98536c59d6e9a3b62484ec6ff3ccb1695c2a`. After cleanup, 33 runtime files/81 inputs/helpers matched frozen fingerprints; `AGENTS.md` unchanged.
 
-旧候选曾在约 382 秒、2,400 个文件校验后发生桌面进程访问异常，`out/qa/stress-frozen-release.json` 保存失败结果。转储将调用路径定位到本地请求 ID 的正则匹配，原始根因尚未确认。两组 15 分钟项目代码 AddressSanitizer 诊断分别完成 5,300／5,400 个文件校验，未报告越界或释放后访问。已更新至 Qt 6.11.3，并统一编译工具集；升级移除了独立复现的依赖缺陷，新候选完整长测未复现该异常，但不据此宣称确认了原始因果。
+Earlier candidate access violation occurred around 382 seconds/2,400 hashes, retained in `out/qa/stress-frozen-release.json`. Dump located local request-ID regex matching, but original root cause was unconfirmed. Two 15-minute project ASAN diagnostics processed 5,300/5,400 hashes without bounds/use-after-free reports. Qt 6.11.3/toolset unification removed an independently reproduced dependency defect; final long run did not repeat the crash, without claiming proven original causality.
 
-早期 Qt 6.11.3 候选也有失败记录：约 2,193 秒、14,700 个文件校验后，100 个已完成任务的历史删除未在既定 10 秒内结束，数据库仍有 65 条记录。桌面进程在测试清理前仍存活，结果保存在 `out/qa/stress-qt6113-release.json`。该次历史超时根因未确认；优化后的冻结候选已通过完整长测，未改变原有 10 秒断言。
+Early Qt 6.11.3 candidate also failed around 2,193 seconds/14,700 hashes: deletion of 100 completed histories exceeded 10 seconds with 65 DB records remaining. Desktop was alive before cleanup; `out/qa/stress-qt6113-release.json` retained failure. Root cause remained unconfirmed; optimized frozen candidate later passed full load without relaxing 10 seconds.
 
-隔离产品复测 25 轮批量删除均通过，原候选最慢约 3.21 秒，未复现历史超时。已减少缓存目录不存在时的重复文件删除请求；改动后另 25 轮最慢约 2.70 秒。该比较不是受控性能基准，仍不宣称定位超时根因。压力夹具现在会在失败后、清理前采集隔离桌面的线程转储；已用真实进程验证转储可生成，原有 10 秒断言保持不变。
+Isolated 25-round batch removal passed, original worst about 3.21 seconds, without reproducing timeout. Reducing repeated absent-cache deletes yielded another 25 rounds/worst about 2.70 seconds. Not a controlled benchmark or root-cause proof. Stress now captures owned desktop thread dumps after failure/before cleanup; actual dump generation verified, original 10-second assertion retained.
 
-后续同一运行时连续运行约 3 小时 43 分钟，完成 95,100 个文件校验、2,603 次暂停恢复和 96 轮媒体阶段，因报告文件原子替换遇到 Windows 读取占用而中断（`out/qa/stress-cleanup-release.json`）。当时桌面仍存活、任务库已清空；该轮没有观察到产品失败，但计时已中断，仍不算 8 小时通过。已复现并修复夹具的文件共享冲突，同时用真实负载加结束报告故障注入，复现并修正了夹具可能误标通过的问题。
+Another run lasted about 3 hours 43 minutes, 95,100 hashes/2,603 pause-resumes/96 media cycles, interrupted by Windows read-sharing during atomic report replacement (`out/qa/stress-cleanup-release.json`). Desktop lived and DB was empty; no observed product failure, but interrupted timing was not eight hours. Fixture sharing conflict was reproduced/fixed; real load plus final-report injection also reproduced/fixed a possible false-pass bug.
 
-完整长测已重新运行并通过：固定 100 队列、8 活跃、8 段，周期性公开媒体样例；预算为采样内存 <512 MiB、首尾季度漂移 <64 MiB、GUI IPC p95 <200 ms、观察间隔 ≤30 秒。测试使用隔离 offscreen 界面，结束后释放阻止休眠状态。失败及中断预检继续保留为未验收记录，不拼接计时。
+A fresh complete long run passed with fixed 100 queue/8 active/8 segments and periodic public-media samples. Budgets: sampled memory <512 MiB/drift <64 MiB/IPC p95 <200 ms/gap ≤30 seconds. Isolated offscreen UI released sleep prevention on completion. Failed/interrupted preflights remain unqualified, never joined.
 
-GUI IPC 延迟表示主事件线程的响应能力，不等同于所有用户操作和可见绘制的延迟。浏览器自动化用测试实例的显式无沙箱选项，因此不证明生产沙箱兼容。
+GUI IPC measures main-event-thread responsiveness, not every visible operation/render. Browser fixtures explicitly disable their sandbox, not proof of production compatibility.
 
-外部未验证：干净 Windows 虚拟机、生产浏览器沙箱／商店签名包、发布签名、真实站点长期兼容性、在线更新服务。没有发布凭据不会阻止生成本地可运行候选包，但不能据此声称公开发布。
+Still unverified externally: clean Windows VM, production browser sandbox/signed store package, release signatures, long-term real sites, online updates. Missing release credentials do not block local runnable candidates, but cannot justify a public-release claim.
 
 ## Historical 0.3.0 qualification boundary
 

@@ -1,14 +1,17 @@
+#include <QAction>
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QLocale>
 #include <QPushButton>
 #include <QScrollBar>
 #include <QSettings>
 #include <QTabWidget>
 #include <QTemporaryDir>
+#include <QTimer>
 #include <atomic>
 #include <chrono>
 #include <gtest/gtest.h>
@@ -101,6 +104,85 @@ struct NoTransfer final : ITransferTransport {
     }
 };
 } // namespace
+
+TEST(LanguageUi, DefaultsToEnglishAndPersistsBothLanguagesAcrossReopen) {
+    platform();
+    int argc = 1;
+    char name[] = "LanguagePreferences";
+    char* argv[]{name, nullptr};
+    QApplication app(argc, argv);
+    Fixture fixture;
+    QSettings().remove("language");
+    struct RestoreLocale {
+        QLocale original;
+        ~RestoreLocale() { QLocale::setDefault(original); }
+    } locale;
+    // A Chinese process locale must not become an implicit language preference.
+    // This does not pretend to change the operating system's locale.
+    QLocale::setDefault(QLocale(QLocale::Chinese, QLocale::China));
+    const auto root = std::filesystem::path(fixture.temporary.path().toStdU16String());
+    auto store = makeSqliteStore(root / "tasks.db");
+    DownloadService service(
+        std::move(store.tasks), [] { return std::make_unique<NoTransfer>(); }, root / "parts", {},
+        QueueDependencies{std::move(store.queues)});
+    const auto editLanguage = [&](MainWindow& window, const QString& initial, const QString& selected,
+                                  bool save) {
+        bool visited = false;
+        QTimer driver;
+        driver.setInterval(10);
+        QObject::connect(&driver, &QTimer::timeout, &window, [&] {
+            auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+            if (!dialog || dialog->objectName() != "settingsDialog" || visited)
+                return;
+            visited = true;
+            auto* language = control<QComboBox>(*dialog, "interfaceLanguage");
+            EXPECT_EQ(language->itemData(0).toString(), "en");
+            EXPECT_EQ(language->currentData().toString(), initial);
+            EXPECT_GE(language->findData("zh"), 0);
+            language->setCurrentIndex(language->findData(selected));
+            if (save)
+                control<QPushButton>(*dialog, "saveGlobalSettings")->click();
+            else
+                dialog->reject();
+        });
+        QTimer watchdog;
+        watchdog.setSingleShot(true);
+        QObject::connect(&watchdog, &QTimer::timeout, &window, [&] {
+            ADD_FAILURE() << "Language settings did not finish within the owned fixture deadline";
+            if (auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget()))
+                dialog->done(QDialog::Rejected);
+        });
+        driver.start();
+        watchdog.start(8000);
+        control<QAction>(window, "globalSettingsAction")->trigger();
+        EXPECT_TRUE(visited);
+    };
+    {
+        MainWindow window(service);
+        window.show();
+        EXPECT_EQ(control<QLineEdit>(window, "taskSearch")->placeholderText(), "Search downloads…");
+        editLanguage(window, "en", "zh", false);
+        EXPECT_FALSE(QSettings().contains("language"));
+        editLanguage(window, "en", "zh", true);
+        EXPECT_EQ(QSettings().value("language").toString(), "zh");
+        window.requestQuit();
+    }
+    {
+        MainWindow window(service);
+        window.show();
+        EXPECT_EQ(control<QLineEdit>(window, "taskSearch")->placeholderText(),
+                  QString::fromUtf8("搜索下载任务…"));
+        editLanguage(window, "zh", "en", true);
+        EXPECT_EQ(QSettings().value("language").toString(), "en");
+        window.requestQuit();
+    }
+    {
+        MainWindow window(service);
+        EXPECT_EQ(control<QLineEdit>(window, "taskSearch")->placeholderText(), "Search downloads…");
+        EXPECT_TRUE(service.snapshot().empty());
+        window.requestQuit();
+    }
+}
 
 TEST(MediaUi, ActualControlsChooseInspectedIdsAndRequestChangesDoNotFallBack) {
     platform();

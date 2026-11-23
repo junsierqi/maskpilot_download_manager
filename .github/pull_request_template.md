@@ -1,20 +1,20 @@
-## 问题与结果
+## Problem and result
 
-说明具体问题、触发条件及修正后的行为；关联 issue（如有）。
+Describe the concrete problem, trigger, and resulting behavior. Link a related issue when available.
 
-## 范围与兼容性
+## Scope and compatibility
 
-列出主要模块和对协议、任务数据／迁移、权限或平台的影响。界面修改附正常／窄窗口截图，文档修改标明对应实现或命令。
+Identify affected modules and protocol, task-data/migration, permission, or platform implications. Include normal/narrow-window screenshots for UI changes. For documentation, identify the corresponding implementation or command.
 
-## 验证
+## Validation
 
-- 实际运行的命令、平台／架构及结果：
-- 未运行、模拟或仍待外部环境确认的检查：
-- 已知限制：
+- Commands, platforms/architectures, and results actually checked:
+- Unexecuted, simulated, or externally dependent checks:
+- Known limitations:
 
-## 提交前核对
+## Before submitting
 
-- [ ] 改动聚焦，相关说明和支持边界已同步。
-- [ ] 已检查成功、失败及适用的中断／恢复边界；文字修改已核对链接和实际命令。
-- [ ] 没有生成输出、真实登录材料或无关修改，必要依赖声明保留。
-- [ ] 检查结果如实记录；没有把 CI 配置存在或单个平台通过当成全部验收。
+- [ ] The change is focused and related documentation/support boundaries are current.
+- [ ] Success, failure, and applicable interruption/recovery boundaries were checked; text-only changes have verified links and commands.
+- [ ] No generated output, real login material, or unrelated changes are included; required dependency notices remain.
+- [ ] Results are reported honestly; existing CI configuration or a single-platform pass is not described as complete qualification.

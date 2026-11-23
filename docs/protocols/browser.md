@@ -1,92 +1,92 @@
-# 浏览器与本机协议
+# Browser and native protocol
 
-本文描述当前开发代码。已冻结的 0.2.0 安装包仍使用原协议，不据此推断旧包具备新能力。浏览器扩展默认关闭自动接管与 Cookie 携带；当前扩展仍是 v1 独立下载区客户端。
+This describes development code. Frozen 0.2.0 packages keep their original protocol and do not gain new capabilities from this document. Interception/Cookie forwarding default off; existing extensions remain v1 standalone clients.
 
-## 帧与身份
+## Framing and identity
 
-Chromium 使用服务工作线程清单，Firefox 150+ 使用模块事件页清单，共享扩展实现。Firefox 编号固定为 `downloads@maskpilot.invalid`；同名服务 `com.maskpilot.downloads` 使用相邻清单 `com.maskpilot.downloads.firefox.json`。host 先比较绝对清单路径，再核实当前可执行文件与 `allowed_extensions`；`native-bridge.json` 还需包含 `allowedFirefoxExtensions`。来源参数不授予 broker 管理权限，也不证明指纹配置身份。
+Chromium uses a service-worker manifest; Firefox 150+ uses a module event page with shared code. Firefox ID is `downloads@maskpilot.invalid`; service `com.maskpilot.downloads` uses adjacent `com.maskpilot.downloads.firefox.json`. Host checks absolute manifest path, current executable, and `allowed_extensions`; `native-bridge.json` also needs `allowedFirefoxExtensions`. Source arguments grant neither broker administration nor fingerprint-profile identity.
 
-页面面板默认关闭，只在顶层 HTTP(S) 页面注入隔离经典脚本。一次最多 200 项资源，后台最多 64 个页面会话、10 分钟有效期。页面仅提交文档随机编号、会话 token 和所选不透明资源编号；拒绝额外字段、iframe、错误文档、过期 token 和任意 native／管理命令。重载、导航、关闭、停用或后台状态丢失后需重新查找。
+The opt-in panel injects an isolated classic script only into top-level HTTP(S). Bounds: 200 resources, 64 page sessions, 10-minute lifetime. Pages submit only random document/session tokens and selected opaque resource IDs. Extra fields, iframes, wrong/expired documents/tokens, and arbitrary native/admin commands fail. Reload/navigation/close/disable/lost background state requires rediscovery.
 
-ShadowRoot 用于样式组织，DOM 不授予权限。选择放在隔离闭包中，只由真实点击更新；网页修改 `value`／`checked` 或程序化点击不会增加所选资源。每个 native 发送前，在 Cookie 查询等异步操作之后再次核实页面和会话。逐项返回已接受与剩余项，同批次稳定 `requestId` 保证丢失响应后的重试幂等；不是跨任务事务，不承诺浏览器重启后保留内存批次。
+ShadowRoot organizes styles, not authority. Selection stays in an isolated closure and changes only on real clicks; page edits to `value`/`checked` or synthetic clicks add no authority. Recheck page/session after asynchronous Cookie work and before native send. Per-item accepted/remaining results and stable batch `requestId` provide retry idempotence, not cross-task transactions or restart-persistent batches.
 
-Cookie 仅查询所选 URL 和可信浏览器容器，以空 `partitionKey` 检查全部分区，再拒绝实际分区或第一方隔离身份；不降级查询。Firefox 缺少可信 `cookieStoreId` 或隐私窗口时拒绝转发。策略可能拒绝具有其他分区 Cookie 的同一 URL。关闭转发须用户明确操作。
+Query only selected URL/trusted container, inspect partitions with empty `partitionKey`, then reject partitioned/first-party-isolated identity without downgrade queries. Firefox missing trusted `cookieStoreId`/private windows refuse forwarding. Another partition’s cookie for the same URL can cause refusal. Disabling forwarding is explicit.
 
-注册只操作 HKCU 64 位视图的三个固定服务键，写入前在 `browser-registration.json` 保存原默认值类型、值及存在状态；重复注册保留最初快照。注销仅恢复仍指向本安装的默认值，保留外部后续改动、无关值与子键。安装记录动态文件哈希；恢复失败时保留日志并停止卸载。临时扩展验收不等同于签名发行或系统级隔离。
+Windows registration touches only three fixed HKCU 64-bit service keys. `browser-registration.json` records original default type/value/existence before writing; repeat registration preserves the first snapshot. Unregister restores only still-owned values and retains external changes/unrelated values/subkeys. Installation tracks dynamic hashes; failed restoration retains logs and stops uninstall. Temporary-extension tests do not qualify signed distribution/system isolation.
 
-原生消息和本机管道均为 4 字节小端无符号长度，随后为 UTF-8 JSON。单帧最大 1 MiB，一个连接处理一个请求。`requestId`、`taskId`、上下文编号和会话编号使用 32 位小写十六进制；字段有类型、长度和命令白名单检查。
+Native messages/local pipes use a 4-byte unsigned little-endian length followed by UTF-8 JSON. Maximum frame: 1 MiB; one request per connection. `requestId`, `taskId`, context/session IDs are 32-character lowercase hex. Fields enforce types/bounds/command allowlists.
 
-桌面管道仅允许当前用户访问。每次启动生成不同的 `ipc.token` 与 `ipc-admin.token`：前者只服务 v1 独立下载区，后者只授权可信本机管理端。普通扩展 host 不读取管理 token。v2 普通客户端使用管理端为一个上下文签发的 `sessionToken`，验证失败直接拒绝，不转用独立下载区或管理权限。扩展来源注册只证明扩展身份，不证明浏览器配置归属。
+Desktop IPC is current-user only. Startup generates distinct `ipc.token` (v1 standalone) and `ipc-admin.token` (trusted local administration); ordinary extension hosts never read admin tokens. Ordinary v2 uses a context-issued `sessionToken`; failure never falls back to standalone/admin authority. Extension registration proves extension identity, not browser-profile ownership.
 
-没有公开本地 HTTP 控制端口。管理 token、会话和授权 Cookie 不写入任务清单或诊断；Windows 系统凭据库与管道的边界是当前登录用户，不隔离以同一用户运行的恶意进程。
+No public local HTTP control port exists. Admin/session/grant Cookie material never enters task lists/diagnostics. Windows vault/pipe boundaries are the logged-in user, not hostile same-user processes.
 
-## v1：独立下载区
+## v1: standalone area
 
-请求和响应示例：
+Example request and response:
 
 ```json
 {"version":1,"requestId":"0123456789abcdef0123456789abcdef","command":"prepare","url":"https://example.test/file.zip","filename":"file.zip"}
 {"version":1,"requestId":"0123456789abcdef0123456789abcdef","ok":true,"taskId":"0123456789abcdef0123456789abcdef"}
 ```
 
-`ping` 检查连接；`list` 返回最多 1000 条独立下载区摘要；`add` 新建任务；`prepare` 持久化暂停任务；`resume`、`pause`、`cancel`、`remove` 使用 `taskId`。不能查看或控制其他上下文。移除只清理历史与专属缓存，保留最终文件；活动任务须先暂停或取消。
+`ping` checks connection; `list` returns up to 1000 standalone summaries; `add` creates, `prepare` durably pauses, and `resume`/`pause`/`cancel`/`remove` take `taskId`. Other contexts are invisible/uncontrollable. Remove cleans history/owned cache but preserves final files; active tasks need pause/cancel first.
 
-新增字段为 `filename`、`referrer`、`cookie`、`userAgent`、`media` 和 `audioOnly`，只接受 HTTP/HTTPS。目的目录、路由和媒体组件来自可信桌面设置，浏览器不能指定任意路径、代理或可执行文件。媒体目前拒绝 Cookie、Authorization 和自定义请求头，公开点播恢复时重新获取。
+Draft fields include `filename`, `referrer`, `cookie`, `userAgent`, `media`, and `audioOnly`, HTTP/HTTPS only. Trusted desktop settings supply destinations/routes/tools; browser requests cannot choose arbitrary paths/proxies/executables. This browser media entry refuses Cookie/Authorization/custom headers; public on-demand resume refetches.
 
-## v1：浏览器辅助恢复（开发代码）
+## v1: browser-assisted recovery (development code)
 
-独立下载区新增 `recovery.begin`（`taskId`）、`recovery.apply`（`recoveryToken`、`url`、可选 `cookie`／`referrer`／`userAgent`）、`recovery.resume` 与 `recovery.cancel`（均仅接受 `recoveryToken`）。只允许尚未结束、已暂停且无工作进程的独立 HTTP 文件任务，不允许上下文、站点项目、媒体或 FTP 任务；普通 v2 客户端和管理端不能通过这些命令改变权限。v1 列表的 `canRecover` 是界面提示，不能代替应用层授权。
+Standalone adds `recovery.begin` (`taskId`), `recovery.apply` (`recoveryToken`, `url`, optional `cookie`/`referrer`/`userAgent`), and `recovery.resume`/`recovery.cancel` (token only). Only unfinished paused worker-free standalone HTTP files qualify, not context/site/media/FTP tasks. Neither ordinary v2 nor admin can expand authority through these commands. `canRecover` is a UI hint, not authorization.
 
-开始操作返回原任务编号、文件名、来源页、恢复令牌和到期时间。最多 64 个内存会话，每个十分钟；同一任务重新开始会使旧令牌失效。任务修改、重新开始、队列移动、删除、进程重启或时钟回退使旧会话失效。令牌及应用回执不持久化、不进入任务清单。
+Begin returns original ID/name/source page/token/expiry. At most 64 memory sessions last ten minutes; beginning again replaces the old token. Edits/restart/queue move/removal/process restart/backward clock invalidate sessions. Tokens/apply receipts are not durable/exported.
 
-应用操作只更换来源地址和本次浏览器材料，保留任务编号、目标文件、代理、队列、校验和策略；清除旧来源认证头与自定义头。原任务需要登录时必须补充新材料，不自动匿名降级。保存成功后才确认；同一未失效令牌的相同材料重试只确认原保存，改变材料的重放被拒绝。任务保持暂停，浏览器取消其原下载后另行恢复；失败时保留浏览器下载。新地址不证明旧分段可复用，仍由实际 HTTP 身份校验决定重下或续传。
+Apply changes only source/current browser material, retaining ID/target/proxy/queue/hash/policy and clearing old origin/custom headers. Required login needs new material, never anonymous downgrade. Acknowledge only durable success. Same-token/same-material retry acknowledges the original save; changed replay fails. Task stays paused until browser duplicate cancellation and separate resume; failures retain browser download. New URLs do not prove reusable extents; native HTTP identity decides.
 
-可信扩展弹出界面明确选择原任务，暂停并等待保存后开始会话，在当前浏览器容器打开来源页。扩展只列出本次开始后同容器的浏览器下载，用户选择精确记录；不按文件名或全局下一项自动匹配。`storage.session` 仅保存令牌、原任务、来源标签页、容器、到期时间和操作阶段，不保存 Cookie，不向内容脚本开放。网页／浮动面板不能调用恢复控制器；隐私、缺失容器和分区 Cookie 拒绝转发。
+Trusted popup explicitly chooses the original, pauses/waits for persistence, then opens source in the current container. Only post-begin downloads in that container are listed; user selects an exact record, never filename/global-next matching. `storage.session` stores token/original/source-tab/container/expiry/stage only, no Cookie or content-script access. Pages/panels cannot call recovery controls; private/missing-container/partitioned login refuses.
 
-选中记录先暂停浏览器副本，保存新材料得到确认并记录阶段后才取消副本；随后 `recovery.resume` 必须验证同一未失效应用回执，不允许退回普通编号启动。取消失败保留原任务暂停，可明确重试或取消会话；确认丢失不会自动开始原任务。手动 URL 更新也保持暂停。扩展工作进程重新加载可读取内存阶段，浏览器／桌面重启则须新会话；失效会话需明确取消后恢复自动接管。实际 Chromium 和 Firefox 默认／容器 Cookie 恢复已验证，工作进程中断分支由控制器夹具覆盖，不宣称所有站点或 POST／媒体认证可重放。
+Pause selected browser record, apply/save/acknowledge and record stage before cancelling it. Then `recovery.resume` validates the same live receipt, never ordinary-ID fallback. Cancel failure leaves original paused for explicit retry/cancel; lost acknowledgement never starts it. Manual URLs stay paused. Worker reload can recover memory stages, browser/desktop restart needs a new session. Explicitly cancel invalid sessions before re-enabling interception. Real Chromium/Firefox default/container Cookie recovery is tested; worker interruptions use controller fixtures, not universal site/POST/media replay.
 
-## v2：普通上下文客户端
+## v2: ordinary context client
 
-通过原生 host 调用时，`sessionToken` 仅用于传输认证；host 将它转换为桌面管道认证信息，不会代入管理 token。示例中的值均为占位编号：
+Through native host, `sessionToken` authenticates transport and becomes desktop-pipe authentication, never admin-token substitution. Example IDs are placeholders:
 
 ```json
 {"version":2,"requestId":"0123456789abcdef0123456789abcdef","sessionToken":"11111111111111111111111111111111","command":"prepare","params":{"url":"https://example.test/file.zip","filename":"file.zip"}}
 ```
 
-| 命令 | `params` | 结果 |
+| Command | `params` | Result |
 |---|---|---|
-| `ping` | 空对象 | 当前会话有效 |
-| `prepare` | `url`、`filename`、可选 `originGrantId` | 暂停任务的 `taskId` |
-| `add` | 同上，可选 `paused` | `taskId` |
-| `list` | 可选 `limit`（1–1000）、`cursor` | `tasks`、`nextCursor` |
-| `resume`／`pause`／`cancel`／`remove` | `taskId` | 接受控制后的任务编号 |
+| `ping` | Empty object | Session validity |
+| `prepare` | `url`, `filename`, optional `originGrantId` | Paused `taskId` |
+| `add` | Same, optional `paused` | `taskId` |
+| `list` | Optional `limit` (1–1000), `cursor` | `tasks`, `nextCursor` |
+| `resume`/`pause`/`cancel`/`remove` | `taskId` | Accepted task ID |
 
-来源目前为 HTTP/HTTPS 或磁力链接；更丰富的媒体选项另行扩展。客户端不能传入上下文编号、Cookie、代理、凭据引用、目的目录或工具路径。归属由会话决定。列表先过滤归属，再分页，只包含编号、文件名、状态与字节数。外部任务编号和不存在的编号使用相同拒绝结果。
+Sources are HTTP/HTTPS or magnets; richer media options are separate scope. Clients cannot supply context IDs, Cookie, proxy, vault references, destinations, or tools. Sessions determine ownership. Lists filter ownership before paging and contain only ID/name/state/bytes. Foreign/missing IDs have identical refusal results.
 
-相同上下文、相同请求编号的重试返回已持久化任务；不同上下文可独立使用相同请求编号。重试不替换原任务的路由或授权；刷新使用显式管理操作。
+Retries with the same context/request ID return the durable task; other contexts may reuse IDs independently. Retry never replaces original route/grant; refresh is explicit administration.
 
-## v2：可信本机管理端
+## v2: trusted local administration
 
-可信 Browser Bridge 可启动 `maskpilot_native_host.exe --broker --data-dir <绝对应用数据目录>`，经标准输入／输出传递上述二进制帧。不是直接传文本 JSON。凭据放在帧内，不放进命令行参数。普通浏览器来源调用或 JSON 字段不能切换为此模式。
+A trusted Browser Bridge can start `maskpilot_native_host.exe --broker --data-dir <absolute-app-data-directory>` and exchange binary frames through stdin/stdout, not raw text JSON. Secrets belong inside frames, not arguments. Ordinary browser sources/JSON fields cannot select broker mode.
 
-| 命令 | 参数与结果 |
+| Command | Parameters/result |
 |---|---|
-| `context.configure` | `externalKey`、`label`、`downloadRoot`；可选 `proxyEndpoint`、`proxyAuthenticationRequired`、`originAuthenticationRequired`、`proxyCredentials:{username,password}`、`rememberProxy`。更新另需 `id` 与 `expectedRevision`；恢复撤销上下文须显式 `reactivate`。返回安全上下文信息 |
-| `context.list` | 返回上下文信息，保存状态用 `hasStoredCredentials` 表示，不返回系统凭据引用／所有权 nonce |
+| `context.configure` | `externalKey`, `label`, `downloadRoot`; optional `proxyEndpoint`, `proxyAuthenticationRequired`, `originAuthenticationRequired`, `proxyCredentials:{username,password}`, `rememberProxy`. Updates require `id`/`expectedRevision`; revoked contexts need explicit `reactivate`. Returns safe context data |
+| `context.list` | Context information/`hasStoredCredentials`, never native references/ownership nonce |
 | `context.issue` | `contextId` → `sessionToken` |
-| `origin.grant` | `contextId`、精确 `url`、`cookie`／`authorization`、`expiresAt` → `originGrantId`；有效期最长五分钟 |
-| `context.revoke` | `contextId`；禁用持久化后停止所属工作，退出并清理凭据后才确认 |
-| `task.rebind` | `taskId`、可选 `originGrantId`；仅重新绑定非活动、未结束任务，保留目标文件位置 |
+| `origin.grant` | `contextId`, exact `url`, `cookie`/`authorization`, `expiresAt` → `originGrantId`; at most five minutes |
+| `context.revoke` | `contextId`; persist disabled state, stop work, wait for exit/credential cleanup, then acknowledge |
+| `task.rebind` | `taskId`, optional `originGrantId`; inactive unfinished tasks only, destination preserved |
 
-配置修改使旧客户端会话失效，新任务使用新配置；已接受任务保留原路由，直到显式重新绑定。会话本身不跨进程重启存活。撤销不删除最终文件，清理失败仍保持禁用并报告未完成。普通会话过期不等于撤销已接受的后台下载。
+Configuration changes invalidate old sessions; new tasks use new configuration while accepted tasks retain routes until explicit rebind. Sessions do not survive restart. Revocation preserves final files; cleanup failure remains disabled/incomplete. Ordinary session expiration does not revoke accepted background work.
 
-源站授权必须由可信 Browser Storage／Bridge 按 URL、Domain、Path、Secure 与分区规则筛选。下载器只检查授权的上下文、精确 URL 和期限，不读取浏览器私有数据库。携带精确 URL 授权的任务遇到改变地址的重定向时暂停并要求新授权；重启后缺少授权不会自动匿名下载。v1 独立任务收到 Cookie／认证头时也保留源站认证需求标记，并拒绝任何改变 URL 的重定向（包括同源）。实际浏览器端签发仍须其独立工程验收，不能用本地夹具代替。
+Trusted Browser Storage/Bridge filters grants by URL/Domain/Path/Secure/partition. Downloader checks context/exact URL/expiry and never reads private browser databases. URL-changing redirects pause exact-grant tasks for new approval; missing grants after restart never downgrade anonymous. Authenticated v1 standalone also retains login-required and refuses any changed-URL redirect, including same-origin. Real browser issuance needs independent project acceptance, not local-fixture substitution.
 
-## 接管与恢复
+## Interception and recovery
 
-1. 暂停浏览器下载。
-2. `prepare` 验证并持久化暂停任务后才确认。
-3. 取消浏览器原下载，再发送 `resume`。
-4. 准备失败则恢复浏览器；取消原下载失败则取消原生暂停任务并恢复浏览器。原生恢复失败时保留持久化任务并明确提示。
+1. Pause the browser download.
+2. `prepare` validates/persists a paused task before acknowledgement.
+3. Cancel the browser original, then `resume`.
+4. Prepare failure restores browser work. Cancel failure cancels the native paused draft and restores the browser. Native-resume failure retains the durable task and reports the error.
 
-控制确认表示协调线程已接受状态变更，传输终态通过 `list` 查询；撤销管理命令另有工作退出与清理屏障。没有运行的 UI、生产浏览器策略、商店安装或实际指纹浏览器集成不能声明已验收。
+Control acknowledgement means the coordinator accepted a transition; query terminal results through `list`. Administrative revocation has an additional worker-exit/cleanup barrier. Unexecuted UI/production-browser/store/fingerprint-browser integration cannot be marked qualified.

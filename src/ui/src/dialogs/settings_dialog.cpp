@@ -77,9 +77,10 @@ void MainWindow::Impl::settingsDialog() {
         t("Empty: direct; credentials are entered per task", "留空直连；凭据在任务的代理页输入"));
     form->addRow(t("Proxy URL", "代理地址"), proxy);
     auto* language = new QComboBox;
-    language->addItem("简体中文", "zh");
+    language->setObjectName("interfaceLanguage");
     language->addItem("English", "en");
-    language->setCurrentIndex(chinese ? 0 : 1);
+    language->addItem("简体中文", "zh");
+    language->setCurrentIndex(language->findData(chinese ? "zh" : "en"));
     form->addRow(t("Language (restart)", "语言（重启生效）"), language);
     auto* trayOption =
         new QCheckBox(t("Keep downloading when the window closes", "关闭窗口后在托盘继续下载"));

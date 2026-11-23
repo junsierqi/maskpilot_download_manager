@@ -1,76 +1,76 @@
-# 支持范围
+# Support matrix
 
-## 平台资格
+## Platform qualification
 
-| 平台 | 当前范围 |
+| Platform | Current scope |
 |---|---|
-| Windows x64 | 现有原生实现、便携／用户安装与离线恢复流程；新版回归与历史发行资格分开记录 |
-| Linux x64 | 原生 C++／Qt、各下载引擎、系统凭据和本机消息；当前用户态为 Ubuntu 26.04，完整辅助进程保护要求内核 6.9+，详见 [Linux 验收](../testing/linux-acceptance.md) |
-| 其他环境 | 未证明 Ubuntu 24.04 原生用户态、其他发行版／架构、实体 GPU／Wayland／多屏、生产浏览器策略或 macOS；无界面系统服务与正式发行仍未交付 |
+| Windows x64 | Native implementation, portable/current-user installation and offline recovery; current regressions and frozen-release qualification are separate |
+| Linux x64 | Native C++/Qt/engines/vault/native messaging; Ubuntu 26.04 userspace, kernel 6.9+ for complete helper protection; see [Linux](../testing/linux-acceptance.md) |
+| Other environments | Ubuntu 24.04 native userspace, other distributions/architectures, physical GPU/Wayland/screens, production browser policy, and macOS remain unproven; no headless service/formal release |
 
-Linux 本轮验证扩展逻辑和真实原生消息／桌面／下载路径，不把它表述为已完成真实浏览器安装、商店发行或企业策略验收。下列能力仍须结合具体平台资格阅读。
+Linux checks extension logic and real native-message/desktop/download paths, not completed real-browser installation, store release, or enterprise-policy qualification. Read capabilities below with platform limits.
 
-直播录制使用独立原生 HTTP(S) 引擎：直接 HLS 或 HTTP-FLV，保存 `.ts`／`.flv`。普通 TS／FLV、非 DRM AES-128 TS 无需媒体组件；fMP4、对齐的独立音轨和不连续片段通过可选可信组件在本地封装。最长 1 秒～48 小时，最大 1 MiB～1 TiB，默认 1 小时／1 GiB。来源正常结束、达到上限或右键“结束并保存录制”后，完整媒体经摘要／扫描／无覆盖发布。HLS 初次取末尾最多三个分片，按序号刷新去重；缺片、序号回退、不支持标签或传输错误不发布。
+Live uses an independent native HTTP(S) engine for direct HLS/HTTP-FLV, producing `.ts`/`.flv`. Ordinary TS/FLV/non-DRM AES-128 TS need no helper; fMP4/aligned separate audio/discontinuities use optional trusted local packaging. Bounds are 1 second–48 hours and 1 MiB–1 TiB, default 1 hour/1 GiB. Source end/limits/explicit finish save complete content after hash/scan/no-replace publication. HLS starts at up to the last three segments and refreshes/deduplicates by sequence. Missing segments, rollback, unsupported tags, and transfer errors do not publish.
 
-暂停／取消不生成最终文件，继续／重启从当前直播重录。支持确切来源独立内存登录、选定代理、动态限速和原生媒体正文额度，耗尽额度转策略等待且不返还已用量。元数据不计量，已收到但未组成完整媒体单位的正文仍计量。默认全部跳转／列表／分片／密钥保持初始来源；可在“媒体访问”逐项授权最多 16 个额外来源，禁止跨来源继承凭据。支持 AES-128 CBC／轮换／显式及序号 IV、精确 206 字节范围、初始化映射／fMP4、不连续序列和清单序号／时长／不连续序列及 PROGRAM-DATE-TIME 节目时钟一致的独立音轨。低延迟 HLS 只下载完整分片，不下载提示或部分分片，拒绝增量／跳片清单。拒绝 DRM／SAMPLE-AES／非 identity 密钥、未对齐音轨；未实现 DASH 直播、RTMP 或网页直播解析。HLS 每轨道最多保留 8192 个完整分片，到达后结束并保存；本地封装限 5 分钟和 1 MiB 诊断输出；最终结果仍须满足文件上限，超限拒绝发布而非截断。
+Pause/cancel never publish; resume/restart records current live anew. Exact-origin memory login, selected proxy, dynamic rates, and native budgets apply; exhaustion waits without refunding consumed bytes. Metadata is excluded but received incomplete media units count. Default redirects/lists/segments/keys remain initial-origin; Media access can approve up to 16 extras without credential inheritance. AES-128 CBC/rotation/explicit or sequence IV, exact 206 ranges, maps/fMP4/discontinuities and sequence/duration/discontinuity/PROGRAM-DATE-TIME-aligned audio work. Low-latency uses complete segments, not hints/partials; delta/skip, DRM/SAMPLE-AES/non-identity keys/unaligned audio fail. No DASH live/RTMP/webpage-live extraction. HLS caps each track at 8192 complete segments then finishes; local packaging caps at 5 minutes/1 MiB diagnostics. Final size still applies: refuse, never truncate.
 
-POST 经 HTTP／HTTPS 代理时先建立并认证 CONNECT 隧道，代理须允许连接来源端口；SOCKS5 保留代理侧解析及认证。认证或隧道失败不改用直连。
+POST through HTTP/HTTPS proxies authenticates CONNECT before submission and requires source-port permission. SOCKS5 keeps proxy-side DNS/authentication. No tunnel/auth failure falls back direct.
 
-POST 文件下载支持独立桌面／CLI HTTP(S) 任务：明确单次提交、UTF-8／原始编码正文（最多 1 MiB）、自定义内容类型及空正文。请求体和确认状态只存内存，任务库／导出仅保存方法与内容类型；暂停、失败、重启后需重新输入并确认。无 POST 探测、分段、续传或自动重试；同源 301／302／303 转无正文 GET，307／308 与跨源重定向拒绝。结果沿用大小／摘要／扫描／无覆盖发布。浏览器正文捕获、上下文／站点／媒体 POST 不支持，不能撤销服务器已执行的操作。
+Standalone desktop/CLI HTTP(S) POST supports confirmed single attempts, UTF-8/already encoded bodies up to 1 MiB, custom types, and explicit empty bodies. Body/confirmation are memory-only; databases/exports retain method/type. Pause/error/restart requires new material/approval. No POST probe/segmentation/resume/automatic retry; same-origin 301/302/303 become bodyless GET, while 307/308/cross-origin fail. Size/hash/scan/no-replace gates remain. Browser bodies/context/site/media POST and undoing server effects are unsupported.
 
-当前主干提供有界公开静态站点项目：新建、页面／CSS 预览、明确启动二进制资源、暂停与恢复、验证后打开、不可变修订更新及保留文件的历史删除。仅同来源 HTTP(S)，支持深度／数量／正文／输出上限及路径前缀、类型过滤。未知编码、SVG／XHTML 及不支持的活动 CSS 明确拒绝或移除；图片、字体与媒体须通过支持类型和签名校验。签名不代替完整解码或恶意文件扫描，不提供浏览器动态应用或登录会话还原。
+Master supports bounded public static projects: create, page/CSS preview, explicit resource start, pause/resume, verified Open, immutable updates, and file-preserving history removal. Same-origin HTTP(S) only, with depth/count/body/output/path/type limits. Unknown encodings, SVG/XHTML, and unsupported active CSS are refused/removed. Images/fonts/media require supported types/signatures; signatures do not replace decoding/scanning. No dynamic-app/login-session reconstruction.
 
-| 能力 | 当前行为与边界 |
+| Capability | Behavior and limits |
 |---|---|
-| 平台 | 目标 Windows 10 1809+／Windows 11 x64，Qt Widgets；当前实测主机为 10.0.26300.0，Windows 10 与干净系统尚未验证；其他系统未提供发布包 |
-| 文件传输 | HTTP/HTTPS、初始划分及动态拆分剩余尾段，最多 8 个活动连接、256 个持久化分段；每任务单流降级、未知长度和空文件。动态拆段要求强 ETag、已知长度和有效 Range，剩余范围须足够大；TLS 验证开启 |
-| FTP/FTPS | 独立单流适配器；匿名／账号登录、主动／被动模式、显式／隐式 TLS、私有 CA。校验证书和主机名，TLS 失败不降级；账号密码仅内存保存 |
-| FTP 恢复 | 提供预期 SHA-256 且 URL、大小、修改时间、TLS 选项匹配才尝试 REST，发布前验证摘要；无可靠条件或 REST 被拒绝则重下。SIZE/MDTM 不被当作强内容标识 |
-| SFTP | 原生单流文件下载，共用远程文件缓存／校验／扫描／发布流程；必须先校验可信 SHA-256 主机指纹，再使用明确的密码或本地私钥认证。支持加密私钥及中文路径，不尝试 SSH 代理、默认密钥或交互式认证；不提供上传或远程目录浏览。用户名、密码、私钥口令只在内存中，重启需重新输入，任务库／导出只保存认证方式、主机指纹和密钥路径 |
-| SFTP 恢复与路由 | 续传须提供预期文件 SHA-256，且 URL／指纹／大小／修改时间／缓存匹配，最终验证摘要；否则重下。支持原生正文额度、扫描及无覆盖发布。HTTP／HTTPS 代理须允许 CONNECT 到 SSH 端口，SOCKS5 支持代理侧解析；无直接回退 |
-| BT／磁力 | 独立共享会话；本地 v1、v2、混合种子与磁力、Tracker 获取元数据、选择文件、分片校验、暂停恢复、可选做种、上传统计及任务／全局上传限速。种子元数据 ≤16 MiB，文件 ≤20,000；初始 peer／Tracker／web seed 列表各 ≤256。本地回环实测不代表公网 DHT／所有种源可达 |
-| BT 文件与隐私 | 使用专属目录，禁止覆盖已有目标；删除记录或取消做种保留已发布内容。种子元数据随任务库与导出清单保存，可能含私有 Tracker/passkey；原始文件捕获拒绝网络、设备、重解析路径 |
-| 恢复 | 强 ETag、长度、实际 URL 和完整分段布局共同验证；布局原子提交、各段同步偏移，兼容旧固定布局。无可靠身份或损坏布局安全重下；崩溃后任务暂停待恢复 |
-| 登录与代理 | 直接文件支持 Cookie、自定义 Authorization／请求头、HTTP／HTTPS／SOCKS5 代理及独立代理账号密码；默认凭据仅内存保存，代理凭据可明确选择由 Windows 当前用户安全保存；源站 Cookie／认证头不保存。空地址明确直连，指定路由覆盖环境代理绕过，SOCKS5 目标 DNS 由代理解析；没有自动交互式源站登录 |
-| BT 代理 | HTTP CONNECT／SOCKS5 TCP 传输，按路由与凭据隔离活动会话；关闭 DHT／本地发现／uTP／自动端口映射，不支持 UDP Tracker 或 HTTPS 代理。源站失败保留原生重试与备用节点能力，不回退直连 |
-| 代理恢复 | 任务库／清单保留无秘密端点及凭据需求标记；未选择安全保存或导入后，恢复前需重新输入凭据。标记不强制服务器发起认证挑战。代理主机名使用原生／系统解析；五秒额外连通性检查只适用于数字 IP。主动 FTP＋代理明确拒绝 |
-| 调度 | 全局和每命名队列各 1–8 活跃任务、队列间轮转、队列内优先级、任务／队列／全局限速、一次性计划及明确时区的每周窗口。减小并发让活动任务排空；媒体启动速率固定，冲突的降速须先暂停 |
-| 完成动作 | 通知、退出、关机；后两者有 60 秒倒计时，出现新任务即撤销。只接受明确的动作值 |
-| 浏览器 | Chrome／Edge MV3 与 Firefox 150+ 独立清单、原生消息、右键发送、资源发现、可选自动接管和浮动面板；均使用独立下载区。自动接管及恢复记录须明确观察到同 URL／时间／容器的 GET；POST、未知、冲突、隐私记录保留在浏览器。方法观察仅内存 256 条／十分钟，不读取正文或头；后台重启后可能须新触发记录。开发者／临时加载，未发布商店签名包；接管失败恢复浏览器任务并报告恢复失败 |
-| 浏览器辅助恢复 | 独立、未结束 HTTP 文件任务：明确选择原任务及本次同容器浏览器记录，刷新 URL／登录材料、保存确认后取消副本并验证令牌恢复，保留编号和目标；手动 URL 保持暂停。十分钟内存会话，重启需重新开始；不支持 POST 重放、隐私／分区 Cookie、媒体／站点／上下文任务 |
-| 完成后扫描 | Qt／CLI 配置可信本地程序，HTTP/FTP/SFTP／媒体暂存文件和 BT 私有目录在发布前检查；拒绝／超时／崩溃／内容变化不完成。要求与结果持久化，Qt 显示状态、详情和明确跳过入口。工具缺失时可修复设置；默认关闭，不附带杀毒程序，不保证检测效果或隔离网络，不追溯扫描已发布 BT 内容 |
-| 浏览器登录材料 | 所选 URL 与可信标签页／下载记录的 Cookie 容器；普通／Firefox 容器已验证。隐私窗口登录材料、分区 Cookie 和第一方隔离明确拒绝，不改用默认容器；同一 URL 的其他分区 Cookie 也触发保守拒绝 |
-| 批量 | 文本／静态页面资源链接、URL 数字模板、去重和数量上限；扩展同批次保留已接受项及稳定请求编号，失败可重试剩余项；不是完整递归网站抓取 |
-| 媒体 | 公开 MP4、HLS、DASH 点播；后台探测实际格式、精确音视频 ID 选择和兼容容器校验；自动画质上限模式。MKV／MP4／WebM、M4A／MP3／Opus／FLAC 输出取决于来源和组件能力。恢复重新下载，不宣称可靠媒体续传 |
-| 网页媒体 | 用可选解析组件处理公开地址；没有“任意网站均支持”保证，也没有持续维护的外部站点验收名单。缺组件、站点拒绝和解析失效均返回错误 |
-| 媒体登录 | 独立任务支持内存 Cookie／Authorization／自定义头。默认登录请求只访问初始来源；可在“媒体访问 → 额外媒体／直播来源”明确授权最多 16 个额外 HTTP(S) 来源，各自使用独立登录材料或匿名访问。匹配协议、主机和有效端口，请求和重定向均不跨来源继承登录头。任务库／导出只保留来源与登录需求，重启、导入或修改链接后需重新确认并补充材料。此显式模式支持 GET／HEAD，拒绝其他协议、POST 和未授权来源；不保证任意网站解析，浏览器上下文入口不会自动取得额外授权 |
-| 媒体安全 | 仅由可信本地组件处理；登录材料通过私密输入传递，不写入任务库或组件参数。受限请求网关保留所选代理路由，HTTPS 不解密且保留证书验证。这不是隔离恶意组件的操作系统沙箱。该点播组件不处理直播（另有原生直播引擎），不支持 DRM 或付费保护绕过。可选 Node 运行时仅在已安装时使用 |
-| 媒体代理与本地处理 | 认证 HTTP／SOCKS5 代理及远端来源 DNS；私密标准输入传递来源和代理秘密。统一启动器限制 FFmpeg／ffprobe 只读取任务专属目录中的普通本地容器；禁止外部网络回退，缺少启动器时明确失败。配置的组件必须可信 |
-| 文件发布 | 同卷临时文件、可选 SHA-256、禁止覆盖同名文件；删除记录保留最终文件 |
-| 数据 | SQLite 版本化迁移，升级前备份；拒绝未知未来版本。导入先验证，新增任务默认暂停 |
-| 界面 | Qt Widgets 中英文界面、协议／分类筛选、文件名与来源、下载进度及上传速度；较窄窗口自动隐藏大小、分类、剩余时间等次要列，任务详情保留完整信息 |
-| 更新 | 手动安装新包保留用户数据；没有已发布的在线更新服务、签名证书或商店条目 |
+| Windows target | Windows 10 1809+/Windows 11 x64, Qt Widgets; tested host 10.0.26300.0. Windows 10/clean systems unqualified; no release packages for other systems |
+| HTTP files | Initial/dynamic tail extents, at most 8 active connections/256 durable segments, single-stream fallback/unknown length/empty files. Splitting needs strong ETag/known length/valid Range/large enough remainder; TLS checks on |
+| FTP/FTPS | Single-stream adapter, anonymous/account, active/passive, explicit/implicit TLS/private CA; hostname/certificate verification, no downgrade, memory-only login |
+| FTP resume | REST needs expected SHA-256 and matching URL/size/modification/TLS, with final hash; otherwise/refused REST restart. SIZE/MDTM are not strong identity |
+| SFTP | Shared native remote-file cache/hash/scan/publish, trusted SHA-256 host pin before explicit password/local-key auth, encrypted keys/Unicode paths. No agents/ambient keys/interactive auth/upload/remote browsing. Login/passphrase memory-only; method/pin/key path public |
+| SFTP resume/route | Expected file SHA-256 plus URL/pin/size/modification/cache match and final hash, otherwise restart; native budget/scan/no-overwrite. HTTP/HTTPS proxies need SSH-port CONNECT; SOCKS5 remote DNS, no direct fallback |
+| BT/magnets | Independent shared sessions; local v1/v2/hybrid/magnets/tracker metadata/selection/piece checks/pause/resume/seeding/upload stats/task-global limits. Metadata ≤16 MiB, files ≤20,000; initial peer/tracker/web-seed lists each ≤256. Loopback does not prove public DHT/all seeds |
+| BT files/privacy | Owned new directories/no overwrite, history deletion or seed cancellation preserves published content. Metadata persists/exports and may contain private tracker/passkeys; local capture rejects network/device/reparse paths |
+| Recovery | Strong ETag/length/actual URL/full layout verification, atomic layout/synced per-segment offsets and legacy layout compatibility. Weak identity/corruption restarts; crashes restore paused |
+| Login/proxy | File Cookie/custom Authorization/headers and HTTP/HTTPS/SOCKS5 with separate credentials. Memory-only by default; explicit current-user native proxy saving, origin login not saved. Empty is direct, explicit route overrides environment bypass, SOCKS5 target DNS remote; no interactive origin login |
+| BT proxy | Isolated HTTP CONNECT/SOCKS5 TCP sessions by route/credentials; no DHT/local discovery/uTP/automatic mapping/UDP trackers/HTTPS proxies. Native retries/alternates retained; never bypass direct |
+| Proxy recovery | Public endpoint/login-required flag persist; unsaved/imported credentials need reentry. Flag does not force server challenges. Proxy host uses system/native DNS; extra five-second reachability probe is numeric-IP only. Active FTP plus proxy rejected |
+| Scheduling | Global/per-queue 1–8 active, queue rotation/priority, task/queue/global rates, one-time and explicitly zoned weekly windows. Lower concurrency drains active tasks; helper startup rate fixed, conflicting reductions need pause |
+| Completion | Notify/exit/shutdown; last two use a 60-second cancellable countdown revoked by new work. Only explicit action values accepted |
+| Browser | Chrome/Edge MV3 and Firefox 150+ manifests/native messaging/send/discovery/opt-in interception/panel, standalone only. Interception/recovery require matching observed GET URL/time/container; POST/unknown/conflict/private stay in-browser. At most 256 memory observations/ten minutes, no bodies/headers; restart may need new records. Developer/temporary load, no signed store package; failed interception restores browser transfer and reports restoration failure |
+| Browser recovery | Explicit original unfinished standalone HTTP plus session/container record, refresh/save acknowledgement before duplicate cancellation/token resume, retaining ID/path. Manual URLs stay paused. Ten-minute memory session, restart anew; no POST/private/partitioned/media/site/context recovery |
+| Completion scan | Trusted Qt/CLI tool checks HTTP/FTP/SFTP/media staging and BT private directories before publication. Refusal/timeout/crash/mutation blocks completion. Durable requirements/results, UI details/waiver and missing-tool repair. Default off, no bundled antivirus/efficacy/network isolation guarantee, no retroactive published-BT scan |
+| Browser login | Selected URL/trusted tab or download container; ordinary/Firefox containers tested. Private/partitioned/first-party-isolated login refused, no default-container fallback; another partition's matching Cookie also refuses |
+| Batch | Text/static resource links/numeric templates/deduplication/bounds; stable per-batch request IDs retain accepted items/retry leftovers. Not a complete recursive crawler |
+| Media | Public MP4/HLS/DASH on-demand, async actual-format inspection/exact audio/video IDs/container validation and automatic quality caps. MKV/MP4/WebM/M4A/MP3/Opus/FLAC depend on source/tools; resume redownloads |
+| Webpage media | Optional public-URL parser, no universal-site or maintained external compatibility list. Missing components/refusal/extraction failures are explicit |
+| Media login | Standalone memory Cookie/Authorization/custom headers; initial-origin default. Explicit up to 16 extra HTTP(S) origins with independent login/anonymous access. Match protocol/host/effective port on requests/redirects; no inherited secrets. Only public origin/login requirements persist; restart/import/link edits need approval/material. Explicit mode GET/HEAD only; other protocols/POST/unapproved origins refused, browser/context grants never expand automatically |
+| Media safety | Trusted helpers only, private secret input not database/arguments; bounded gateway retains proxy, HTTPS encrypted/certificate-verified. Not a hostile-code OS sandbox. On-demand helper does not record live, bypass DRM/paywalls, or install Node if absent |
+| Media proxy/local processing | Authenticated HTTP/SOCKS5 and remote origin DNS, private stdin credentials. Unified FFmpeg/ffprobe guard admits ordinary local containers in owned directories only, no network fallback; missing guard fails. Helpers must be trusted |
+| Publication | Same-volume staging, optional SHA-256/no same-name overwrite; record deletion preserves files |
+| Data | Versioned SQLite/upgrade backups, unknown-future-version refusal; validated imports create paused tasks |
+| UI | Qt Widgets, English default and saved English/Simplified Chinese, protocol/category filters, filename/source/download/upload. Narrow windows hide secondary size/category/remaining columns; details retain all information |
+| Updates | Manual new packages preserve data; no published online-update service/signing certificate/store entry |
 
-macOS 现有原生依赖／平台适配和 Apple Silicon、Intel 的 CI 构建／核心测试入口，实际 macOS 结果仍待首次运行，不列入已验收平台。具体范围见 [macOS 验收](../testing/macos-acceptance.md)。
+macOS native dependencies/adapters and Apple Silicon/Intel core CI exist, but actual results remain pending and are not a qualified-platform entry. See [macOS](../testing/macos-acceptance.md).
 
-后续版本另行定义：多源镜像、远程控制、插件、macOS 正式发行及尚未验收的发行版／架构。BT 基础传输已接入，不等同于完整专业种子客户端的全部高级设置；公网、防火墙及私有 Tracker 兼容性仍需独立验收。
+Future scope includes mirrors, remote control, plugins, formal macOS release, and unqualified systems/architectures. Basic BT is not every advanced setting of a professional torrent client; public-network/firewall/private-tracker compatibility needs separate acceptance.
 
-每周窗口按明确 IANA 时区选择星期与当地时间，支持跨午夜；关闭窗口保留运行意图，重开不会自动启动手动暂停或已完成任务。每队列一个窗口；这不等于定期创建下载或站点同步。
+Weekly windows select weekdays/local times in explicit IANA zones and support midnight crossing. Closed windows retain running intent; reopening never starts manually paused/completed tasks. One window per queue is not recurring task creation or project synchronization.
 
-原生正文额度只适用于 HTTP/FTP/SFTP 与原生直播，提供 UTC 日或 1～168 小时保守滚动窗口，包含获准接收的探测／重试正文，排除网络开销与已有分片。多连接共享持久预留；滚动模式的活动预留始终占用，已结算正文从传输结束时间保留一个窗口，崩溃后的未核实预留从恢复时间保留一个窗口。因此不是逐字节滑动计量，但不会提前释放仍可能使用的额度。界面区分确认量、扣减与预留量；跨午夜不重置滚动额度，持久时钟高水位防止回拨补发。严格预算队列会拒绝 BT／磁力和点播媒体任务，普通队列仍支持这些引擎；这不提供线路流量或 BT／点播媒体预算保证。
+Native budgets cover HTTP/FTP/SFTP/live only, with UTC-day or conservative 1–168-hour rolling windows. Admitted probes/retries count; overhead/cache do not. Connections share durable reservations; active rolling reservations never expire early, settled payload remains a window from attempt end, and crash uncertainty a window from recovery. This is not per-byte timestamp metering, but cannot release potentially used credits early. UI distinguishes confirmed/charged/reserved; midnight does not reset and durable clock high-water prevents rollback credit. Strict queues refuse BT/magnets/helper media, ordinary queues allow them; no ISP/BT/on-demand traffic guarantee.
 
-原生 HTTP 另有每任务 `maxStoredBytes`（0 表示不限）与 `sameOriginRedirectOnly`，站点项目以正数上限和同源限制创建子任务。前者在探测总长、写入和发布前检查存储正文，后者在下一跳连接前核对初始协议／主机／有效端口，保留合法的同来源相对重定向。严格源站授权仍要求精确 URL。任务保存当前尝试实际响应地址；失败重试先清除旧观察结果。这些约束不限制网络开销。
+Native HTTP `maxStoredBytes` (0 unlimited) and `sameOriginRedirectOnly` are task policies. Site children use positive caps/same-origin. Caps check probed length/writes/prepublication; redirects check initial protocol/host/effective port before connection, allowing valid relative hops. Strict grants still require exact URLs. Current response observations are stored and cleared before failed retry; overhead remains outside these policies.
 
-站点项目支持手动更新及首次成功后明确开启的周期完整同步：5～10080 分钟、1～100 次，错过周期只补一次，保留旧版。仅程序运行时执行；手动暂停或失败关闭周期，中断修订重启后需明确恢复。外部完成扫描在“工具 → 完成后扫描”配置，修改前需暂停活动任务，关闭功能不会解除已有任务要求。程序升级提供独立可信哈希校验的手动离线 ZIP 流程，含中断恢复、安装文件回滚和明确清理；在线更新发现、签名与商店发行另需配置。实际媒体格式列表只代表当前地址、路由与组件的探测结果，下载前重新校验，不能保证任意网站长期可用。完整目标的差距见 [功能与缺口](feature-matrix.md)。
+Projects support manual update and explicit post-success periodic full sync: 5–10080 minutes, 1–100 runs, missed cycles coalesce, old revisions remain. App-open only; pause/failure disables cycles, interrupted revisions reopen paused. Tools configures completion scan after pausing active work; disabling it never waives existing tasks. Offline ZIP update uses independent trusted hashes, interruption recovery/file rollback/explicit cleanup; online discovery/signing/store are separate. Formats describe only current URL/route/tools and are revalidated, never universal site support. See [remaining gaps](feature-matrix.md).
 
-显式 MP4／WebM 需要解析器报告兼容的编码信息。部分直链只报告未知编码，此时明确拒绝该容器选择；可使用默认／MKV，或选择提供编码信息的来源。不会猜测编码或悄悄改用其他格式。
+Explicit MP4/WebM requires reported compatible codec metadata. Unknown-codec direct links refuse that choice; use default/MKV or a source reporting codecs. Never guess codecs or silently change format.
 
-系统最低版本依据 [Qt 6.11 官方 Windows 支持说明](https://doc.qt.io/qt-6.11/windows.html)；依赖支持范围不等同于本产品已完成对应系统验收。
+Minimum Windows targets follow [Qt 6.11 Windows support](https://doc.qt.io/qt-6.11/windows.html); dependency support is not product qualification.
 
-原生消息仅用于当前用户本地通道，使用每次启动的令牌与来源检查；不提供远程监听服务。相同 Windows 用户权限下的恶意软件不在本地令牌的隔离保证内。
+Native messaging is current-user local IPC with startup tokens/source checks, not a remote listener. Tokens do not isolate malicious software running as the same Windows user.
 
-## 上下文与凭据开发边界
+## Context and credential development boundaries
 
-开发代码的应用层提供不可变任务归属、上下文内请求去重、固定路由快照、短期精确 URL 授权和撤销退出屏障。桌面通过 v2 本机 broker 接入；管理权限、v1 独立下载区和普通上下文会话分开。系统凭据保存有真实原生存储与故障恢复测试，默认不保存。提供环境管理／筛选、原生凭据记住／忘记及撤销／恢复控件；环境新建入口限 HTTP/HTTPS 与磁力，媒体／FTP 高级配置使用独立下载区。当前扩展继续使用 v1 独立下载区，不能把扩展来源检查视为指纹浏览器配置识别。实际浏览器侧签发遵守其工程边界另行接入。
+The application supplies immutable task ownership, context-local deduplication, route snapshots, short-lived exact-URL grants, and revocation exit barriers. Desktop v2 broker/admin, v1 standalone, and ordinary context sessions are separate. Native vault/failure recovery is tested and saving is opt-in. Profile/vault/filter/create/rebind/revoke/reactivate controls exist; profile creation is HTTP/HTTPS/magnets, while advanced media/FTP is standalone. Existing extensions remain v1; extension identity is not fingerprint-profile identity. Browser-side issuance is integrated separately within its own project boundary.
 
-带源站登录材料的原生 HTTP 文件请求自动保留认证需求标记；改变精确 URL 的重定向要求重新授权，不能向新地址发送或匿名降级。FTP／SFTP 登录需求跨重启保留，密码不保存。独立媒体及直播支持同源内存登录，BT 不接受源站认证标记。缺少材料时在连接前失败；独立任务可编辑请求明确改为匿名，SFTP 始终要求明确登录。任务清单 v2 保留需求和公共配置，但不恢复身份或权限，详见 [清单协议](../protocols/task-list.md)。
+Authenticated native HTTP retains source-login requirements; exact-URL-changing redirects need new grants and cannot send credentials or downgrade anonymously. FTP/SFTP requirements survive restart without saving passwords. Standalone media/live allow same-origin memory login; BT rejects origin-auth flags. Missing material fails before connection. Standalone users can explicitly choose anonymous login except SFTP always requires explicit credentials. Task-list v2 retains public configuration/requirements but restores no identity/authority; see [format](../protocols/task-list.md).

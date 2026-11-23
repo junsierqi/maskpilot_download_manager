@@ -1,142 +1,142 @@
-# 工程决策
+# Engineering Decisions
 
-本页按主题保留设计演进，涉及数据库版本或早期平台边界的段落描述当时的决策，不单独作为当前功能清单。当前模块关系见 [架构总览](overview.md)，实际支持以 [功能映射](../product/feature-matrix.md) 和 [支持矩阵](../product/support-matrix.md) 为准；后文“明确来源授权与复杂 HLS”“macOS 原生适配与 CI 资格”补充相应新行为。
+This page preserves design evolution by topic. Database versions and earlier platform boundaries describe decisions at that time, rather than a standalone current feature list. See the [architecture overview](overview.md) for module relationships and the [feature matrix](../product/feature-matrix.md) and [support matrix](../product/support-matrix.md) for current support. The later sections on explicit origin authorization, complex HLS, and native macOS adaptation describe subsequent behavior.
 
-## Linux 原生平台与本地交付
+## Native Linux platform and local delivery
 
-保留现有领域／应用接口和独立协议引擎，平台差异留在原生适配器、Qt 文件路径边界及构建模块。Linux 使用 Qt 流式 SHA、libsecret／Secret Service、无跟随本地元数据读取、会话与 pidfd 绑定的私有进程组；主进程被强制结束时，保留组成员身份的守护进程负责清理后代。辅助程序仍须可信，这不构成恶意代码沙箱。Qt 与文件系统之间使用明确 UTF-16 转换，原生文件名拼接不经过依赖语言区域的宽字符串转换。
+Keep existing domain/application interfaces and independent protocol engines. Platform differences belong in native adapters, Qt/filesystem boundaries, and build modules. Linux uses streaming Qt SHA, libsecret/Secret Service, local metadata reads without following links, and private process groups bound to a session and pidfd. If the owner is killed, a guardian retaining group membership cleans up descendants. Helpers must remain trusted; this is not a malicious-code sandbox. Qt/filesystem conversions explicitly use UTF-16; native filename composition avoids locale-dependent wide-string conversion.
 
-文件打开保留独占创建／读写模式；BT 在校验、扫描和同步后以 `renameat2(RENAME_NOREPLACE)` 发布私有目录，不退回可能覆盖空目标目录的普通重命名。原生消息启动持久桌面时隔离标准通道，Windows 另限制继承句柄清单，避免桌面持有浏览器响应管道。GNU 静态库解析差异在受影响测试目标使用显式重扫描链接组，不新增应用层对基础设施的链接依赖。
+File opens retain exclusive creation and read/write modes. After verification, scanning, and synchronization, BT publishes its private directory through `renameat2(RENAME_NOREPLACE)`, without falling back to an ordinary rename that could replace an empty destination. Native Messaging isolates standard channels when starting the persistent desktop; Windows also restricts inherited handles so the desktop cannot retain browser response pipes. Affected GNU test targets use explicit rescan link groups for static-library resolution, without adding application-to-infrastructure dependencies.
 
-Linux 本地包用 CMake 专属安装组件、相邻 BT 共享库及完整通知，Qt 和传输依赖由匹配系统提供，不复用 Windows DLL／版本清单。测试器使用一次性普通用户 HOME、总线和加密钥匙串。打包拒绝覆盖已有产物，清单只用于字节一致性与来源核对，不表示发布者认证。具体用户态、内核及图形／浏览器资格按实际记录约束，正式发行另行验收。
+Linux local packages use a dedicated CMake install component, adjacent BT shared libraries, and complete notices. Matching system packages provide Qt and transport dependencies; Windows DLL/version manifests are not reused. Tests use a disposable ordinary-user HOME, bus, and encrypted keyring. Packaging rejects existing outputs. Manifests establish byte consistency and provenance checks, not publisher authentication. User-space, kernel, graphical, and browser qualification remains limited to recorded environments; formal distribution requires separate acceptance.
 
-## 原生有界直播录制
+## Native bounded live recording
 
-独立 `Live` 类型与 `LiveRecordingOptions` 不改变媒体处理组件的本地文件限制。私有播放列表解析器负责确切来源 URL、序号、密钥／范围／映射及轨道边界；原生适配器复用 curl 生命周期、代理、文件发布及扫描。普通 HLS 只追加完整 MPEG-TS 分片，FLV 只追加完整标签；播放列表限 1 MiB／4096 分片，单分片限 32 MiB，FLV 按标签长度限制内存。
+The separate `Live` type and `LiveRecordingOptions` preserve the media-processing component's local-file restrictions. A private playlist parser handles exact source URLs, sequence numbers, keys/ranges/maps, and track boundaries. Native adapters reuse curl lifetime, proxies, file publication, and scanning. Ordinary HLS appends only complete MPEG-TS segments; FLV appends only complete tags. Playlists are limited to 1 MiB/4096 segments, each segment to 32 MiB, and FLV memory by tag length.
 
-录制必须设置时长与文件上限。独立 `finishRecording` 应用接口使用 `TransferControl.finish`，结束后校验／扫描／无覆盖发布；暂停、取消或来源异常不发布。恢复从当前源重新开始，不自动重试或宣称断点续录。任务专属录制缓存纳入精确清理，正文额度跨重启保留。数据库 v18 先备份旧库，仅保存公共格式与上限，源站登录只在内存。
+Recording requires duration and file-size limits. The separate `finishRecording` application interface uses `TransferControl.finish`, then verifies, scans, and publishes without replacement. Pause, cancellation, and source errors do not publish. Restart begins again at the current source, without automatic retry or a recording-resume guarantee. Task-owned recording caches participate in exact cleanup; body quotas survive restarts. Database v18 backs up the old database and stores only public format/limit settings; origin login material remains in memory.
 
-## 离线安装更新与恢复
+## Offline installation, updates, and recovery
 
-安装、更新、卸载共用 PowerShell 包归属与路径规则。离线 ZIP 的外部 SHA-256 来自独立可信渠道，在同一只读锁定句柄上先核对再解压；完整内部清单、固定必需文件及版本再作一致性检查。路径、重解析点、大小、条目数、大小写重复和文件／目录冲突均在替换前检查。目标互斥锁与实际进程路径检查保护协作操作，不自动终止用户进程。
+Installation, update, and removal share PowerShell package-ownership and path rules. The offline ZIP's external SHA-256 comes from an independent trusted channel. Verification and extraction use the same read-only locked handle, followed by internal manifest, fixed required-file, and version checks. Paths, reparse points, sizes, entry counts, case-insensitive duplicates, and file/directory conflicts are checked before replacement. Destination mutexes and actual executable-path checks protect cooperating operations without automatically killing user processes.
 
-更新使用安装目录旁的受控事务目录。先持久化准备记录，再写入并核验备份与待替换文件；进入应用阶段后逐文件原子替换，安装标记最后写入。单个日志封装不可变计划，避免清理多个元数据文件留下恢复缺口。中断恢复和明确回滚先核对所有当前／备份文件，只接受计划中的旧、新或合法缺失状态；外部修改保留现场。它提供可恢复更新，不声称整个目录与注册表跨文件原子提交。
+Updates use a controlled transaction directory beside the installation. Persist preparation first, then write and verify backups and replacement files. Once applying, replace files atomically one at a time and write the installation marker last. One journal contains the immutable plan, avoiding recovery gaps from cleaning up several metadata files. Interruption recovery and explicit rollback first verify every current/backup file, accepting only planned old, new, or legitimately missing states. External changes preserve the scene. Recovery does not imply an atomic transaction across the entire directory and registry.
 
-成功升级保留一份回滚材料，明确完成后才清理已归属、哈希匹配的事务文件和空目录。原浏览器配置／注册日志保留原字节与旧归属哈希，避免把用户修改重新认领为可卸载文件。负载回滚不回退任务数据库，注册表仍使用既有精确归属日志独立处理。
+Successful upgrades retain one rollback set. Explicit completion removes only owned, hash-matching transaction files and empty directories. Original browser configuration/registration journals retain their original bytes and ownership hashes, so user changes are not reclaimed as removable files. Payload rollback does not downgrade the task database; registry changes use the existing exact-ownership journal separately.
 
-捕获的写入错误仅清理当前调用以独占创建方式取得的文件，预先存在的临时文件不归该调用处理。进程终止留下的不可核验截断暂存或日志按冲突保留，需明确人工核验；可恢复声明限于有效持久检查点。此边界用于同时保留外部修改与诊断材料，不以删除不匹配文件制造恢复成功。
+Caught write failures clean up only files exclusively created by that invocation; pre-existing temporary files are not owned by it. Unverifiable truncated staging files or journals left by process termination remain as conflicts requiring explicit manual inspection. Recovery guarantees apply only to valid persisted checkpoints. Preserve external changes and diagnostic material rather than deleting mismatches to manufacture recovery success.
 
-发布脚本拒绝覆盖已有阶段目录与 ZIP。资格基线只约束原生源码、运行文件和实际工具；安装／发布脚本可独立演进，但发行包中的运行文件必须与冻结长测的集合、大小和哈希一致。私有构建缓存和本机路径留在测试证据中，公开包只记录版本、源码编号及资格摘要。
+Release scripts reject existing staging directories and ZIPs. Qualification baselines freeze native source, runtime files, and actual tools. Installation/release scripts may evolve independently, but packaged runtime file sets, sizes, and hashes must match the frozen endurance run. Private build caches and machine paths remain in test evidence; public packages record only versions, source identifiers, and qualification summaries.
 
-## 2026-11-18：站点项目协调与不可变修订
+## 2026-11-18: Site project coordination and immutable revisions
 
-项目协调器复用现有下载协调器，使用单个原子 JSON 清单保存一个项目的运行意图、稳定请求编号、完整子任务计划和发布回执。它不另建传输引擎，也不跨协调器持有数据库锁。预览获取 HTML／CSS 以发现资源，确认开始后处理已识别的二进制资源；同一地址的具体资源角色优先于通用页面链接。正文预算由已验证字节和未完成子任务的完整预留组成，零剩余额度不能变成不限量任务。
+The project coordinator reuses the download coordinator. A single atomic JSON manifest stores project intent, stable request identifiers, the complete child-task plan, and publication receipts. It adds no transfer engine and holds no database locks across coordinators. Preview fetches HTML/CSS to discover resources; confirmed execution handles identified binary resources. A specific resource role takes precedence over a generic page link for the same URL. The body budget combines verified bytes with full reservations for unfinished children; zero remaining budget must not become unlimited.
 
-SQLite 13 保存不可变的项目编号与修订关联。原生协调器先暂停恢复中的项目子任务，再处理队列策略，避免等待窗口任务在项目核验前自动运行。创建确认、恢复、内容读取及发布均核对归属、请求编号、完整路径、URL、队列、代理、上限、响应类型与哈希；被删除、取消或修改的任务不会自动重建。项目清单写入失败关闭项目调度并暂停关联工作，普通下载仍可使用。
+SQLite 13 stores immutable project/revision associations. Before queue policies run, the native coordinator pauses recovering project children so waiting-window tasks cannot start before project verification. Creation acknowledgments, recovery, content reads, and publication verify ownership, request identifiers, full paths, URLs, queues, proxies, limits, response types, and hashes. Deleted, cancelled, or edited tasks are not recreated automatically. Manifest-write failure disables project scheduling and pauses associated work; ordinary downloads remain available.
 
-发布前先持久化暂存令牌及哈希清单，再写入同卷受控暂存目录，最后执行不可覆盖的修订目录重命名。重启只在不可变标记和全部哈希匹配时接受已重命名的结果；失败、取消或未完成写入保留先前发布。清理只删除清单所属且哈希未变的暂存文件，不递归删除未知目录。更新明确重新获取，不将旧本地哈希误当作远端新鲜度证明；历史删除保留原始下载和导出文件。
+Before publication, persist the staging token and hash manifest, write to a controlled same-volume staging directory, then rename to a revision directory without replacement. Restart accepts a renamed result only when the immutable marker and every hash match. Failure, cancellation, and incomplete writes preserve earlier publications. Cleanup deletes only manifest-owned staging files with unchanged hashes and never recursively removes unknown directories. Updates explicitly refetch content; old local hashes do not prove remote freshness. Removing history preserves original downloads and exports.
 
-Qt 项目视图异步排空命令结果。主窗口把草稿、预览确认、暂停、错误和发现／发布间隙计入未完成项目，取消项目不会触发成功完成动作。销毁顺序先关闭窗口，再停止项目协调器，最后关闭下载协调器，避免悬空回调和退出时重新派发子任务。
+The Qt project view drains command results asynchronously. The main window counts drafts, preview confirmations, pauses, errors, and discovery/publication gaps as unfinished projects. Cancelling a project cannot trigger successful completion actions. Destruction closes the window, stops the project coordinator, then stops the download coordinator, preventing dangling callbacks and child redispatch during exit.
 
-## 2026-11-18：有界静态内容处理
+## 2026-11-18: Bounded static content processing
 
-站点内容端口只接受已经下载的字节、实际响应地址及类型，不提供网络或文件加载接口。HTML 使用固定版本 libxml2 的内存解析上下文，每个上下文拒绝全部外部资源；不依靠无效的 NONET 标志，不修改全局加载器。限制输入、树深度、节点、属性、引用及序列化输出；CSS 分词与重写逐次检查输出预算。已解码标识符重新转义，字符串中的尖括号使用 CSS 转义，防止 HTML 原始文本区域被重新打开。语法不支持、资源超限和调用方失败分开处理。
+The site-content port accepts downloaded bytes, the actual response URL, and its type; it exposes no network or file loader. HTML uses a pinned libxml2 in-memory parser context that denies every external resource per context, without relying on ineffective NONET flags or changing global loaders. Bound input, tree depth, nodes, attributes, references, and serialized output; CSS tokenization/rewriting checks the output budget incrementally. Re-escape decoded identifiers and use CSS escapes for angle brackets in strings so HTML raw-text regions cannot reopen. Distinguish unsupported syntax, resource limits, and caller failures.
 
-仅保留被允许的静态标记、同来源引用和验证过的相对导出路径，移除活动内容并插入严格 CSP。已知图片、字体和媒体还须匹配受支持的文件签名，不能直接导出声明为图片的 SVG／HTML。签名检查不等同于完整媒体解码或通用恶意文件扫描。支持基础 Unicode／Latin-1 编码，其他编码明确拒绝。完整项目状态机、预览与不可变修订发布属于后续独立模块。
+Retain only allowed static markup, same-origin references, and validated relative export paths. Remove active content and insert strict CSP. Known images, fonts, and media must also match supported file signatures; SVG/HTML declared as an image cannot be exported directly. Signature checks are neither complete media decoding nor general malware scanning. Basic Unicode/Latin-1 encodings are supported; others are explicitly rejected. At this stage, the complete project state machine, previews, and immutable revision publication belonged to a later independent module.
 
-SQLite 12 将 `response_content_type` 与响应地址一起持久化。该观察值从成功探测及各实际响应一致性聚合而来；缺失、重复冲突、参数差异或不安全字符使其为空，普通下载不因此失败。416 空资源响应的错误页类型不代表资源；完整缓存仅采用本次成功探测的类型。所有重试、重新开始、请求编辑与无效事件清除旧观察值，清单不能恢复或注入类型权限。
+SQLite 12 persists `response_content_type` alongside the response URL. This observation aggregates successful probing and consistent actual responses. Missing, conflicting duplicate, parameter-varying, or unsafe values become empty without failing ordinary downloads. An error-page type from a 416 empty-resource response does not describe the resource; complete caches use only the current successful probe's type. Retries, restarts, request edits, and invalid events clear old observations. Task lists cannot restore or inject type authority.
 
-## 2026-11-17：界面与候选包
+## 2026-11-17: Interface and candidate packages
 
-继续使用 Qt Widgets。`ui/src/style/appearance.*` 集中管理样式和矢量图标；任务委托只呈现不可变快照，协议、调度和文件操作不进入绘制代码。窄窗口收起次要列，保留名称、进度、状态与速率；状态栏常驻速率与限时通知分离，刷新不覆盖通知。
+Continue using Qt Widgets. `ui/src/style/appearance.*` centralizes styles and vector icons. Task delegates render immutable snapshots; protocol, scheduling, and filesystem work stays out of painting. Narrow windows hide secondary columns while retaining name, progress, status, and rate. Persistent status-bar rates are separate from timed notifications, so refreshes cannot overwrite messages.
 
-CMake 生成领域层版本头，桌面、默认 User-Agent 与验证客户端共用版本。打包可指定已验证的独立 Release 目录，检查版本及 SDK，收集实际新增运行库和完整依赖声明。协议夹具可仅清理产品子进程的开发环境，父进程继续提供本地 TLS／种源；部署正确性必须由真实包内下载验证。
+CMake generates a domain version header shared by the desktop, default User-Agent, and validation client. Packaging may select an independently verified Release directory, checks versions and SDKs, and collects actual additional runtime libraries and complete dependency notices. Protocol fixtures may sanitize only product child-process environments, leaving the parent to provide local TLS/seeding services. Real downloads from the package must establish deployment correctness.
 
-## 2026-11-18：显式代理路由与凭据生命周期
+## 2026-11-18: Explicit proxy routing and credential lifetime
 
-领域模型保留兼容的无凭据代理地址，使用统一解析器验证协议、主机、IPv6、端口和凭据长度。HTTP／FTP 共用私有配置帮助函数：空地址显式直连，非空地址显式取消环境绕过，代理认证与源站认证分开。SOCKS5 目标 DNS 经代理；代理自身域名可由系统解析。HTTPS 代理保留证书验证，主动 FTP 与代理组合明确拒绝。
+The domain model retains compatible credential-free proxy addresses. One parser validates protocol, host, IPv6, port, and credential lengths. HTTP/FTP share private configuration helpers: an empty address explicitly connects directly; a nonempty address explicitly disables environment bypass. Proxy and origin authentication stay separate. SOCKS5 resolves target DNS through the proxy; the system may resolve the proxy itself. HTTPS proxies retain certificate validation. Active FTP combined with a proxy is explicitly rejected.
 
-BT 工厂按不可变端点及内存凭据身份共享活动会话，不在任务间修改全局网络设置；闲置会话释放，过期路由键在下次获取或工厂销毁时移除。代理模式关闭 UDP 发现、uTP 与自动端口映射，不支持 HTTPS 代理。数字 IP 代理端点有额外的五秒可取消 TCP 连通性检查；主机名沿用原生解析器，不把操作系统 DNS 延迟算作已保证的五秒上限。源站或单个节点失败不使整个共享路由失效。
+The BT factory shares active sessions by immutable endpoint and in-memory credential identity, without changing global network settings between tasks. Idle sessions are released; expired route keys are removed on the next acquisition or factory destruction. Proxy mode disables UDP discovery, uTP, and automatic port mapping; HTTPS proxies are unsupported. Numeric-IP proxy endpoints receive an additional cancellable five-second TCP connectivity check. Hostnames use the native resolver, so operating-system DNS latency is not covered by that bound. Origin or individual-peer failures do not invalidate the whole shared route.
 
-schema 5 只追加需要补充代理凭据的标记，升级前备份。配置校验允许缺少秘密的暂停／导入任务；实际适配器在联网前检查凭据。用户名和密码不写入任务库、清单、日志或辅助进程参数。标记约束凭据可用性，不强迫服务器选择某种认证方法。媒体认证代理使用与探测共享的私密标准输入通道。
+Schema 5 appends only a marker requiring proxy credentials and backs up before migration. Configuration validation allows paused/imported tasks without secrets; adapters check credentials before networking. Usernames/passwords never enter the task database, task lists, logs, or helper arguments. The marker constrains credential availability, not the server's authentication method. Authenticated media proxies use the private standard-input channel shared with probing.
 
-## 2026-11-17：独立 BT 引擎
+## 2026-11-17: Independent BT engine
 
-领域模型显式区分 HTTP、FTP、媒体、BT，持久化状态值只追加。应用端口传递不可变元数据／文件描述、上传统计、文件选择与结束做种控制，不暴露具体库类型。独立 `transfer/transfer_router.cpp` 路由到各协议适配器，媒体模块只负责媒体传输。共享工厂提供一个惰性 BT 会话及告警分发器，协调器继续掌握并发和优先级；不能为每个任务创建一个完整客户端。
+The domain explicitly distinguishes HTTP, FTP, media, and BT; persisted state values are append-only. Application ports carry immutable metadata/file descriptions, upload statistics, file selection, and stop-seeding controls without exposing library types. The independent `transfer/transfer_router.cpp` routes protocols to adapters; the media module handles only media transfers. A shared factory supplies one lazy BT session and alert dispatcher. The coordinator retains concurrency/priority ownership; do not create a complete client per task.
 
-schema 4 保存有界种子元数据、选择、上传策略与发布标记，兼容旧媒体字段并迁移原有协议类型。添加本地种子时先由适配器安全捕获字节，再持久化确认；导入先整体验证。原始路径后续失效不触发重新读取。原始元数据可能包含私有 Tracker 信息，属于需要保护的本地任务数据。
+Schema 4 stores bounded torrent metadata, selections, upload policy, and publication markers, preserves old media fields, and migrates previous protocol types. Local torrent addition first captures bytes safely through the adapter, then persists acknowledgment. Imports validate as a whole. Later loss of the original path does not trigger rereading. Raw metadata may contain private Tracker information and is protected local task data.
 
-BT 使用相邻的任务专属临时目录及身份标记，拒绝不安全路径、文件冲突和重解析路径。仅选择文件通过分片校验后，等待暂停告警和磁盘释放，再同步文件并禁止覆盖地发布整个目录。恢复数据不能指定存储路径或跳过校验；做种模式禁止修复或重新下载已发布内容。取消做种不会删除已发布目录。代理未实现时显式失败。
+BT uses an adjacent task-owned temporary directory and identity marker, rejecting unsafe paths, file conflicts, and reparse paths. After selected files pass piece checks, wait for the pause alert and disk release, synchronize files, then publish the entire directory without replacement. Resume data cannot choose storage paths or bypass verification. Seeding cannot repair or redownload published content; cancelling seeding preserves the published directory. At this stage, unsupported proxy operation failed explicitly.
 
-磁力先获取并验证哈希绑定的元数据，释放元数据阶段句柄后，以完整文件优先级启动载荷阶段，避免零选中文件的完成状态和重连退避。尚不完整的 v2 分片层不写成完整种子；保留权威信息字典，由引擎获取并验证必要哈希。只携带有界的当前在线 Peer，不信任磁盘恢复数据中的网络目标。
+Magnets first acquire and verify hash-bound metadata, release the metadata-stage handle, then start payload transfer with complete file priorities to avoid zero-selection completion and reconnect backoff. Incomplete v2 piece layers are not written as complete torrents. Retain the authoritative info dictionary and let the engine acquire and verify required hashes. Carry forward only bounded currently connected peers; never trust network destinations from disk resume data.
 
-自动监听若因系统端口权限失败且没有任何成功监听，最多尝试 8 个随机非临时端口；不重写显式配置或已有成功监听。任务加入前最多等待 5 秒并响应暂停／取消，失败给出明确错误。网络分发线程的控制状态先初始化，再启动线程。首次发布立即保存标记，持续做种不能延迟其持久化。
+If automatic listening fails due to port permissions with no successful listener, try at most 8 random non-ephemeral ports. Do not rewrite explicit configuration or an existing successful listener. Before adding a task, wait at most 5 seconds while honoring pause/cancel; report a clear failure. Initialize control state before starting the network dispatcher thread. Persist the publication marker immediately rather than delaying it throughout seeding.
 
-## 2026-11-17：协议适配与 FTP
+## 2026-11-17: Protocol adapters and FTP
 
-FTP/FTPS 使用独立 `network/ftp_transfer.cpp`，不复用 HTTP 状态码、Range 或 ETag 逻辑。`filesystem/transfer_files.*` 提供已有的同步写入、恢复元数据原子替换及禁止覆盖发布；协议判定和重试策略仍属于各适配器。现有传输端口、串行任务协调器和 Qt 任务表保持共用。
+FTP/FTPS uses independent `network/ftp_transfer.cpp`, without reusing HTTP status, Range, or ETag logic. `filesystem/transfer_files.*` supplies existing synchronous writes, atomic resume-metadata replacement, and publication without replacement; protocol decisions and retry policies remain adapter responsibilities. Transfer ports, the serial task coordinator, and the Qt task table remain shared.
 
-FTP 默认单流／被动模式；显式 TLS 要求控制和数据通道全部加密，隐式 TLS 由 `ftps://` 选择。用户名和密码仅存内存，URL 禁止嵌入登录信息。schema 3 只增加 TLS、主动模式与 CA 路径，升级前备份旧数据库，旧凭据不因新增协议而写入磁盘。
+FTP defaults to a single passive stream. Explicit TLS requires encryption of both control and data channels; `ftps://` selects implicit TLS. Usernames/passwords stay in memory and cannot be embedded in URLs. Schema 3 adds only TLS, active-mode, and CA-path settings, backing up the old database. Adding a protocol does not persist old credentials.
 
-FTP 的 SIZE／MDTM 不是强内容标识。缓存复用必须同时有预期 SHA-256 和一致的 URL、大小、修改时间及 TLS 选项，最终校验失败不会发布；不满足条件或服务器不支持 REST 就重新下载。该取舍避免假冒可靠续传，尚未验证的服务器组合继续显式列为边界。BT 使用独立共享会话与适配器，其上传／做种生命周期不进入 FTP 或 HTTP 状态机。
+FTP SIZE/MDTM are not strong content identities. Cache reuse requires an expected SHA-256 plus matching URL, size, modification time, and TLS settings. Failed final verification prevents publication. Otherwise, or without server REST support, restart the download. Do not imply reliable resume without proof; unverified server combinations remain explicit limitations. BT has its own shared session and adapter; its upload/seeding lifecycle does not enter FTP or HTTP state machines.
 
-按阶段保留本地提交以便回退。数据库迁移不自动降级；若切回不识别新 schema 的旧程序，先退出全部实例并单独备份当前数据，再在隔离数据目录使用升级前的 `.before-v*-*.db` 副本验证。恢复旧备份不会包含备份之后的新任务状态；下载文件与未知用户文件不由代码回滚删除。
+Keep focused local commits by stage for rollback. Database migrations do not downgrade automatically. Before returning to an older program that cannot read the new schema, exit every instance, back up current data separately, and validate an upgrade-time `.before-v*-*.db` copy in an isolated data directory. Old backups omit later task states. Code rollback does not delete downloads or unknown user files.
 
-## 2026-11-16：开发基线
+## 2026-11-16: Development baseline
 
-用户授权按总蓝图自主开发。首发 Windows x64，C++20，Qt 6 Widgets。已检查本机 Qt 6.11.0、MSVC 2022、CMake 3.31；原生依赖通过固定 baseline 获取。主要目录和依赖方向沿用总蓝图。参考研究在工程外进行，不复制参考项目源码、名称或标识。
+The user authorized autonomous implementation against the overall blueprint: Windows x64 first, C++20, Qt 6 Widgets. Local Qt 6.11.0, MSVC 2022, and CMake 3.31 were inspected; native dependencies use a pinned baseline. Major directories and dependency directions follow the blueprint. Reference research stays outside the repository; reference implementation source, names, and identifiers are not copied.
 
-## 网络、落盘与线程
+## Networking, disk writes, and threading
 
-任务控制器和数据库由一个协调线程串行访问。每个活跃任务一个有界工作线程，独占自己的 multi transport 和文件；不为每个分段创建线程。相较独立磁盘线程池，这个方案减少跨线程缓冲与背压协议，内存有界，磁盘阻塞不影响 UI。后续仅在测量证明必要时增加磁盘执行器。
+One coordinator thread serializes task-controller and database access. Each active task has one bounded worker that exclusively owns its multi transport and files; segments do not get individual threads. Compared with a separate disk pool, this reduces cross-thread buffering and backpressure protocols, bounds memory, and isolates disk blocking from the UI. Add a disk executor only when measurements justify it.
 
-严格验证状态码、Content-Range、字节长度与资源身份后才写入。强验证器支持可靠跨会话续传；缺少可靠身份时重新下载。分段同步后原子更新可恢复偏移，恢复按该偏移截断不确定尾部。文件最终组装在目标卷，再以不覆盖既有文件的方式发布。
+Write only after strict checks of status, Content-Range, byte length, and resource identity. Strong validators support reliable cross-session resume; without reliable identity, restart. After segment synchronization, atomically persist recoverable offsets; recovery truncates uncertain tails to those offsets. Assemble on the destination volume, then publish without overwriting existing files.
 
-## 敏感信息与持久化
+## Sensitive information and persistence
 
-Cookie 和认证头仅在内存存活，不写入任务表。重新启动后需要登录态的任务可能要求重新从浏览器发送。原始 URL 本身可能含短期凭据，保存在当前用户本地数据库。用户主动导出的任务清单也包含原始 URL，导出对话框会提示；清单不含 Cookie 和认证头，应自行保护导出文件。诊断界面隐藏查询参数。
+Cookies and authentication headers live only in memory, outside task tables. After restart, login-dependent tasks may need resending from the browser. Raw URLs can contain short-lived credentials and remain in the current user's local database. User-exported task lists also contain raw URLs; the export dialog warns about this. Lists exclude Cookies and authentication headers, but users must protect exported files. Diagnostics hide query parameters.
 
-## 浏览器确认顺序
+## Browser acknowledgment ordering
 
-浏览器先暂停，原生端验证并持久化，返回与 request ID 对应的确认后，才取消浏览器原下载。无法确认时恢复浏览器下载，避免任务丢失。
+Pause the browser download first. Only after native validation/persistence and acknowledgment matching the request ID may the extension cancel the original. If acknowledgment fails, resume the browser download to avoid losing the task.
 
-## 原生资源约束与响应观察
+## Native resource constraints and response observations
 
-站点子任务复用原生 HTTP 引擎，领域请求只追加文件正文大小与同来源重定向约束。已知总长先于工作文件检查；未知长度在写入前逐块检查，合并阶段再次校验，不把每流或进度数当作总上限。流量账本独立计量已接收的探测／重试正文。重定向比较初始来源的协议、主机与有效端口，保留更严格的精确 URL 登录授权，数据连接继续禁止自动跟随重定向。
+Site children reuse the native HTTP engine. Domain requests append only body-size and same-origin redirect constraints. Check known lengths before opening work files, unknown lengths per chunk before writing, and totals again during assembly. Per-stream/progress counts cannot substitute for the total limit. A separate traffic ledger counts received probe/retry bodies. Redirects compare the initial scheme, host, and effective port while preserving stricter exact-URL login grants. Data connections still forbid automatic redirects.
 
-HTTP 适配器通过可信端口报告实际响应 URL，协调器只接收当前代次，并在新尝试／请求编辑前清除旧观察；损坏观察触发终止而不成为输入权限。schema 11 持久化约束和响应地址，清单只导出请求约束。请求重放同时核对大小、来源策略、摘要、代理登录需求与媒体选择，不能用旧的较弱任务确认新请求；保留原请求文件名、归属和路由校验。
+The HTTP adapter reports actual response URLs through a trusted port. The coordinator accepts only the current generation and clears observations before a new attempt/request edit. Invalid observations terminate rather than becoming input authority. Schema 11 persists constraints and response URLs; task lists export only request constraints. Replay checks size, origin policy, digest, proxy-login requirements, and media selection, preventing weaker old tasks from acknowledging a new request. Preserve filename, ownership, and route checks.
 
-## 浏览器页面与平台适配边界
+## Browser pages and platform boundaries
 
-浏览器平台入口共享 TypeScript 行为，拆分 Chromium 服务工作线程和 Firefox 模块事件页清单。后台组合独立 Cookie 上下文与有界资源会话模块；页面渲染器为无模块导入的隔离经典脚本，不开放 `postMessage` 或 native 桥。可信扫描生成候选资源、不透明编号和稳定请求编号，真实选择保存在隔离闭包，异步 Cookie 查询后重新核实文档及会话。Firefox 固定相邻清单和扩展编号与 Chrome／broker 分支分开；注册日志按当前所有权恢复原值。两种扩展仍使用独立下载区。
+Browser entries share TypeScript behavior with separate Chromium service-worker and Firefox module-event-page manifests. Background logic composes independent Cookie contexts and bounded resource sessions. The page renderer is an isolated classic script without module imports, `postMessage`, or native bridges. Trusted scanning creates resource candidates, opaque identifiers, and stable request identifiers. Actual selections remain in an isolated closure; asynchronous Cookie lookup is followed by document/session revalidation. Firefox's fixed adjacent manifest and extension identifier stay separate from Chrome/broker branches. Registration journals restore values by current ownership. Both extensions still use independent download areas.
 
-## 媒体隔离与恢复边界
+## Media isolation and recovery boundaries
 
-领域层保存有界的格式描述与类型化选择，不保存解析器原始 JSON／格式 URL。应用层提供独立探测端口，通过现有路由和凭据解析取得短期执行快照。桌面探测仅用于独立下载区；受环境授权的任务不能借此扩大源站授权。Qt 控件在独立可取消工作线程探测，代次失效阻止旧结果覆盖新地址。显式格式在传输前通过同一路由再次核实；精确 ID 转成过滤条件，避免保留字被当作选择表达式。
+The domain stores bounded format descriptions and typed selections, not raw parser JSON or format URLs. A separate application probe port obtains short-lived execution snapshots through existing routing and credential resolution. Desktop probing is only for the independent download area; environment-authorized tasks cannot use it to expand origin grants. Qt probes run on a separate cancellable worker, with generation invalidation preventing stale results from overwriting new URLs. Recheck explicit formats on the same route before transfer. Convert exact IDs to filters so reserved words cannot act as selection expressions.
 
-共享进程模块负责清理环境、私密输入、Windows job 及退出清理。包内两个无 Qt 依赖的静态运行库启动器覆盖 FFmpeg 和 ffprobe 的显式／隐式输入，只允许任务目录中的普通文件及非播放列表容器；不允许本地后处理重新联网或读取任意目录。实际组件路径由可信启动环境绑定，解析器固定使用自有启动器目录。该限制针对受支持组件调用，不能代替不可信可执行文件沙箱。schema 10 追加模式、主格式、音轨与容器列；迁移前备份，旧任务保持原有自动预设。
+The shared process module sanitizes environments and handles private input, Windows jobs, and exit cleanup. Two packaged static-runtime launchers without Qt dependencies cover explicit/implicit FFmpeg and ffprobe input, allowing only regular task-directory files and non-playlist containers. Local postprocessing cannot reconnect or read arbitrary directories. Trusted startup binds actual component paths; the parser uses its own launcher directory. These restrictions cover supported component calls, not untrusted-executable sandboxing. Schema 10 appends mode, primary format, audio track, and container columns, backing up first; old tasks retain automatic presets.
 
-媒体通过独立外部进程运行，Windows job 在进程创建时绑定，取消时清理进程树。独立任务可明确提供内存认证头、Cookie 和自定义头。默认登录探测与下载共享受限临时本机网关，只允许原始来源的同协议、主机及有效端口；独立任务可明确授权额外来源。HTTP 请求和 HTTPS CONNECT 均先验证随机代理凭据及目标，未授权来源在连接前拒绝。HTTPS 字节不解密，证书仍由组件验证；所选上游代理路由不回退直连，HTTP 代理须允许目标端口的 CONNECT。网关最多保留 16 个自有连接，有界请求头和缓冲区，随进程操作销毁。通用进程组与媒体网关分离，私密输入用于来源材料和临时路由，不写入参数或任务库。原浏览器精确 URL 授权不因此扩大。缺少登录材料时在启动组件前停止；公开媒体保留既有多来源行为。这不是不可信组件的操作系统沙箱。
+Media runs in external processes, attached to a Windows job at creation so cancellation cleans up the tree. Independent tasks may explicitly supply in-memory authentication headers, Cookies, and custom headers. Default authenticated probing/downloading shares a restricted temporary local gateway allowing only the original scheme, host, and effective port; independent tasks may explicitly authorize extra origins. HTTP requests and HTTPS CONNECT validate random proxy credentials and destinations before connecting. HTTPS bytes remain encrypted, with component-side certificate verification. Selected upstream proxies never fall back to direct connections; HTTP proxies must allow CONNECT to the target port. The gateway owns at most 16 connections, bounded headers/buffers, and the process-operation lifetime. Process groups and the media gateway remain separate. Private input carries source material and temporary routes, never arguments or the task database. Browser exact-URL grants do not expand. Missing login material stops execution before launching components; public media retains existing multi-origin behavior. This is not an operating-system sandbox for untrusted components.
 
-组件不能证明跨次内容身份，因此每次重新开始都清理专属缓存，禁止把组件普通续传当作安全恢复。
+Components cannot prove content identity across runs. Every restart therefore clears the task-owned cache; ordinary component resume is not treated as safe recovery.
 
-媒体子进程不支持原地调整限速，实际预算变化会安全重启媒体任务。调度器在一个批次中保留稳定媒体槽位，降低并发时按既有活跃数预留，批次排空后再收缩，避免带宽超配或因普通队列波动反复重启。
+Media child processes cannot change rate limits in place; actual budget changes safely restart the task. Scheduling retains stable media slots within a batch, reserves against existing active counts when reducing concurrency, and shrinks after draining. This avoids bandwidth over-allocation and repeated restarts from ordinary queue fluctuations.
 
-## 发布目录与维护
+## Distribution layout and maintenance
 
-UI 的私有状态、表格展示和不同对话框分置于 `windows/`、`models/`、`dialogs/`，公开接口保持不变。无需预建没有代码的空目录。系统完成动作及解压程序使用 Windows 系统目录绝对路径，不从下载目录搜索同名程序。
+UI private state, table presentation, and dialogs live in `windows/`, `models/`, and `dialogs/`, preserving public interfaces. Do not create empty directories in advance. System completion actions and extraction tools use absolute Windows system-directory paths rather than searching download directories for matching executables.
 
-便携包和当前用户安装使用相同动态运行库；包内附许可证、Qt 模块源码、SBOM 和文件哈希。可选媒体组件由用户安装或从工具菜单独立下载，默认不再分发。安装与卸载只操作专属应用目录；用户数据库与下载文件保留。外部发布、签名、更新源和浏览器商店不在本地候选包完成声明内。
+Portable and current-user installations use the same dynamic runtimes. Packages include licenses, Qt module source, SBOM, and file hashes. Users install optional media components or download them separately through Tools; they are not redistributed by default. Installation/removal touches only the dedicated application directory, preserving databases and downloads. External publication, signing, update origins, and browser stores are outside local-candidate completion claims.
 
-## 稳定性诊断与依赖补丁
+## Stability diagnostics and dependency patches
 
-旧运行时在混合压力测试中发生访问异常，调用栈位于请求校验的正则匹配；尚未确认根因。项目代码两组 15 分钟 AddressSanitizer 压力运行分别完成 5,300／5,400 个文件校验，未报告越界或释放后访问；这些诊断不能代替发布稳定性验收。Windows 默认关闭的分配／释放类别检查保持默认，避免将未插桩依赖的分配标记视作已确认根因。
+An older runtime raised an access violation during mixed stress testing, with the stack in request-validation regex matching; the root cause remains unconfirmed. Two 15-minute AddressSanitizer runs of project code completed 5,300/5,400 file verifications without reporting out-of-bounds access or use-after-free. These diagnostics do not replace release stability acceptance. Windows allocation/deallocation category checking remains disabled by default; allocation tags from uninstrumented dependencies are not a confirmed root cause.
 
-依赖升级至 Qt 6.11.3：其包含已独立复现的容器清理后访问缺陷修复；该缺陷尚未证实可由旧压力场景触达，因此不将升级表述为已定位原始崩溃。配套源码、许可证、运行库及验证必须使用同一版本。Release 保留独立 PDB，以便诊断优化构建，发布程序仅记录 PDB 文件名。
+Dependencies moved to Qt 6.11.3, which fixes an independently reproduced container access-after-cleanup defect. That defect has not been shown reachable from the old stress scenario, so the upgrade is not presented as identification of the original crash. Matching source, licenses, runtimes, and validation must use the same version. Release retains separate PDBs for optimized-build diagnostics; published programs record only PDB filenames.
 
-后续长测暴露历史删除超时。逐条完整同步写入的隔离测量不足以解释该次卡顿，因此暂不引入影响新增确认顺序的通用事务合并。仅跳过不存在缓存目录下的重复删除请求，继续独立清理经过验证的专属组装文件；既有最终文件始终保留。压力测试在失败后采集隔离桌面线程转储，保持 10 秒删除断言及所有既定预算，以继续定位历史卡顿。
+Later endurance runs exposed a history-deletion timeout. Isolated measurements of individually synchronized writes did not explain that stall, so no general transaction batching that changes new-task acknowledgment ordering was introduced. Skip only redundant deletion requests for nonexistent cache directories while independently cleaning verified task-owned assembly files. Existing final files remain intact. Stress failures collect isolated desktop thread dumps while retaining the 10-second deletion assertion and all frozen budgets to investigate the historical stall.
 
-测试框架的报告发布及结束状态回归归入 `tests/system/stress_report_test.py`，与原生消息交互集成分开维护。Windows 报告发布对短暂读取占用作有界重试，持续错误仍失败；实时监测读取进程输出的有界进度摘要，避免打开正在替换的报告文件。只有结束报告成功发布后才进入接受清理，任何异常都撤销接受状态，避免错误被后续清理误标为通过。
+Test-framework report publication and terminal-state regressions live in `tests/system/stress_report_test.py`, separate from Native Messaging integration. Windows report publication retries brief reader contention within bounds; persistent errors still fail. Live monitoring reads bounded process-output summaries rather than opening reports being replaced. Acceptance cleanup begins only after the terminal report publishes successfully. Any exception revokes acceptance so later cleanup cannot mislabel a failure as success.
 
 ## Optional native credential vault foundation
 
@@ -210,7 +210,6 @@ denial remains in force. Signed supplier libraries are preserved byte-for-byte;
 their SDK hashes and expected valid publisher signatures define narrowly reported
 provenance exceptions. Private host paths remain forbidden in all runtime files.
 
-
 ## SFTP and native remote-file transfer
 
 FTP/FTPS and SFTP use typed factories over one remote-file stream/cache/publication
@@ -228,20 +227,20 @@ initialization, preserving the existing TLS trust backend when SSH crypto adds
 another TLS backend. Runtime protocol capability, the SSH DLL and its license
 notice are checked alongside ordinary deployment files.
 
-## 明确来源授权与复杂 HLS
+## Explicit origin authorization and complex HLS
 
-点播显式模式通过操作专属、只含公开代码的适配器，在 Cookie 处理后对每次请求与跳转清除继承头，再按协议／主机／有效端口注入独立材料。内存能力通道交付策略；实际后端／处理器预检完成才开放网关。只支持 GET／HEAD，禁用其他后端及系统代理绕过，保持 TLS 端到端验证。SQLite v19／清单只保存来源与登录需求；材料和确认不持久化，URL 编辑／导入／重启需重新授权。浏览器上下文权限不扩大。这是可信组件协议，不是恶意组件沙箱。
+Explicit VOD mode uses an operation-owned adapter containing only public code. After Cookie processing, every request/redirect clears inherited headers and injects separate material by scheme, host, and effective port. An in-memory capability channel delivers policy; the gateway opens only after actual backend/handler preflight. Only GET/HEAD are allowed; other backends and system proxy bypass are disabled, preserving end-to-end TLS. SQLite v19/task lists store only origins and login requirements. Material and confirmation are not persisted; URL edits, imports, and restarts require reauthorization. Browser-context authority does not expand. This is a trusted-component protocol, not a malicious-component sandbox.
 
-原生 Live 复用相同公共策略，curl 对列表、密钥、映射、分片与跳转逐一选择来源材料。AES-128 CBC 使用现有加密库，密钥仅内存、严格填充、显式或序号 IV，按当前片段重新取密钥以支持同 URI 轮换。范围必须精确 206／Content-Range／正文长度。低延迟提示仅忽略并读取完整片段，增量／跳片／DRM 拒绝。
+Native Live reuses the public policy, selecting origin material individually for curl playlists, keys, maps, segments, and redirects. AES-128 CBC uses the existing crypto library, memory-only keys, strict padding, and explicit or sequence-derived IVs. Keys are fetched again for the current segment to support rotation at the same URI. Ranges require exact 206/Content-Range/body lengths. Ignore low-latency hints and consume complete segments only; reject delta updates, skipped segments, and DRM.
 
-fMP4、音轨与不连续序列由有界私有临时目录保存完整解密分片，程序生成仅引用自有文件名的本地清单。可信本地封装组件只开放 file／pipe 协议及限定容器，绝不传递远程清单、URL、密钥或登录环境。独立音轨要求清单序号、时长、不连续序列及显式 PROGRAM-DATE-TIME 节目时钟一致；不猜测对齐。进程组可取消、有限时／诊断／输出大小，最终结果继续摘要、扫描与无覆盖发布。普通 TS／FLV 不依赖该组件；全部网络与额度仍由原生引擎负责。
+fMP4, audio tracks, and discontinuity sequences retain complete decrypted segments in a bounded private temporary directory. Generated local playlists reference only owned filenames. Trusted local muxing allows only file/pipe protocols and constrained containers; it never receives remote playlists, URLs, keys, or login environments. Separate audio requires matching sequence numbers, durations, discontinuity sequences, and explicit PROGRAM-DATE-TIME clocks; alignment is never guessed. Process groups are cancellable with bounded time, diagnostics, and output. Final output still passes digest checks, scanning, and publication without replacement. Ordinary TS/FLV needs no muxing component; the native engine retains all networking and quota accounting.
 
-## macOS 原生适配与 CI 资格
+## Native macOS adaptation and CI qualification
 
-Darwin 独立发现原生开发依赖，Linux 与 macOS 复用相同的固定 BT 源码回退；Windows 工具链保持原入口。Apple 平台凭据通过 Security.framework 保存在用户钥匙串，随机安装／引用命名空间隔离条目，读取和删除核验所有者、规范路由及写入随机量。写入只新增；删除使用已验证条目的原生身份，同一引用由私有锁串行化。锁定／拒绝访问明确失败，不弹框阻塞或回退明文文件；不枚举其他条目。它不隔离同用户恶意进程，也不承诺完整内存清零。
+Darwin discovers native development dependencies independently. Linux/macOS share the pinned BT source fallback; Windows retains its toolchain entry. Apple credentials use the user Keychain through Security.framework. Random installation/reference namespaces isolate entries; reads/deletes verify owner, canonical route, and write nonce. Writes only add entries. Deletion uses the verified entry's native identity, with a private lock serializing each reference. Locked/denied access fails explicitly without blocking prompts or plaintext fallback; other entries are not enumerated. This neither isolates malicious same-user processes nor promises complete memory zeroization.
 
-私有组件通过独立会话中的 EOF guardian 管理生命周期。仅所有者保留 close-on-exec 写端；守护进程关闭其他文件描述符（尤其 Qt 启动管道和秘密输入），持有组成员身份直到结束，在所有者退出／停止时终止所属进程组，避免向复用的数值组号发信号。该协议用于可信组件，不约束主动逃离会话的恶意代码。
+Private components use an EOF guardian in a separate session. Only the owner retains the close-on-exec write end. The guardian closes other descriptors, especially Qt startup pipes and secret input, and retains group membership until termination. Owner exit/stop terminates the owned group without signaling a reused numeric group ID. The protocol assumes trusted components and cannot constrain malicious code that deliberately escapes the session.
 
-目录发布使用 Darwin 原生 `renamex_np(RENAME_EXCL)`，不模拟先检查后覆盖。本地种子从非阻塞挂载快照筛掉已知网络／自动挂载来源，再以描述符拒绝链接和特殊文件；仅对系统 `/var`、`/tmp` 别名作明确转换，读取前后核验同一文件。媒体启动器通过 Qt 的应用绝对路径定位，不依赖 Linux `/proc`。
+Directory publication uses native Darwin `renamex_np(RENAME_EXCL)`, without a check-then-overwrite emulation. Local torrent reads filter known network/automounted sources from a nonblocking mount snapshot, then reject links and special files through descriptors. Only system `/var` and `/tmp` aliases receive explicit conversion; verify the same file before/after reading. Media launchers locate themselves through Qt's absolute application path rather than Linux `/proc`.
 
-真实 Apple API、内核及 SDK 行为由双架构 GitHub CI 中的原生测试负责证明；本轮仅交付待执行的准备，不将 Windows 回归或脚本模拟结果记作 macOS 通过。具体资格与缺口见 [macOS 验收](../testing/macos-acceptance.md)。
+Native tests in dual-architecture GitHub CI must establish actual Apple API, kernel, and SDK behavior. This increment delivered preparation awaiting execution; Windows regressions and script simulations do not count as macOS passes. See [macOS acceptance](../testing/macos-acceptance.md) for qualification boundaries and gaps.

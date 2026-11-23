@@ -1,74 +1,74 @@
-# 全工程审计与验收
+# Repository audit and acceptance
 
-> 本页保留 `d1a4658` 的 Windows 审计基线。其后新增的 Linux 实现、部署与平台限制见 [Linux 验收](linux-acceptance.md)；当前需求覆盖以 [功能映射](../product/feature-matrix.md) 和 [支持矩阵](../product/support-matrix.md) 为准，不能将下表中的历史平台状态当作最新结论。
+> Historical Windows audit baseline: `d1a4658`. Later Linux implementation/deployment limits are in [Linux acceptance](linux-acceptance.md). Current requirements follow [feature](../product/feature-matrix.md)/[support](../product/support-matrix.md) matrices; historical platform rows below are not current conclusions.
 
-本次检查针对当前 C++20／Qt Windows 工程及已承诺的支持范围。**阶段功能完成不等于最初的完整产品目标完成，也不能保证不存在未发现的缺陷。** 在线更新和正式发行按用户要求延后；命名及指纹浏览器集成保持后续范围。
+This audit covered the C++20/Qt Windows project and its committed scope. **Increment completion is not the complete original product, nor proof of no undiscovered defects.** Online updates/formal release were deferred; renaming/fingerprint-browser integration remained later scope.
 
-## 已确认并修正
+## Confirmed fixes
 
-| 问题 | 修正与证据 |
+| Finding | Fix/evidence |
 |---|---|
-| HLS 序号回退但窗口仍重叠时可能错误成功 | 独立检查播放列表序号单调性；旧程序实际错误发布，新程序拒绝且不请求后续分片。提交 `e5c2662` |
-| FLV 空音／视频标签被当作有效媒体 | 只有非空音／视频负载建立成功条件；空标签、仅元数据不发布；真实媒体前后空标签仍可保存、播放。同上提交 |
-| Windows SHA 对象存储先于原生句柄销毁 | 改为由系统管理对象存储，保留句柄先于算法提供程序释放；8 线程已知向量及取消／读错恢复。提交 `f9c1d58`；依据 API 生命周期合同，不编造旧版必现崩溃 |
-| 干净 CI 缺少强制测试前置依赖 | 配置前安装固定 Python 测试依赖；固定版本媒体工具须先通过 SHA-256 校验，再解压至独立 runner 临时目录 |
-| 文档混淆现有支持及历史资格 | 修正登录媒体、原生直播预算及验收描述；冻结版本长测不作为新版证据 |
+| HLS rollback with overlapping windows could succeed incorrectly | Check sequence monotonicity independently; old program actually published, fixed version refuses/no later segment request. `e5c2662` |
+| Empty FLV audio/video tags counted as media | Require nonempty payload; empty/metadata-only never publish, valid media with empty surrounding tags remains playable. Same commit |
+| Windows SHA object storage destroyed before native handle | OS-managed storage, hash handle released before provider; 8-thread known vectors/cancel/read-error recovery. `f9c1d58`, API-lifetime correction, not a fabricated guaranteed crash |
+| Clean CI lacked mandatory prerequisites | Install pinned Python dependencies before configure; SHA-256-checksum-pinned media archive before extraction in owned runner temp |
+| Current support confused with old qualification | Correct login-media/native-live budgets and evidence; frozen long runs never qualify later code |
 
-## 原始需求核对
+## Original requirement audit
 
-编号沿用 [工程蓝图](../DEVELOPMENT_BLUEPRINT.md)，具体限制见 [功能映射](../product/feature-matrix.md) 与 [支持矩阵](../product/support-matrix.md)。
+IDs follow the [blueprint](../DEVELOPMENT_BLUEPRINT.md); detailed limits are in [feature](../product/feature-matrix.md)/[support](../product/support-matrix.md) maps.
 
-| 编号 | 当前覆盖与剩余边界 |
+| ID | Scope/gaps at this historical audit |
 |---|---|
-| F-01～03 | 原生 HTTP 请求、动态分段及可验证身份续传；资源身份不可信时安全重下；公网兼容仍须持续验证 |
-| F-04～05 | 统一队列、并发／限速／优先级、分类历史、清单预览导入与失败重试 |
-| F-06 | 一次／每周计划、日／保守滚动正文额度、完成动作；BT／组件点播预算及逐字节计量未实现 |
-| F-07 | 浏览器 GET 接管与链接／登录恢复；POST 正文接管、隐私／分区登录、正式商店发行未实现 |
-| F-08 | Qt 桌面、托盘、双语及管理操作；更完整主题／列自定义、多 DPI／多屏仍有差距或待验收 |
-| F-09 | 公开同源静态站点抓取、离线重写、修订与有界周期完整同步；动态／登录站点还原、增量去重未实现 |
-| F-10 | 公开点播、独立同源登录点播及直接 TS-HLS／HTTP-FLV 录制；复杂 HLS、DASH 直播、RTMP、网页直播解析等未实现 |
-| F-11 | 可选媒体组件管理；持续维护的外部站点支持名单和兼容验收仍缺失 |
-| F-12～14 | 请求／链接刷新、摘要与无覆盖发布、扫描、迁移、便携／用户安装与离线恢复回滚；在线发现／正式发行延后 |
-| F-15 | FTP／FTPS 文件下载及额外 SFTP 固定主机指纹认证；远程目录浏览、递归同步与交互式 SSH 不支持 |
-| F-16 | Firefox 临时扩展及容器流程；签名发行、生产安全策略仍待外部验收 |
-| F-17 | 独立 BT／磁力、选择、恢复、做种及 TCP 代理；多源镜像、远程控制、插件及 BT HTTPS／UDP 代理未实现 |
-| F-18 | 其他桌面平台及无界面服务未交付 |
+| F-01–03 | Native HTTP/adaptive splitting/verifiable resume, weak identity safely restarts; public compatibility ongoing |
+| F-04–05 | Queues/concurrency/rates/priority/categories/history/import preview/retry |
+| F-06 | One-time/weekly/daily/conservative rolling budgets/completion; no BT/helper budgets/per-byte metering |
+| F-07 | GET interception/link-login recovery; no POST capture/private/partitioned login/store release |
+| F-08 | Qt/tray/bilingual/management; themes/columns/multi-DPI/screens incomplete/unverified |
+| F-09 | Public same-origin crawl/rewrite/revisions/finite full sync; no dynamic/login/incremental deduplication |
+| F-10 | Public/same-origin authenticated media/direct TS-HLS/HTTP-FLV; complex HLS/DASH live/RTMP/page-live not yet implemented at this baseline |
+| F-11 | Optional components; no maintained external-site acceptance list |
+| F-12–14 | Request/link refresh/hash/no-replace/scan/migration/portable/current-user/offline recovery; online/formal release deferred |
+| F-15 | FTP/FTPS and pinned SFTP; no remote browsing/recursive sync/interactive SSH |
+| F-16 | Temporary Firefox/containers; signatures/production policy external |
+| F-17 | BT/magnets/selection/resume/seeding/TCP proxies; no mirrors/remote/plugins/BT HTTPS/UDP proxies |
+| F-18 | Other desktops/headless services not delivered at this baseline |
 
-这些是明确剩余项，不表示用户已取消原需求；本次审计修复不擅自扩展为新的协议或平台开发。
+Explicit gaps are not cancelled user requirements. This audit did not silently become new protocol/platform development.
 
-## 检查与证据
+## Checks and evidence
 
-当前审计使用独立构建 `out/build/windows-msvc-audit-20261120`，日志位于 `out/qa/repository-audit-20261120/`。源码检查覆盖 domain、application、网络／媒体／BT／存储基础设施、Qt、CLI、本机桥接、扩展及构建／打包入口；共享摘要的全部调用方已核对。
+Independent build `out/build/windows-msvc-audit-20261120`, logs `out/qa/repository-audit-20261120/`. Source review covered domain/application/network/media/BT/storage/Qt/CLI/native bridge/extension/build/package and every shared-hash caller.
 
-静态分析检查 60 个不同运行时翻译单元，另核对媒体探测启动器变体和修复后的摘要文件；无编译失败。唯一 BT optional 访问告警经控制流核对不成立：所有 job 赋值都在 storage 成功初始化之后，异常发生在初始化前时不会进入该清理分支。静态分析不代表所有路径均被证明正确。
+Static analysis checked 60 distinct runtime translation units plus the media-probe variant/repaired hash file without build failure. The BT optional-access warning was refuted by control flow: job assignments follow successful storage initialization and pre-initialization exceptions never enter cleanup. This does not prove every path correct.
 
-| 验收 | 当前结果与日志 |
+| Acceptance | Recorded result/log |
 |---|---|
-| 全量原生回归 | **322/322 通过，951.10 秒**；`full-ctest.log`，包含实际 HTTP／FTP／FTPS／SFTP／POST／直播／BT／媒体／站点／Qt／本机桥接／注册所有权路径 |
-| 扩展 | **48/48 通过**；`npm-test.log` |
-| 发布负例 | 路径 **15/15**、资格清单 **12/12**；`release-paths.log`、`release-manifest.log`；这些是受控反例，不代替真实包 |
-| 离线升级恢复 | **15 组故障／恢复检查及套件终验通过**；`package-update.log`；真实文件锁／进程终止与模拟包故障，不宣称旧数据库兼容由此证明 |
-| Chromium | **10 组通过**，注册恢复；`chromium/evidence.json`。测试明确使用无沙箱选项，不证明生产策略兼容 |
-| Firefox | **12 组通过**；`firefox/` 中独立运行证据，临时扩展与隔离 profile，注册恢复 |
-| 组件点播与 Qt | **14 组通过**；`media-inventory-r2.log`，实际格式／容器、认证代理、进程私密输入、扫描及 Qt 精确选流输出 |
-| 原生摘要内存检查 | 使用带插桩测试框架，**4/4 严格 ASAN 通过**；`asan-instrumented-acceptance.log` 中 Checksums 项 |
-| 有限地址检查 | **51/51 通过，58.24 秒**；`asan-address-only-acceptance.log`；明确设置 `alloc_dealloc_mismatch=0`，不作为完整严格 ASAN 通过 |
-| CI 前置条件 | 干净 Python 环境先重现缺少依赖，再实际安装成功；错误归档在解压前被拒绝，`ci-prerequisite-checks.json`；远端 CI 未运行 |
+| Native regression | **322/322 passed, 951.10 seconds**, `full-ctest.log`; actual HTTP/FTP/FTPS/SFTP/POST/live/BT/media/site/Qt/native/registration paths |
+| Extension | **48/48**, `npm-test.log` |
+| Release counterexamples | Paths **15/15**, manifest **12/12**, `release-paths.log`/`release-manifest.log`; controlled examples, not actual package qualification |
+| Offline recovery | **15 fault/recovery groups** plus suite acceptance, `package-update.log`; real locks/termination and simulated package faults, not old-database compatibility |
+| Chromium | **10 groups**, registration restored, `chromium/evidence.json`; explicit no-sandbox testing, not production policy |
+| Firefox | **12 groups**, independent `firefox/` evidence, temporary extension/isolated profile, registration restored |
+| Media/Qt | **14 groups**, `media-inventory-r2.log`, actual IDs/containers/auth proxies/private input/scan/Qt output |
+| Native hash ASAN | Instrumented test framework, **4/4 strict ASAN**, Checksums in `asan-instrumented-acceptance.log` |
+| Limited address checks | **51/51, 58.24 seconds**, `asan-address-only-acceptance.log`, explicit `alloc_dealloc_mismatch=0`; not full strict ASAN |
+| CI prerequisites | Clean Python reproduced missing deps then installed; corrupt archives refused before extraction, `ci-prerequisite-checks.json`; hosted CI unexecuted |
 
-严格 ASAN 扩大运行的 51 项中有 42 项在未插桩 Qt 返回的标准库对象分配／释放边界报告类型不匹配；42 份分配栈均来自 QtCore。初轮未插桩测试框架也有相同边界问题；另建插桩测试框架只替换本轮 ASAN 目录内的副本，原依赖保持不变。完整的分配类型检查仍未验收，不隐去失败，不声称系统／供应商库已插桩。
+Expanded strict ASAN reported allocation-type mismatches in 42 of 51 cases at uninstrumented Qt-returned standard-library boundaries; all 42 allocation stacks originated in QtCore. The initial uninstrumented test framework had the same issue; the new instrumented framework replaced only the owned ASAN copy, retaining original dependencies. Complete allocation checks remain unqualified; failures are preserved, not hidden, and vendor/system instrumentation is not claimed.
 
-CI 媒体归档下载的本机实测在 180 秒仅收到约 11.9 MB 后超时，未校验／解压不完整归档。最终工作流采用 900 秒有界下载、固定哈希、独占临时目录和失败即停；该修改经源码检查，仍需远端 runner 验证下载整链。当前功能测试使用本机可信 8.1.1 工具完成，不依赖公网下载。
+The local CI-media download timed out at 180 seconds after about 11.9 MB; the incomplete archive was neither verified nor extracted. Workflow now uses a bounded 900-second download/pinned hash/owned temp/fail-fast processing, source-reviewed but awaiting hosted download-chain validation. Functional checks used trusted local 8.1.1 tools rather than public downloads.
 
-额外点播测试首轮完成 13 组后在 Qt 子程序启动阶段超时；该次手动命令没有为复制运行库的独立测试目录指定插件位置。设置本轮 `QT_PLUGIN_PATH` 后，独立 Qt 测试及完整 14 组复测通过，未延长断言或修改产品代码。初轮日志保留为 `media-inventory.log`，不计为通过。
+Extra media checks first completed 13 groups then timed out at Qt launch because manual invocation omitted plugin paths for copied runtime libraries. With owned `QT_PLUGIN_PATH`, independent Qt and all 14 groups passed, without longer assertions/product edits. Original `media-inventory.log` is retained as failure.
 
-未执行的干净 Windows、生产浏览器沙箱、商店／发布签名、指纹浏览器端集成、复杂公网环境及新版连续八小时负载，均不能标记为通过。审查由同一代理执行，不冒充独立人工或多代理审查。
+Unexecuted clean Windows/production browser sandbox/store-release signatures/fingerprint integration/public environments/new eight-hour load are not passes. Review was same-agent, not independent human/multi-agent review.
 
-## 便携交付复核
+## Portable delivery recheck
 
-本轮新包使用独立目录 `out/package/repository-audit-local-20261120-r1/`，不覆盖旧输出。打包时要求工作区干净，并检查当前 Release 二进制、依赖许可／源码、SDK 运行文件来源、路径／PE 信息及完整 ZIP 清单；实际源码提交与脏状态写入 `release.json`，ZIP 摘要在包旁 `.sha256` 文件中。
+A new package used `out/package/repository-audit-local-20261120-r1/`, preserving old output. Packaging required a clean workspace and checked actual Release binaries/licenses/sources/SDK provenance/paths/PE/full ZIP manifest. `release.json` records source commit/dirty state; external ZIP hash is adjacent `.sha256`.
 
-部署验收命令为 `scripts/smoke.ps1 -PackageDirectory <新包目录> -PackageArchive <新ZIP>`；实际退出状态与过程记录在本轮 QA 的 `portable-smoke.log`、`package.log`。该流程移除开发 PATH／Qt 环境，检查桌面、CLI、桥接、用户安装／重装、离线应用／回滚／清理和卸载，并保留未知下载文件。此类本地交付验收不能替代新版本的长期负载及干净系统资格。
+Acceptance used `scripts/smoke.ps1 -PackageDirectory <new-package-directory> -PackageArchive <new-ZIP>`; `portable-smoke.log`/`package.log` record actual status. Removing developer PATH/Qt variables, it checks desktop/CLI/bridge/current-user install/reinstall/offline apply/rollback/finalize/uninstall and preserves unknown downloads. Local delivery cannot substitute for new-version long-run/clean-system qualification.
 
-## 保护边界
+## Protection boundaries
 
-既有 `AGENTS.md` 不修改，旁边的指纹浏览器工程只读。旧包、旧构建、依赖、用户正在运行的程序及下载保留；新输出使用独立目录。已有文件清单及摘要在验收末尾复核。测试使用自有本地服务和隔离数据，不接触真实账号、不实际触发关机。
+`AGENTS.md` stayed unchanged and the adjacent browser project read-only. Old packages/builds/dependencies/user programs/downloads were retained; new outputs were isolated. Existing file inventories/hashes were rechecked. Owned local services/data only, no real accounts or actual shutdown.

@@ -1,48 +1,48 @@
-# 功能与验收映射
+# Feature and acceptance mapping
 
-编号沿用开发蓝图。实现不等于所有平台／环境均已验收；外部环境和持续测试的剩余项目记录在发布验收中。
+IDs follow the development blueprint. An implementation does not qualify every platform/environment; release acceptance records external/continuing checks.
 
-## 当前覆盖程度
+## Current coverage
 
-当前候选版覆盖核心下载流程，**没有完成最初的完整功能目标**。蓝图中的目标项不能仅因有对应入口就标为全部完成；以下差距仍需工程实现和独立验收，并非用户已经同意取消的需求。
+The candidate covers core downloading but **does not complete the original full product goal**. An entry point alone cannot mark a blueprint item complete. Remaining work below requires implementation/independent acceptance, not an assumption that the user cancelled it.
 
-| 能力 | 当前实现 | 缺失部分 |
+| Capability | Implemented | Remaining |
 |---|---|---|
-| 分段 | 开发代码支持开始时划分及空闲连接拆分剩余大段；最多 8 个活动连接、256 个持久化段，支持单流降级 | 公网服务器吞吐兼容与新版本长期验收 |
-| 队列与计划 | 命名队列、独立并发／带宽、手动暂停与策略等待、公平调度、优先级、一次性开始／停止、每周时区窗口、HTTP/FTP/SFTP 及原生直播正文 UTC 日／保守滚动额度 | BT／点播媒体用量预算、逐字节滑动计量、运营商线路流量限制 |
-| 批量与站点 | 文本／模板／页面资源发现、逐项确认与重试；公开同来源站点递归、深度／路径前缀／类型筛选、预览、离线重写、不可变修订、手动更新与有界周期完整同步 | 其他来源范围、动态应用及登录页面还原、增量去重与旧版本自动清理 |
-| 协议与认证 | HTTP/HTTPS、独立任务明确单次 POST、FTP/FTPS、固定 SHA-256 主机指纹的 SFTP 密码／本地私钥下载、BT／磁力、自定义 HTTP 认证头、Cookie、源站内存凭据、可选系统代理凭据保存及环境隔离；BT HTTP CONNECT／SOCKS5 TCP 代理，媒体代理和独立点播／直播确切来源登录 | 交互式源站认证、BT HTTPS／UDP 代理；浏览器 POST 正文接管不支持；DASH / RTMP 直播、DRM、部分分片捕获及未对齐音轨 |
-| 浏览器与媒体 | Chrome／Edge 开发者扩展、Firefox 150+ 临时扩展、明确观察到 GET 后自动接管／关联恢复、POST 保留浏览器，可选页面面板与资源列表、公开点播及桌面明确授权的独立来源登录媒体、实际格式探测／精确选择及容器校验 | 浏览器商店签名发行、其他浏览器适配、分区／隐私登录材料、浏览器 POST 正文接管、持续站点兼容验收 |
-| 桌面管理 | 分类、搜索、历史、导入导出、托盘、双语、完成后外部扫描配置与任务结果 | 更完整的工具栏／列／主题自定义 |
-| 完成后扫描 | 可选可信外部程序、发布前暂存内容检查、持久要求与结果、超时／取消进程组、Qt／CLI 配置、任务详情与明确跳过 | 默认关闭；不含杀毒程序或检测效果保证；不追溯扫描已发布 BT 内容 |
-| 交付 | Windows 本地便携包、按用户安装及可信哈希校验的离线升级／恢复／回滚；Linux 原生构建、私有测试会话和依赖系统运行库的本地验收包 | 在线更新发现、签名和商店发行、干净系统兼容验收；Linux 安装／升级器尚未提供，新版长测完成前不能标为发布通过 |
+| Segmentation | Initial and idle-connection tail splitting, up to 8 active connections/256 durable extents, single-stream fallback | Public-server throughput compatibility and current-version long runs |
+| Queues/schedules | Named queues, concurrency/rates, manual versus policy waiting, fairness/priority, one-time start/stop, zoned weekly windows, UTC-day/conservative rolling HTTP/FTP/SFTP/native-live budgets | BT/on-demand budgets, per-byte rolling timestamps, ISP traffic limits |
+| Batches/sites | Text/templates/page discovery, confirmation/retry; bounded public same-origin recursion, depth/path/type filters, preview, offline rewrite, immutable revisions, manual/finite periodic full sync | Other-origin scope, dynamic/login reconstruction, incremental deduplication, old-version cleanup |
+| Protocol/authentication | HTTP/HTTPS, explicit standalone single-attempt POST, FTP/FTPS, SHA-256-pinned SFTP password/key downloads, BT/magnets, custom headers/cookies, memory-only origin login, optional native proxy vault and profiles; isolated BT HTTP CONNECT/SOCKS5 TCP and explicit-origin media/live login | Interactive origin auth, BT HTTPS/UDP proxies, browser POST-body interception, DASH/RTMP live, DRM, partial segments, unaligned audio |
+| Browser/media | Chrome/Edge developer and Firefox 150+ temporary extensions; observed-GET interception/recovery, browser-retained POST, optional panel/resources, public and desktop-authorized origin media, actual format/ID/container checks | Store signatures, other browsers, private/partitioned login, POST-body interception, ongoing site qualification |
+| Desktop | Categories/search/history/import/export/tray, English-default English/Simplified Chinese, external scan settings/results | Broader toolbar/column/theme customization |
+| Completion scan | Trusted optional tool, staged pre-publication checks, durable requirement/results, bounded cancellable process group, Qt/CLI/detail/waiver controls | Disabled by default, no bundled antivirus/efficacy/network sandbox guarantee, no retroactive published-BT scan |
+| Delivery | Windows local portable/current-user installation and independently hashed offline update/recovery/rollback; Linux native build/private tests/system-library local package | Online discovery/signing/store/clean-system qualification; no Linux installer/updater; current long runs required before release |
 
-当前主干支持 HLS／HTTP-FLV 有界录制、时长／大小上限、手动结束、逐来源登录、代理、额度和扫描；暂停／重启从当前直播重录。HLS 支持非 DRM AES-128、字节范围、fMP4、对齐独立音轨、不连续序列及低延迟完整分片回退，复杂容器需可信本地封装组件。DRM、低延迟部分分片／增量清单、无法对齐的音轨、DASH 直播、RTMP、网页直播解析、受保护媒体绕过尚未实现；macOS 已准备平台适配及 CI，但实际编译／运行尚未验收。Linux 当前仅有明确的系统／架构验收范围。覆盖范围仍须按具体版本逐项验证，这也不构成对外部产品的完整一致性认证。
+Master supports bounded HLS/HTTP-FLV recording, duration/size limits, finish/save, per-origin login, proxies, budgets, and scanning. Pause/restart records current live content afresh. HLS supports non-DRM AES-128, ranges, fMP4, aligned separate audio, discontinuities, and complete-segment low-latency fallback; complex containers need a trusted local muxer. DRM, partial/delta HLS, unaligned audio, DASH live, RTMP, webpage live extraction, and protected-media bypass are unsupported. macOS adapters/CI are prepared but real builds/runtime remain unqualified; Linux qualification is system/architecture-specific. Validate each version; this is not certification of complete equivalence with another product.
 
-## 已有实现与证据边界
+## Implementations and evidence boundaries
 
-| 编号 | 实现入口 | 验证与边界 |
+| ID | Entry point | Validation and boundary |
 |---|---|---|
-| F-01 | 原生 transport、请求高级选项 | HTTP 故障矩阵、重定向／凭据／代理；认证能力见支持矩阵 |
-| F-02 | multi 动态尾段拆分、持久化布局、单流降级 | 实际不均速 Range、布局提交后强制退出／续传、旧布局迁移及 64 位／异常边界；不承诺普遍提速 |
-| F-03 | offset/identity sidecar、SQLite | 实际强制退出恢复、远端身份改变、无 ETag 重下 |
-| F-04 | 单协调器队列注册、设置、队列管理与右键移动／优先级 | 全局／队列／任务限额、公平准入、媒体预留、整批事务移动及暂停意图；历史压力证据须按新版本复验 |
-| F-05 | 历史列表、分类设置、导入导出 | 导入整体验证并预览后逐条持久化，可重试剩余任务；不导出请求头与登录凭据，v2 保留认证需求标记 |
-| F-06（部分） | 命名队列、一次性开始／停止、每周时区窗口、HTTP/FTP/SFTP 及原生直播正文 UTC 日／1～168 小时保守滚动额度、完成动作 | 滚动正文从传输结束起计时，活动预留不提前过期；BT／组件点播媒体严格预算不支持，须选普通队列；站点周期同步须明确开启；手动暂停不会因窗口或额度重开自动恢复；真实休眠唤醒和关机未自动触发 |
-| F-07 | MV3、native host、用户 IPC | 真浏览器接管与回退；最终生产浏览器策略与商店安装待外部验收 |
-| F-07 恢复扩展 | 桌面来源页入口、可信扩展恢复页、十分钟原任务令牌与保存回执 | 实际 Chromium／Firefox 默认及容器 Cookie 恢复、同编号／目标／完整摘要和无重复任务；取消失败与进程阶段由夹具覆盖，隐私／分区 Cookie 和 POST 重放不支持 |
-| F-08 | Qt 窗口、详情、设置、托盘 | 实际控件新增流程和原生截图；多 DPI／多屏人工验收另列 |
-| F-09 | 批量／扩展资源发现、站点项目协调器、原子清单、受控内容处理与不可覆盖发布、Qt／CLI 项目管理 | 有界公开页面／样式／资源、预览后明确启动、同源与类型限制、暂停／重启核对、离线导航、手动更新及 Qt 明确开启的周期完整同步；仅程序运行时执行，次数有界，失败／手动暂停关闭周期 |
-| F-10 | 独立媒体探测端口、共享私密进程通道和统一 adapter；独立原生直播适配器 | 实际 MP4、HLS、DASH、精确格式／容器和音轨合并；公开点播及桌面明确授权的逐来源登录点播，认证 HTTP／SOCKS5；本地媒体启动器阻止探测／后处理网络回退。组件点播恢复重下；TS／AES-128／字节范围 HLS、可选本地封装 fMP4／对齐音轨／不连续序列、低延迟完整分片回退及 HTTP-FLV 有界录制，暂停后从当前直播重录；复杂格式限制见上文 |
-| F-11（部分） | 可选解析组件、组件管理 | 组件缺失／错误可诊断；尚无持续维护的外部站点支持名单与兼容验收 |
-| F-12 | 更新 URL／请求、身份校验 | 同标识不同 URL 不混合缓存；凭据刷新仅进程内生效 |
-| F-13 | SHA、同卷发布、错误状态 | 错误 Range／校验失败不发布，同名不覆盖；完整磁盘异常环境验收另列 |
-| F-14 | 双语、安装／卸载、明确离线升级与恢复／回滚、迁移 | 数据迁移与备份；打包 smoke 移除开发 PATH；回滚仅限安装文件，干净系统仍需独立环境 |
-| F-15（部分） | FTP/FTPS 独立适配器与桌面请求选项 | 本地 FTP/TLS 故障夹具；不含远程目录浏览／递归抓站，详见支持矩阵 |
-| F-17（部分） | 独立 BT 引擎、统一任务、文件选择、做种及隔离 TCP 代理 | 本地 v1/v2/混合种子与磁力、纯 Tracker、恢复及限速做种验证；多源镜像、远程控制、插件及 BT HTTPS／UDP 代理尚未实现 |
-| F-16（部分） | Firefox 150+ 临时扩展、页面面板及本机桥接 | 本地真实浏览器流程已验证；商店签名与生产策略仍需独立验收 |
-| F-18（部分） | Linux 原生 CMake、平台适配器、Qt／CLI／本机消息、本地验收包 | Ubuntu 26.04 x64 用户态及内核 6.9+ 的具体资格见 [Linux 验收](../testing/linux-acceptance.md)；不证明其他发行版／架构或无界面系统服务已交付。macOS 原生适配及双架构 CI 已准备，首次实际结果仍待运行，见 [macOS 验收](../testing/macos-acceptance.md) |
+| F-01 | Native transport/request options | HTTP faults, redirects, credentials/proxies; authentication scope in support matrix |
+| F-02 | Multi tail splitting/durable layout/fallback | Real uneven Range, forced exit after layout commit/resume, legacy migration, 64-bit/error boundaries; no universal speedup |
+| F-03 | Offset/identity sidecars, SQLite | Forced restart, changed resource identity, no-ETag redownload |
+| F-04 | Coordinator queue registry/settings/manage/move/priority | Global/queue/task limits, fairness, media reservations, transactional moves/manual intent; old stress results need current reruns |
+| F-05 | History/categories/import/export | Full preview/validation then individual durable saves/retry; secrets excluded, v2 requirement flags retained |
+| F-06 (partial) | Named queues, one-time start/stop, zoned weekly windows, UTC-day/1–168-hour conservative native/live budgets, completion actions | Rolling charge from attempt end; active reservations never expire early; BT/helper media require ordinary queues; explicit project-cycle opt-in; manual pauses never auto-resume; real sleep/shutdown not triggered |
+| F-07 | MV3/native host/user IPC | Real interception/fallback; production policy/store installation remain external |
+| F-07 recovery | Source-page action, trusted recovery page, ten-minute task token/durable receipt | Real Chromium/Firefox default/container Cookie recovery, same ID/path/full hash/no duplicate; cancellation/process stages also use fixtures; no private/partitioned Cookie or POST replay |
+| F-08 | Qt windows/details/settings/tray | Actual control flows/native screenshots; multi-DPI/screens separate |
+| F-09 | Batch/resources/project coordinator/atomic manifest/content handling/no-replace publish/Qt/CLI | Bounded public page/style/resource work, explicit start, origin/type limits, pause/restart, offline navigation, manual update/explicit finite full sync; app-open only, pause/failure disables cycles |
+| F-10 | Independent inspection/private process/shared adapter and native live engine | Actual MP4/HLS/DASH IDs/containers/audio merge; public/explicit-origin login with authenticated HTTP/SOCKS5, guarded local processing, redownload on resume. TS/AES-128/ranges, optional local fMP4/aligned audio/discontinuities, complete low-latency fallback and HTTP-FLV; live resumes afresh |
+| F-11 (partial) | Optional parser/component management | Missing/broken tools diagnosed; no maintained site compatibility list |
+| F-12 | URL/request refresh/identity checks | Changed URLs cannot mix resource versions; refreshed credentials remain process-local |
+| F-13 | SHA/same-volume publication/error state | Bad ranges/digests never publish; no overwrite; full disk-failure environments separate |
+| F-14 | Bilingual UI/install/uninstall/offline recovery/rollback/migrations | Upgrade backups; smoke removes development PATH; rollback covers files only; clean systems separate |
+| F-15 (partial) | FTP/FTPS adapter/request options | Local FTP/TLS faults; no remote browsing/recursive FTP crawl |
+| F-17 (partial) | Independent BT/unified tasks/selection/seeding/isolated TCP proxies | Local v1/v2/hybrid/magnets/tracker-only metadata/resume/rate-limited seeding; mirrors/remote control/plugins/BT HTTPS/UDP proxies missing |
+| F-16 (partial) | Firefox 150+ temporary extension/panel/native bridge | Real local browser flows; signatures/production policy external |
+| F-18 (partial) | Linux native CMake/adapters/Qt/CLI/native messages/local package | [Linux](../testing/linux-acceptance.md): Ubuntu 26.04 x64 and kernel 6.9+ scope only, not all systems/headless service. [macOS](../testing/macos-acceptance.md) adapters/dual CI prepared, real results pending |
 
-## 上下文增量
+## Context increments
 
-安全凭据存储与上下文应用核心、v2 本机 broker 是分开交付的基础模块：任务归属／去重、路由快照、源站授权和撤销由同一协调线程管理，普通接口只输出当前上下文摘要。已有扩展仍是 v1 独立下载区客户端。系统凭据保存／忘记、环境管理、筛选、新建、重新绑定、撤销／恢复及导入重试已连接真实 Qt 控件并有自动回归。凭据撤销完成后同步清空持久化引用；失败可重试。实际指纹浏览器端签发、多 DPI 和干净系统验收仍不能据此标记完成。
+Native credential storage, actor-owned contexts, and v2 broker composition are separate foundations. One coordinator owns identity/deduplication/route snapshots/source grants/revocation; ordinary interfaces expose only current-context summaries. Existing extensions remain v1 standalone clients. Real Qt/native regressions cover vault save/forget, profile management/filtering/creation/rebind/revoke/reactivate/import retry. Successful revocation clears durable references; failures are retryable. Browser-project issuance, multi-DPI, and clean-system acceptance remain separate.

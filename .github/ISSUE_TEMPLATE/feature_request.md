@@ -1,24 +1,24 @@
 ---
-name: 功能建议
-about: 描述使用场景、功能边界和验收方式
+name: Feature request
+about: Describe the use case, feature boundaries, and acceptance criteria
 title: ''
 ---
 
-## 使用场景
+## Use case
 
-谁在什么情况下需要这个能力？现有流程遇到了什么具体限制？
+Who needs this capability, in what situation, and what specific limitation does the current workflow have?
 
-## 期望行为
+## Expected behavior
 
-描述输入、操作和可观察结果；涉及哪些协议、平台或浏览器？
+Describe the inputs, actions, and observable result. Which protocols, platforms, or browsers are involved?
 
-## 范围与验证
+## Scope and validation
 
-- 最小完整流程：
-- 成功、失败及中断／恢复时的预期：
-- 兼容性、数据或权限影响：
-- 本次不需要的内容：
+- Smallest complete workflow:
+- Expected success, failure, interruption, and recovery behavior:
+- Compatibility, data, or permission impact:
+- Explicit non-goals:
 
-## 现有能力与替代方式
+## Existing capabilities and alternatives
 
-先核对仓库中的 `docs/product/feature-matrix.md`（当前功能与缺口）。说明现有能力或替代流程为什么不能满足需求；不要把规划中或未验收的能力当成已支持。
+Read `docs/product/feature-matrix.md` in the repository first. Explain why existing features or alternative workflows are insufficient. Do not treat planned or unqualified capabilities as already supported.

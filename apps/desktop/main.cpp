@@ -59,8 +59,7 @@ int main(int argc, char** argv) {
     try {
         QSettings settings;
         QTranslator qtTranslation;
-        if (settings.value("language", QLocale::system().language() == QLocale::Chinese ? "zh" : "en")
-                    .toString() == "zh" &&
+        if (settings.value("language", "en").toString() == "zh" &&
             qtTranslation.load("qtbase_zh_CN", QCoreApplication::applicationDirPath() + "/translations"))
             application.installTranslator(&qtTranslation);
         for (const auto& pair :

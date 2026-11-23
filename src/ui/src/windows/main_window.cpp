@@ -44,9 +44,7 @@ class TaskActionBar final : public QToolBar {
 };
 } // namespace
 MainWindow::Impl::Impl(MainWindow* w, DownloadService& s)
-    : window(w), service(s),
-      chinese(settings.value("language", QLocale::system().language() == QLocale::Chinese ? "zh" : "en")
-                  .toString() == "zh") {}
+    : window(w), service(s), chinese(settings.value("language", "en").toString() == "zh") {}
 
 QString MainWindow::Impl::t(const char* en, const char* zh) const {
     return QString::fromUtf8(chinese ? zh : en);
