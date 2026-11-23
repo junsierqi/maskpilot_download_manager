@@ -188,11 +188,21 @@ def child_gone(identity_path, scanner):
         assert ctypes.get_last_error() == 87, 'Cannot inspect the owned scanner descendant'
         return
     try:
+        state = kernel.WaitForSingleObject(handle, 0)
+        assert state in (0, 258), 'Cannot observe the owned scanner descendant'
+        if state == 0:
+            return  # A terminated process no longer needs an inspectable image.
         created, exited, cpu, user = [wintypes.FILETIME() for _ in range(4)]
-        assert kernel.GetProcessTimes(handle, ctypes.byref(created), ctypes.byref(exited), ctypes.byref(cpu), ctypes.byref(user))
+        if not kernel.GetProcessTimes(handle, ctypes.byref(created), ctypes.byref(exited), ctypes.byref(cpu), ctypes.byref(user)):
+            assert kernel.WaitForSingleObject(handle, 3000) == 0, 'Cannot inspect a live scanner descendant'
+            return
         stamp = (created.dwHighDateTime << 32) | created.dwLowDateTime
         path = ctypes.create_unicode_buffer(32768); size = wintypes.DWORD(len(path))
-        assert kernel.QueryFullProcessImageNameW(handle, 0, path, ctypes.byref(size))
+        if not kernel.QueryFullProcessImageNameW(handle, 0, path, ctypes.byref(size)):
+            # Exit can race either identity query. Require exit of this held
+            # handle; a failed query alone never authorizes success or cleanup.
+            assert kernel.WaitForSingleObject(handle, 3000) == 0, 'Cannot inspect a live scanner descendant'
+            return
         if stamp != int(value['created']) or os.path.normcase(path.value) != os.path.normcase(str(scanner)):
             return  # The original owned child already exited; never touch a reused PID.
         state = kernel.WaitForSingleObject(handle, 3000)
