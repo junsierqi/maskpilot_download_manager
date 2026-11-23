@@ -3,6 +3,9 @@
 set -euo pipefail
 cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 test "$(uname -s)" = Darwin
+# Ambient non-system header paths override imported SDK system includes.
+# Keep headers and linked libraries from the explicitly selected native SDK.
+unset CPATH C_INCLUDE_PATH CPLUS_INCLUDE_PATH OBJC_INCLUDE_PATH OBJCPLUS_INCLUDE_PATH
 build=${MASKPILOT_BUILD_DIR:-out/build/macos-clang-release}
 architecture=${MASKPILOT_MACOS_ARCH:-$(uname -m)}
 test "$architecture" = "$(uname -m)"

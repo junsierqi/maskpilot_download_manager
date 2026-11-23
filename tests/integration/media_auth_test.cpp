@@ -152,11 +152,13 @@ TEST(MediaOriginGateway, ActualTlsHandshakeAndEncryptedCredentialsReachOnlyOwned
     X509_gmtime_adj(X509_getm_notBefore(certificate.get()), -60);
     X509_gmtime_adj(X509_getm_notAfter(certificate.get()), 3600);
     ASSERT_EQ(X509_set_pubkey(certificate.get(), key.get()), 1);
-    auto* subject = X509_get_subject_name(certificate.get());
-    ASSERT_EQ(X509_NAME_add_entry_by_txt(subject, "CN", MBSTRING_ASC,
+    std::unique_ptr<X509_NAME, decltype(&X509_NAME_free)> subject(X509_NAME_new(), X509_NAME_free);
+    ASSERT_NE(subject, nullptr);
+    ASSERT_EQ(X509_NAME_add_entry_by_txt(subject.get(), "CN", MBSTRING_ASC,
                                          reinterpret_cast<const unsigned char*>("127.0.0.1"), -1, -1, 0),
               1);
-    ASSERT_EQ(X509_set_issuer_name(certificate.get(), subject), 1);
+    ASSERT_EQ(X509_set_subject_name(certificate.get(), subject.get()), 1);
+    ASSERT_EQ(X509_set_issuer_name(certificate.get(), subject.get()), 1);
     for (const auto& [nid, value] : {std::pair{NID_basic_constraints, "critical,CA:TRUE"},
                                      std::pair{NID_subject_alt_name, "IP:127.0.0.1"}}) {
         std::unique_ptr<X509_EXTENSION, decltype(&X509_EXTENSION_free)> extension(
