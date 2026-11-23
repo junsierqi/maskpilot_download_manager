@@ -45,7 +45,6 @@ jobs:
           python-version: '3.13'
       - name: Install native development dependencies
         run: |
-          brew update
           for sdk_package in cmake ninja pkgconf boost curl libxml2 sqlite googletest openssl@3; do
             sdk_prefix=$(brew --prefix "$sdk_package")
             if [ -d "$sdk_prefix" ]; then
@@ -54,6 +53,7 @@ jobs:
               brew install "$sdk_package"
             fi
           done
+          brew update
           network_ready() {
             network_prefix=$(brew --prefix curl)
             "$network_prefix/bin/curl" --version | python -c '
