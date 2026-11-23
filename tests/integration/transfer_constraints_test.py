@@ -3,6 +3,7 @@ import argparse
 from contextlib import ExitStack, closing
 import hashlib
 import http.server
+import ipaddress
 import os
 from pathlib import Path
 import re
@@ -128,7 +129,11 @@ class VirtualOriginProxy(RecordingProxy):
         super().__init__(kind=kind, mappings={'constraint.invalid': '127.0.0.1'})
 
     def connect_target(self, host, port, command):
-        if port == 80 and (host.lower() == 'constraint.invalid' or host.strip('[]') == '::1'):
+        try:
+            virtual_loopback = ipaddress.IPv6Address(host.strip('[]')) == ipaddress.IPv6Address('::1')
+        except ValueError:
+            virtual_loopback = False
+        if port == 80 and (host.lower() == 'constraint.invalid' or virtual_loopback):
             return super().connect_target('127.0.0.1', self.origin_port, command)
         return super().connect_target(host, port, command)
 
@@ -141,8 +146,8 @@ def row(state):
         return dict(rows[0])
 
 
-def completed(result, target, data, state):
-    assert result.returncode == 0, (result.stdout, result.stderr)
+def completed(result, target, data, state, context=None):
+    assert result.returncode == 0, (context, result.stdout, result.stderr)
     assert target.read_bytes() == data
     saved = row(state)
     assert saved['state'] == 9 and saved['response_url']
@@ -287,13 +292,14 @@ def exercise(executable):
                 stack.callback(proxy.close)
                 result, state, target = run(kind + '-default', 'http://constraint.invalid/redirect-default',
                                             len(SMALL), '--same-origin-redirects', '--proxy', proxy.url())
-                saved = completed(result, target, SMALL, state)
+                saved = completed(result, target, SMALL, state, (kind, 'default', proxy.snapshot()))
                 final = urllib.parse.urlsplit(saved['response_url'])
                 assert final.hostname == 'constraint.invalid' and final.port == 80 and final.path == '/final'
                 result, state, target = run(kind + '-ipv6', 'http://[0:0:0:0:0:0:0:1]/redirect-ipv6',
                                             len(SMALL), '--same-origin-redirects', '--proxy', proxy.url())
-                completed(result, target, SMALL, state)
+                completed(result, target, SMALL, state, (kind, 'ipv6', proxy.snapshot()))
                 assert proxy.snapshot()['destinations']
+                print(f'PASS {kind} virtual default-port and expanded IPv6 routing', flush=True)
             print('PASS actual HTTP/SOCKS routing with default-port/host-case/IPv6 canonical origin equality', flush=True)
     finally:
         for process in processes:

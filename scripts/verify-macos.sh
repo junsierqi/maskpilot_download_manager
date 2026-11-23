@@ -39,7 +39,7 @@ export DYLD_LIBRARY_PATH="$(brew --prefix openssl@3)/lib${DYLD_LIBRARY_PATH:+:$D
 selection='^[A-Z]|macos_platform_product_path|local_http_product_path|ftp_product_path|sftp_product_path|http_post_product_path|native_payload_budget_product_path|completion_scan_product_path|bounded_http_product_path|http_response_metadata_product_path|site_project_product_path|site_project_qt_product_path|native_bridge_product_path|scoped_native_bridge_product_path|browser_recovery_product_path|adaptive_http_product_path|macos_ci_fixture'
 # Catch known native prerequisites early; successful qualification still runs
 # the complete selection below with every original assertion and timeout.
-preflight='^(native_bridge_product_path|DownloadContexts\.ActualHttpAndSocksRoutesCarryOnlyTheirOwnedOriginGrants|TorrentProxy\.PeerOnlyHttpMagnetReportsRejectedTunnelsWithoutBypassingTheProxy|TorrentEngine\.PublishedSeedingUploadsWithLimitAndPausesWithoutRemovingFiles|macos_platform_product_path)$'
+preflight='^(native_bridge_product_path|DownloadContexts\.ActualHttpAndSocksRoutesCarryOnlyTheirOwnedOriginGrants|TorrentProxy\.PeerOnlyHttpMagnetReportsRejectedTunnelsWithoutBypassingTheProxy|TorrentEngine\.PublishedSeedingUploadsWithLimitAndPausesWithoutRemovingFiles|macos_platform_product_path|bounded_http_product_path)$'
 "$python" scripts/macos_test_session.py --platform-executable "$build/tests/maskpilot_macos_platform_tests" -- \
   ctest --test-dir "$build" -R "$preflight" --stop-on-failure --output-on-failure --no-tests=error -j1
 "$python" scripts/macos_test_session.py --platform-executable "$build/tests/maskpilot_macos_platform_tests" -- \
