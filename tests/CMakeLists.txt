@@ -12,6 +12,13 @@ add_dependencies(maskpilot_tests maskpilot)
 target_compile_definitions(maskpilot_tests PRIVATE MASKPILOT_TEST_DESKTOP="$<TARGET_FILE:maskpilot>")
 add_executable(maskpilot_scan_probe support/scan_probe.cpp)
 target_link_libraries(maskpilot_scan_probe PRIVATE Qt6::Core maskpilot_options)
+if(WIN32)
+  # The scanner intentionally inherits no SDK PATH; its runtime must be adjacent.
+  add_custom_command(TARGET maskpilot_scan_probe POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "$<TARGET_FILE:Qt6::Core>" "$<TARGET_FILE_DIR:maskpilot_scan_probe>"
+    VERBATIM)
+endif()
 add_dependencies(maskpilot_tests maskpilot_scan_probe)
 target_compile_definitions(maskpilot_tests PRIVATE MASKPILOT_TEST_SCAN_PROBE="$<TARGET_FILE:maskpilot_scan_probe>")
 target_sources(maskpilot_tests PRIVATE unit/queue_test.cpp integration/queue_store_test.cpp unit/queue_ui_test.cpp)

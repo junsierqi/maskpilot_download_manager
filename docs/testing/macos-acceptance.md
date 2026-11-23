@@ -8,7 +8,9 @@ Native configuration, Apple adapters, and executable CI entry points are prepare
 
 Push/pull request triggers `.github/workflows/macos.yml`; Actions → macOS → Run workflow also starts it manually. Jobs use `macos-15` (arm64) and `macos-15-intel` (x86_64) and verify native architecture. Either failure needs repair. No Apple developer account/signing secret is required.
 
-Jobs install Qt 6.11.3, native development dependencies, and Python/Node tools, then build all CMake targets. Fetching the checksum-pinned BT source adds initial time. Actual system/Homebrew versions are recorded in `macos-sdk.txt`; these are not a frozen release toolchain.
+Jobs explicitly select Xcode 26.3 through `DEVELOPER_DIR`, install Qt 6.11.3, native development dependencies, and Python/Node tools, then build all CMake targets. Fetching the checksum-pinned BT source adds initial time. Actual system/Homebrew versions are recorded in `macos-sdk.txt`; these are not a frozen release toolchain.
+
+The first hosted runs failed with the runner's default Xcode 16.4 because its C++ library did not expose `std::jthread`/`std::stop_token`. Xcode 26 or newer is required for their stable implementation; experimental-library flags are not used. CMake checks compilation/linking before dependency setup and reports an unsupported SDK directly. Selecting a newer SDK is a repair awaiting a successful native rerun, not proof of platform acceptance.
 
 ## Automated scope
 
@@ -27,7 +29,7 @@ Successful `*-unpackaged.tar.gz` output is an inspection build requiring the bui
 
 ## Manual native build
 
-Install Xcode command-line tools, Qt 6.11.3, and development packages `cmake ninja pkgconf boost curl libxml2 sqlite googletest openssl@3`. Point `QT_ROOT_DIR` at a compatible native Qt SDK:
+Install Xcode 26 or newer with its command-line tools, Qt 6.11.3, and development packages `cmake ninja pkgconf boost curl libxml2 sqlite googletest openssl@3`. Select that Xcode through `DEVELOPER_DIR` (CI uses `/Applications/Xcode_26.3.app/Contents/Developer`) before creating a fresh build directory, and point `QT_ROOT_DIR` at a compatible native Qt SDK:
 
 ```bash
 python3 -m venv out/python-macos

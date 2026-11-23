@@ -24,8 +24,9 @@ jobs:
     env:
       HOMEBREW_NO_AUTO_UPDATE: '1'
       MASKPILOT_MACOS_ARCH: ${{ matrix.arch }}
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: jurplel/install-qt-action@v4
         with:
           version: '6.11.3'
@@ -33,10 +34,10 @@ jobs:
           aqtsource: 'git+https://github.com/miurahr/aqtinstall.git@5a49f2b391ae8ee1d3c0dd87f8b33c1d49a4deb7'
           archives: 'qtbase qtsvg qttools qttranslations'
           cache: true
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: '22'
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
       - name: Install native development dependencies
@@ -53,7 +54,7 @@ jobs:
           export PYTHON="$PWD/out/python-macos/bin/python"
           trap 'tail -n 120 out/qa/macos-ci.log' EXIT
           bash scripts/verify-macos.sh > out/qa/macos-ci.log 2>&1
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: macos-${{ matrix.arch }}-qualification

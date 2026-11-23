@@ -540,7 +540,11 @@ TEST(QueueUi, RealHttpQueuesPauseEnableWithoutResumingManualTasks) {
     widget<QAction>(&window, "resumeTasksAction")->trigger();
     ASSERT_TRUE(
         untilGui([&] { return store.task(workId).downloaded > 0 && store.task(otherId).downloaded > 0; }));
-    ASSERT_TRUE(selectTask(window, otherId));
+    // Service progress can precede the next table refresh. A disabled QAction
+    // ignores trigger(), so wait for the same enabled control a user can click.
+    ASSERT_TRUE(untilGui([&] {
+        return selectTask(window, otherId) && widget<QAction>(&window, "pauseTasksAction")->isEnabled();
+    }));
     widget<QAction>(&window, "pauseTasksAction")->trigger();
     ASSERT_TRUE(untilGui([&] { return store.task(otherId).state == TaskState::Paused; }));
     EXPECT_EQ(store.task(otherId).runIntent, RunIntent::Paused);

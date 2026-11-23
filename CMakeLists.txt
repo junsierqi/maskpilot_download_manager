@@ -9,6 +9,21 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 include(CTest)
+if(APPLE)
+  include(CheckCXXSourceCompiles)
+  check_cxx_source_compiles("#include <thread>
+    #include <stop_token>
+    int main() {
+      std::stop_source source;
+      std::jthread worker([](std::stop_token) {});
+      source.request_stop();
+      worker.request_stop();
+      worker.join();
+    }" MASKPILOT_HAS_CXX20_STOP_THREADS)
+  if(NOT MASKPILOT_HAS_CXX20_STOP_THREADS)
+    message(FATAL_ERROR "The selected macOS C++ library lacks std::jthread/stop_token. Select Xcode 26 or newer with DEVELOPER_DIR before configuring a fresh build directory.")
+  endif()
+endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   include(cmake/LinuxDependencies.cmake)
 elseif(APPLE)
