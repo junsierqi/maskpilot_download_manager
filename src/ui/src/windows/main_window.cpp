@@ -18,12 +18,11 @@ class TaskFilterBar final : public QWidget {
         filters->setSpacing(10);
         filters->addWidget(profiles);
         filters->addWidget(queues);
-        filters->addStretch();
         layout_ = new QBoxLayout(QBoxLayout::LeftToRight, this);
         layout_->setContentsMargins(0, 0, 0, 0);
         layout_->setSpacing(12);
         layout_->addWidget(search, 1);
-        layout_->addWidget(group, 1);
+        layout_->addWidget(group, 0, Qt::AlignRight);
     }
 
   protected:
@@ -31,8 +30,7 @@ class TaskFilterBar final : public QWidget {
         QWidget::resizeEvent(event);
         const bool compact = width() < 720;
         layout_->setDirection(compact ? QBoxLayout::TopToBottom : QBoxLayout::LeftToRight);
-        search_->setMinimumWidth(compact ? std::min(360, width()) : 180);
-        layout_->setAlignment(search_, compact ? Qt::Alignment(Qt::AlignLeft) : Qt::Alignment{});
+        search_->setMinimumWidth(compact ? std::min(180, width()) : 180);
     }
 };
 
@@ -350,7 +348,6 @@ MainWindow::MainWindow(DownloadService& service, QWidget* parent)
     p.search->setAccessibleName(p.t("Search downloads", "搜索下载任务"));
     p.search->setClearButtonEnabled(true);
     p.search->setMinimumWidth(180);
-    p.search->setMaximumWidth(360);
     p.contextFilter = new QComboBox;
     p.contextFilter->setObjectName("contextFilter");
     p.contextFilter->setMinimumWidth(140);
