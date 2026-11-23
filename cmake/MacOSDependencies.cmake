@@ -28,7 +28,10 @@ int main() {
 }" MASKPILOT_CRYPTO_SDK_MATCH)
 cmake_pop_check_state()
 if(NOT MASKPILOT_CRYPTO_SDK_MATCH)
-  message(FATAL_ERROR "Native crypto headers and runtime must match. Clear inherited header search paths and select a consistent OpenSSL SDK; inspect CMakeConfigureLog.yaml.")
+  message(FATAL_ERROR
+    "Native crypto headers and runtime must match. "
+    "Select an explicit macOS SDK (CMAKE_OSX_SYSROOT=macosx), clear inherited header search paths, "
+    "and use a consistent OpenSSL SDK; inspect CMakeConfigureLog.yaml.")
 endif()
 include("${CMAKE_CURRENT_LIST_DIR}/TorrentDependency.cmake")
 maskpilot_find_torrent()
