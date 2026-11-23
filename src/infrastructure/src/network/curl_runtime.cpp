@@ -15,6 +15,10 @@ void initializeCurl() {
         if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK)
             return "Cannot initialize native networking.";
         const auto* version = curl_version_info(CURLVERSION_NOW);
+#ifdef __APPLE__
+        if (version->version_num < 0x081600)
+            return "The macOS network runtime requires version 8.22 or newer for IPv6 proxy routing.";
+#endif
         for (const auto* protocol = version->protocols; protocol && *protocol; ++protocol)
             if (std::string_view(*protocol) == "sftp")
                 return {};

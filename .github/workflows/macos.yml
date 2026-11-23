@@ -41,7 +41,10 @@ jobs:
         with:
           python-version: '3.13'
       - name: Install native development dependencies
-        run: brew install cmake ninja pkgconf boost curl libxml2 sqlite googletest openssl@3
+        run: |
+          brew update
+          brew install cmake ninja pkgconf boost curl libxml2 sqlite googletest openssl@3
+          brew upgrade curl
       - name: Prepare isolated Python test tools
         run: |
           python -m venv out/python-macos

@@ -2,13 +2,15 @@
 
 ## Current status
 
-Native configuration, Apple adapters, and executable CI entry points are prepared. Hosted compilation passes with Xcode 26.3, but **native runtime acceptance remains incomplete**: arm64 improved from 262/319 at `114848e` to 316/320 at `ce167b1`; all five prerequisite cases pass at `6febb95`, followed by a 30-second isolated vault qualification failure. Follow-up fixes require a fresh run on both architectures. Windows regression or Python simulations do not qualify macOS. Formal release, signing, online updates, and complete media/browser compatibility are not claimed.
+Native configuration, Apple adapters, and executable CI entry points are prepared. Hosted compilation passes with Xcode 26.3, but **dual-architecture runtime acceptance remains incomplete**: arm64 passes 320/320 at `2756eef`; Intel passes 319/320, with an IPv6 HTTP-proxy failure on its older network SDK. Updated native prerequisites require a fresh run on both architectures. Windows regression or Python simulations do not qualify macOS. Formal release, signing, online updates, and complete media/browser compatibility are not claimed.
 
 ## After pushing
 
 Push/pull request triggers `.github/workflows/macos.yml`; Actions → macOS → Run workflow also starts it manually. Jobs use `macos-15` (arm64) and `macos-15-intel` (x86_64) and verify native architecture. Either failure needs repair. No Apple developer account/signing secret is required.
 
 Jobs explicitly select Xcode 26.3 through `DEVELOPER_DIR`, install Qt 6.11.3, native development dependencies, and Python/Node tools, then build all CMake targets. Fetching the checksum-pinned BT source adds initial time. Actual system/Homebrew versions are recorded in `macos-sdk.txt`; these are not a frozen release toolchain.
+
+Native configuration and the loaded macOS network runtime require version 8.22 or newer. Older runner images can retain 8.21 despite a normal package install; CI explicitly refreshes package metadata and upgrades `curl`. This avoids a known IPv6 forward-proxy request-construction failure. The original expanded-address HTTP/SOCKS tests remain mandatory; a failed test can print a bounded owned-client comparison without credential/header/body logging.
 
 The first hosted runs failed with the runner's default Xcode 16.4 because its C++ library did not expose `std::jthread`/`std::stop_token`. Xcode 26 or newer is required for their stable implementation; experimental-library flags are not used. CMake checks compilation/linking before dependency setup and reports an unsupported SDK directly. Selecting a newer SDK is a repair awaiting a successful native rerun, not proof of platform acceptance.
 
@@ -33,7 +35,7 @@ Successful `*-unpackaged.tar.gz` output is an inspection build requiring the bui
 
 ## Manual native build
 
-Install Xcode 26 or newer with its command-line tools, Qt 6.11.3, and development packages `cmake ninja pkgconf boost curl libxml2 sqlite googletest openssl@3`. Select that Xcode through `DEVELOPER_DIR` (CI uses `/Applications/Xcode_26.3.app/Contents/Developer`) before creating a fresh build directory, and point `QT_ROOT_DIR` at a compatible native Qt SDK:
+Install Xcode 26 or newer with its command-line tools, Qt 6.11.3, and development packages `cmake ninja pkgconf boost curl libxml2 sqlite googletest openssl@3`, including `curl` 8.22 or newer. Refresh package metadata and upgrade that package if an existing installation is older. Select that Xcode through `DEVELOPER_DIR` (CI uses `/Applications/Xcode_26.3.app/Contents/Developer`) before creating a fresh build directory, and point `QT_ROOT_DIR` at a compatible native Qt SDK:
 
 ```bash
 python3 -m venv out/python-macos

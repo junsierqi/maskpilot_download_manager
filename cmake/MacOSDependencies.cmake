@@ -2,7 +2,7 @@
 if(NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")
   message(FATAL_ERROR "macOS dependencies require a native Darwin toolchain")
 endif()
-find_package(CURL REQUIRED COMPONENTS HTTP HTTPS FTP FTPS SFTP)
+find_package(CURL 8.22 REQUIRED COMPONENTS HTTP HTTPS FTP FTPS SFTP)
 find_package(SQLite3 REQUIRED)
 if(NOT TARGET unofficial::sqlite3::sqlite3)
   add_library(unofficial::sqlite3::sqlite3 ALIAS SQLite::SQLite3)
