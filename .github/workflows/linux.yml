@@ -20,15 +20,15 @@ jobs:
         run: |
           useradd --create-home --uid 10001 builder
           chown -R 10001:10001 "$GITHUB_WORKSPACE"
-          runuser -u builder -- sh -c '
-            set -eu
+          runuser -u builder -- bash -c '
+            set -euo pipefail
             python3 -m venv out/python-linux
             out/python-linux/bin/python -m pip install -r tests/requirements.txt yt-dlp==2026.10.26
             mkdir -p out/qa
             export PATH="$PWD/out/python-linux/bin:/usr/local/bin:/usr/bin:/bin"
             export PYTHON="$PWD/out/python-linux/bin/python"
             trap "tail -n 100 out/qa/linux-ci.log" EXIT
-            tini -s -- sh scripts/verify-linux.sh > out/qa/linux-ci.log 2>&1
+            tini -s -- sh scripts/verify-linux.sh 2>&1 | tee out/qa/linux-ci.log
           '
       - uses: actions/upload-artifact@v6
         if: always()

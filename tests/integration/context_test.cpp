@@ -715,11 +715,22 @@ struct OwnedChild {
         if (!process.waitForStarted(5000))
             throw std::runtime_error("Owned Python fixture did not start");
         const auto deadline = std::chrono::steady_clock::now() + 5s;
-        while (!process.canReadLine() && std::chrono::steady_clock::now() < deadline)
+        QByteArray output;
+        while (!output.contains('\n') && output.size() <= 4096 &&
+               std::chrono::steady_clock::now() < deadline) {
             process.waitForReadyRead(100);
-        const auto object = QJsonDocument::fromJson(process.readLine()).object();
-        if (object.isEmpty())
-            throw std::runtime_error("Owned Python fixture did not publish its endpoint");
+            output += process.readAllStandardOutput();
+            if (process.state() == QProcess::NotRunning)
+                break;
+        }
+        const auto object = QJsonDocument::fromJson(output).object();
+        if (output.size() > 4096 || object.isEmpty())
+            throw std::runtime_error(std::string("Owned Python ") + label +
+                                     " fixture did not publish its endpoint; state=" +
+                                     std::to_string(static_cast<int>(process.state())) +
+                                     "; error=" + process.errorString().toStdString() +
+                                     "; stdout=" + output.left(4096).toStdString() +
+                                     "; stderr=" + process.readAllStandardError().left(4096).toStdString());
         return object;
     }
 };

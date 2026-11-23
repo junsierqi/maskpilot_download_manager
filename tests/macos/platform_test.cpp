@@ -1,3 +1,4 @@
+#include "../../src/infrastructure/src/filesystem/platform_paths.h"
 #include "../../src/infrastructure/src/process/owned_process.h"
 #include <QCoreApplication>
 #include <QElapsedTimer>
@@ -19,6 +20,22 @@ using namespace maskpilot;
 namespace {
 std::string id() { return QUuid::createUuid().toString(QUuid::Id128).toStdString(); }
 const ProxyCredentials credentials{"owned-macos-user", "owned-test-secret-中文"};
+
+TEST(MacPaths, OnlyVerifiedSystemDirectoryAliasesAreAllowed) {
+    EXPECT_TRUE(platform_paths::isSystemDirectoryAlias("/var"));
+    EXPECT_TRUE(platform_paths::isSystemDirectoryAlias("/tmp"));
+    EXPECT_FALSE(platform_paths::isSystemDirectoryAlias("/private/var"));
+    EXPECT_FALSE(platform_paths::isSystemDirectoryAlias("/var/folders"));
+    EXPECT_FALSE(platform_paths::isSystemDirectoryAlias("/var/../tmp"));
+    QTemporaryDir temporary;
+    ASSERT_TRUE(temporary.isValid());
+    const auto root = std::filesystem::path(temporary.path().toStdU16String());
+    std::filesystem::create_directory(root / "owned");
+    std::filesystem::create_directory_symlink(root / "owned", root / "user-link");
+    EXPECT_FALSE(platform_paths::isSystemDirectoryAlias(root / "user-link"));
+    std::filesystem::create_directory_symlink(root / "owned", root / "var");
+    EXPECT_FALSE(platform_paths::isSystemDirectoryAlias(root / "var"));
+}
 template <class F> void bindingFailure(F action) {
     try {
         action();

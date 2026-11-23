@@ -1,3 +1,4 @@
+#include "../filesystem/platform_paths.h"
 #include "../process/owned_process.h"
 #include <QDir>
 #include <QFileInfo>
@@ -39,7 +40,7 @@ void safePath(const fs::path& path) {
     fs::path part;
     for (const auto& component : path) {
         part /= component;
-        if (fs::is_symlink(fs::symlink_status(part)))
+        if (fs::is_symlink(fs::symlink_status(part)) && !platform_paths::isSystemDirectoryAlias(part))
             throw std::invalid_argument("Scanner paths cannot traverse links.");
 #ifdef _WIN32
         const auto attributes = GetFileAttributesW(part.c_str());

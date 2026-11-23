@@ -1,3 +1,4 @@
+#include "../filesystem/platform_paths.h"
 #include <QCryptographicHash>
 #include <QFile>
 #include <QJsonArray>
@@ -39,7 +40,7 @@ void safe(const fs::path& path) {
         const auto status = fs::symlink_status(current, error);
         if (error == std::errc::no_such_file_or_directory)
             continue;
-        if (error || fs::is_symlink(status))
+        if (error || (fs::is_symlink(status) && !platform_paths::isSystemDirectoryAlias(current)))
             reject();
 #ifdef _WIN32
         const auto attributes = GetFileAttributesW(current.c_str());

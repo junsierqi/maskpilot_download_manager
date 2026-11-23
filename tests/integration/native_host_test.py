@@ -158,7 +158,7 @@ def run(host,desktop,parser=None,muxer=None):
             if os.name != 'nt':
                 config_path=isolated/'native-bridge.json'
                 config=json.loads(config_path.read_text())
-                manifest=root/'registered-manifest.json'
+                manifest=root/('com.maskpilot.downloads.firefox.json' if sys.platform=='darwin' else 'registered-manifest.json')
                 gecko='downloads@maskpilot.invalid'
                 manifest.write_text(json.dumps(dict(name='com.maskpilot.downloads',type='stdio',
                     path=str(test_host),allowed_extensions=[gecko])))
@@ -170,7 +170,7 @@ def run(host,desktop,parser=None,muxer=None):
                         capture_output=True,env=environment,timeout=10)
                 good=firefox(manifest,gecko)
                 assert good.returncode==0 and json.loads(good.stdout[4:])['ok'],good.stderr
-                assert firefox(root/'REGISTERED-manifest.json',gecko).returncode!=0
+                assert firefox(manifest.with_name(manifest.name.upper()),gecko).returncode!=0
                 assert firefox(manifest,'unregistered@example.invalid').returncode!=0
                 saved=manifest.read_text();manifest.unlink()
                 actual=root/'actual-manifest.json';actual.write_text(saved)

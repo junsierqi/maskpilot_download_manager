@@ -2,7 +2,7 @@
 
 ## Current status
 
-Native configuration, Apple adapters, and executable CI entry points are prepared. There is no local Mac environment; **real compilation/runtime results remain pending GitHub execution**. Windows regression or Python simulations do not qualify macOS. Formal release, signing, online updates, and complete media/browser compatibility are not claimed.
+Native configuration, Apple adapters, and executable CI entry points are prepared. Hosted arm64 compilation passed at `114848e` with Xcode 26.3, but **native runtime acceptance remains incomplete**: 262/319 selected cases passed and 57 failed, mainly because system temporary-directory aliases were rejected. Follow-up fixes require a fresh native run on both architectures. Windows regression or Python simulations do not qualify macOS. Formal release, signing, online updates, and complete media/browser compatibility are not claimed.
 
 ## After pushing
 

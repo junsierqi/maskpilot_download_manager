@@ -1,3 +1,4 @@
+#include "../filesystem/platform_paths.h"
 #include "../filesystem/transfer_files.h"
 #include "torrent_internal.h"
 #include <algorithm>
@@ -101,7 +102,8 @@ void noReparse(const std::filesystem::path& path) {
             throw std::runtime_error("Cannot inspect torrent storage ownership.");
 #else
         std::error_code error;
-        if (std::filesystem::is_symlink(std::filesystem::symlink_status(cursor, error)))
+        if (std::filesystem::is_symlink(std::filesystem::symlink_status(cursor, error)) &&
+            !platform_paths::isSystemDirectoryAlias(cursor))
             throw std::runtime_error("Torrent storage cannot contain symbolic links.");
 #endif
         const auto parent = cursor.parent_path();

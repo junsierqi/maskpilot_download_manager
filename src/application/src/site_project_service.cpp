@@ -123,6 +123,7 @@ struct SiteProjectService::Impl {
     mutable std::mutex viewMutex;
     std::vector<SiteProjectSummary> summaries;
     std::map<std::string, std::shared_ptr<const SiteProject>> details;
+    std::set<std::string> dirtyDetails;
     std::string storageError;
     std::atomic_int pending = 0;
     std::atomic_bool unfinished = false;
@@ -155,6 +156,20 @@ struct SiteProjectService::Impl {
             thread.join();
     }
     void publishView() {
+        decltype(details) nextDetails;
+        {
+            std::lock_guard lock(viewMutex);
+            nextDetails = details;
+        }
+        // save() may persist a replacement before it is installed in projects.
+        // Readers see only committed coordinator state, in one detail/summary frame.
+        for (const auto& id : dirtyDetails) {
+            const auto found = projects.find(id);
+            if (found == projects.end())
+                nextDetails.erase(id);
+            else
+                nextDetails[id] = std::make_shared<const SiteProject>(found->second);
+        }
         std::vector<SiteProjectSummary> output;
         bool any = false;
         for (const auto& [id, project] : projects) {
@@ -187,8 +202,10 @@ struct SiteProjectService::Impl {
         }
         {
             std::lock_guard lock(viewMutex);
+            details.swap(nextDetails);
             summaries = std::move(output);
         }
+        dirtyDetails.clear();
         unfinished = any || !storageError.empty() || pending.load() != 0;
     }
     void save(SiteProject& project) {
@@ -207,11 +224,7 @@ struct SiteProjectService::Impl {
             publishView();
             throw;
         }
-        {
-            std::lock_guard lock(viewMutex);
-            details[project.id] = std::make_shared<const SiteProject>(project);
-        }
-        publishView();
+        dirtyDetails.insert(project.id);
     }
     SiteProject& find(const std::string& id, std::int64_t revision) {
         if (!storageError.empty())
@@ -950,10 +963,7 @@ std::future<void> SiteProjectService::removeHistory(std::string id, std::int64_t
         p->progressSaved.erase(id);
         p->projects.erase(id);
         p->credentials.erase(id);
-        {
-            std::lock_guard lock(p->viewMutex);
-            p->details.erase(id);
-        }
+        p->dirtyDetails.insert(id);
     });
 }
 std::future<std::filesystem::path> SiteProjectService::openPath(std::string id) {

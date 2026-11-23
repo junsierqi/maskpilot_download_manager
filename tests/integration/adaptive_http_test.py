@@ -104,6 +104,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             # observed before a fast response can trigger early repartitioning.
             assert initial[1].wait(10), 'Initial Range workers never reached the owned origin'
         slow_start = TOTAL * 7 // 8 if self.path.startswith('/eight/') else TOTAL // 2
+        next_due = time.monotonic()
         try:
             for offset in range(begin, end + 1, 16384):
                 length = min(16384, end + 1 - offset)
@@ -112,7 +113,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 with self.server.lock:
                     item['sent'] += length
                 if not probe and begin >= slow_start:
-                    time.sleep(.008)
+                    next_due += .008
+                    # Preserve the intended rate without accumulating OS sleep jitter.
+                    time.sleep(max(0, next_due - time.monotonic()))
         except (ConnectionError, OSError):
             with self.server.lock:
                 item['abandoned'] = True

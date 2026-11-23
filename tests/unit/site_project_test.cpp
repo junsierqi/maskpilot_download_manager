@@ -1,6 +1,7 @@
 #include <QApplication>
 #include <QDialog>
 #include <QSettings>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <fstream>
@@ -198,6 +199,35 @@ struct ProjectFaultRig {
     }
 };
 } // namespace
+
+TEST(SiteProjectViews, CompletedDetailNeverPrecedesItsCommittedSummary) {
+    ProjectFaultRig rig;
+    // Keep other legal histories visible while a reader observes publication.
+    for (int n = 0; n < 31; ++n)
+        rig.create();
+    const auto id = rig.create();
+    rig.projects->preview(id, 1).get();
+    ASSERT_TRUE(awaitProject([&] { return rig.state(id, SiteProjectState::PreviewReady); }));
+    rig.projects->start(id, 1).get();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(4);
+    bool completed = false;
+    while (std::chrono::steady_clock::now() < deadline) {
+        const auto detail = rig.projects->inspect(id);
+        if (detail && detail->state == SiteProjectState::Completed) {
+            const auto summaries = rig.projects->snapshot();
+            const auto summary = std::find_if(summaries.begin(), summaries.end(),
+                                              [&](const auto& value) { return value.id == id; });
+            ASSERT_NE(summary, summaries.end());
+            ASSERT_TRUE(detail->published);
+            EXPECT_EQ(summary->state, SiteProjectState::Completed);
+            EXPECT_EQ(summary->publishedRevision, detail->published->revision);
+            completed = true;
+            break;
+        }
+        std::this_thread::yield();
+    }
+    EXPECT_TRUE(completed) << rig.diagnostics(id);
+}
 
 TEST(SiteProjectSynchronization, FiniteRunsCoalesceForwardJumpsAndDeferClockRollback) {
     ProjectFaultRig rig;

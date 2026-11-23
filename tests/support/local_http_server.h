@@ -1,5 +1,6 @@
 #pragma once
 #include <QByteArray>
+#include <QElapsedTimer>
 #include <QHostAddress>
 #include <QPointer>
 #include <QRegularExpression>
@@ -86,21 +87,30 @@ class LocalHttpServer final : public QObject {
                         return;
                     }
                     auto position = std::make_shared<qint64>(begin);
+                    auto elapsed = std::make_shared<QElapsedTimer>();
+                    elapsed->start();
                     auto* tick = new QTimer(socket);
+                    tick->setTimerType(Qt::PreciseTimer);
                     tick->setInterval(5);
-                    connect(tick, &QTimer::timeout, socket, [this, socket, position, end, tick] {
-                        if (socket->state() != QAbstractSocket::ConnectedState) {
-                            tick->stop();
-                            return;
-                        }
-                        const auto count = std::min<qint64>(1024, end - *position + 1);
-                        socket->write(data_.constData() + *position, count);
-                        *position += count;
-                        if (*position > end) {
-                            tick->stop();
-                            socket->disconnectFromHost();
-                        }
-                    });
+                    connect(tick, &QTimer::timeout, socket,
+                            [this, socket, position, elapsed, begin, end, tick] {
+                                if (socket->state() != QAbstractSocket::ConnectedState) {
+                                    tick->stop();
+                                    return;
+                                }
+                                // Keep the intended 1024 bytes/5ms rate when an event loop
+                                // coalesces timer callbacks; bound each catch-up write.
+                                const auto due = (elapsed->elapsed() / 5) * 1024 - (*position - begin);
+                                const auto count = std::min<qint64>({due, 16 * 1024, end - *position + 1});
+                                if (count <= 0)
+                                    return;
+                                socket->write(data_.constData() + *position, count);
+                                *position += count;
+                                if (*position > end) {
+                                    tick->stop();
+                                    socket->disconnectFromHost();
+                                }
+                            });
                     tick->start();
                 });
             }
