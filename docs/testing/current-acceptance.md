@@ -2,7 +2,7 @@
 
 This record qualifies a local validation candidate, not a formal release. Historical 0.2.0/0.3.0 packages keep their original evidence; they do not qualify newer code.
 
-Status on 2026-11-25: **in progress**. The full long-duration gate and formal browser integration remain open.
+Status on 2026-11-25: **in progress**. The original native cohort passed its full long-duration gate. Windows FTPS interoperability repair remains open; actual eD2k support is queued after existing-feature acceptance, followed by formal browser integration and maintained site compatibility.
 
 ## Candidate and verified scope
 
@@ -20,7 +20,20 @@ Native source is bound to commit d36b711112e852989e535878d800574d8dfd9ab1. The W
 
 ## Long-duration acceptance
 
-Pending actual completion. A five-minute preflight precedes the full 28,800-second run with local HTTP and synthetic media. Acceptance retains original duration, concurrency, integrity, pause/resume, memory, latency and cleanup requirements. Neither a short nor an interrupted run qualifies. Exact runtime modules and source/helper manifests must match before and after execution.
+The original native cohort completed 28,803.07 seconds of local HTTP and periodic synthetic MP4/HLS/DASH load after its five-minute preflight. All original thresholds passed:
+
+| Observation | Actual result |
+|---|---:|
+| Verified files / transfer cycles | 93,900 / 939 |
+| Pause/resume operations | 2,811 |
+| Peak active tasks / segment layouts checked | 8 / 93,900 |
+| Media cycles / resource samples | 94 / 26,215 |
+| Private / working memory peaks | 29.48 / 52.18 MiB |
+| Private-memory quarter drift | 2.93 MiB; limit below 64 MiB |
+| IPC latency p95 | 18.63 ms; limit below 200 ms |
+| Maximum sample gap | 13.34 s; limit 30 s |
+
+All 23 mapped runtime modules were checked before and after load. The source/runtime/helper baseline verified before launch and after cleanup; the owned process exited and temporary workload files were removed. The coordinator exited successfully. Native source is the exact `d36b711` cohort above; later test/document commits did not change those application inputs. This qualifies the bounded HTTP/synthetic-media workload, not long-running FTPS, all public sites or a future repaired binary. A native repair requires its own candidate baseline and acceptance.
 
 ## Boundaries and retained failures
 
@@ -28,7 +41,7 @@ The Linux test server's Docker storage is read-only. A resource-limit update was
 
 Diagnostic commit `09baeb6` again passed Linux and both Mac architectures. Windows passed 339/341: the strict FTPS receiver recorded four TLS 1.3 data connections without session resumption, rejected each before sending payload, and completed TLS shutdown. The cause of missing resumption remains unproven. The second failure was HTTP recovery's nonzero-Range assertion. A controlled real-client counterexample confirmed that the test observer could accept a temporary `offset-0.new` before any checkpoint was committed. Commit `fc175ad` restricts observation to committed checkpoint names and matching part lengths; the original complete recovery test passed locally, preserving its Range and integrity assertions. This does not prove the exact observer state in the earlier CI failure.
 
-Commit `c8d177d` adds bounded, certificate-verified system-client controls only after the original strict FTPS assertion fails. Linux passed 330 native and 48 extension cases; macOS ARM passed 321 native cases, six prerequisites and 48 extension cases. Intel is pending. Windows passed 340/341 in 743.41 seconds: HTTP recovery passed, while strict FTPS still failed. On that Windows Server 2022 host (build 20348), the native client and independent system client both negotiated TLS 1.3 without data-session resumption and received zero payload. The system client's default and minimum-TLS-1.2 cases failed; exactly TLS 1.2 resumed successfully and transferred all 8,388,864 bytes with certificate verification. This establishes a shared interoperability failure in the tested configuration, not its precise underlying cause.
+Commit `c8d177d` adds bounded, certificate-verified system-client controls only after the original strict FTPS assertion fails. Linux passed 330 native and 48 extension cases; both Mac architectures passed 321 native cases, six prerequisites and 48 extension cases. The [Intel run](https://github.com/junsierqi/maskpilot_download_manager/actions/runs/45624538807/job/139241134913) completed its main selection in 1032.47 seconds. Windows passed 340/341 in 743.41 seconds: HTTP recovery passed, while strict FTPS still failed. On that Windows Server 2022 host (build 20348), the native client and independent system client both negotiated TLS 1.3 without data-session resumption and received zero payload. The system client's default and minimum-TLS-1.2 cases failed; exactly TLS 1.2 resumed successfully and transferred all 8,388,864 bytes with certificate verification. This establishes a shared interoperability failure in the tested configuration, not its precise underlying cause.
 
 A separate mandatory native TLS 1.2 matrix now precedes the unchanged default-negotiation cases. Both explicit and implicit modes retain exact content, session resumption, unknown-CA refusal and hostname refusal. The complete expanded fixture passed locally in 43.21 seconds using Python 3.13.17. Its hosted result is pending. A passing compatibility case cannot qualify a failing default-negotiation transfer; no application TLS policy, trust check, retry limit or deadline has changed.
 
