@@ -49,6 +49,11 @@ def desktop_autostart(host,desktop,root,environment):
     copied_desktop=directory/('maskpilot.exe' if os.name=='nt' else 'maskpilot');shutil.copy2(desktop,copied_desktop)
     if (desktop.parent/'lib').is_dir():
         shutil.copytree(desktop.parent/'lib',directory/'lib')
+    # Preserve deployed plugin discovery when relocating the autostart fixture.
+    if (desktop.parent/'plugins').is_dir():
+        shutil.copytree(desktop.parent/'plugins',directory/'plugins')
+    if (desktop.parent/'qt.conf').is_file():
+        shutil.copy2(desktop.parent/'qt.conf',directory/'qt.conf')
     data=directory/'data'
     (directory/'native-bridge.json').write_text(json.dumps(dict(allowedOrigins=[ORIGIN],dataDirectory=str(data))))
     try:
