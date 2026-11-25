@@ -17,10 +17,13 @@ jobs:
         include:
           - runner: macos-15
             arch: arm64
+            timeout: 90
           - runner: macos-15-intel
             arch: x86_64
+            timeout: 150
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 90
+    # Cold Intel SDK source builds need time before the complete native tests.
+    timeout-minutes: ${{ matrix.timeout }}
     env:
       HOMEBREW_NO_AUTO_UPDATE: '1'
       HOMEBREW_NO_INSTALL_UPGRADE: '1'
