@@ -34,6 +34,7 @@ class Server(socketserver.ThreadingTCPServer):
         self.require_tls_session_reuse = require_tls_session_reuse
         self.tls_session_reuse = []
         self.tls_reuse_rejections = 0
+        self.tls_data_events = []
         self.context = None
         if certificate:
             self.context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -176,6 +177,7 @@ class Handler(socketserver.BaseRequestHandler):
                     self.server.transfers.append((name, offset, isinstance(control, ssl.SSLSocket), protected))
                     reply('150 Opening data connection')
                     data = None
+                    receipt = None
                     try:
                         if active:
                             data = socket.create_connection(active, timeout=10)
@@ -185,15 +187,20 @@ class Handler(socketserver.BaseRequestHandler):
                             raise RuntimeError('No data connection')
                         data.settimeout(10)
                         if protected:
+                            receipt = dict(phase='handshake', sentBytes=0)
+                            self.server.tls_data_events.append(receipt)
                             data = self.server.context.wrap_socket(data, server_side=True)
                             reused = data.session_reused
+                            receipt.update(phase='payload', version=data.version(), reused=reused)
                             self.server.tls_session_reuse.append(reused)
                             if self.server.require_tls_session_reuse and not reused:
                                 self.server.tls_reuse_rejections += 1
+                                receipt['phase'] = 'rejected'
                                 try:
                                     data.unwrap().close()
-                                except (OSError, ssl.SSLError):
-                                    pass
+                                    receipt['tlsShutdownComplete'] = True
+                                except (OSError, ssl.SSLError) as error:
+                                    receipt['tlsShutdownError'] = type(error).__name__
                                 reply('425 TLS session resumption required')
                                 continue
                         body = self.server.files[name]
@@ -201,17 +208,24 @@ class Handler(socketserver.BaseRequestHandler):
                             body = body[:len(body) // 2]
                         for start in range(offset, len(body), 32768):
                             data.sendall(body[start:start + 32768])
+                            if receipt is not None:
+                                receipt['sentBytes'] += min(32768, len(body) - start)
                             if name in ['slow.bin', 'norest.bin']:
                                 time.sleep(.004)
                         if name == 'changed.bin':
                             self.server.modified = '20260102000000'
                         if isinstance(data, ssl.SSLSocket):
+                            receipt['phase'] = 'shutdown'
                             try:
                                 data.unwrap().close()
-                            except (OSError, ssl.SSLError):
-                                pass
+                                receipt['tlsShutdownComplete'] = True
+                            except (OSError, ssl.SSLError) as error:
+                                receipt['tlsShutdownError'] = type(error).__name__
+                            receipt['phase'] = 'complete'
                         reply('226 Transfer complete')
-                    except (OSError, RuntimeError):
+                    except (OSError, RuntimeError) as error:
+                        if receipt is not None:
+                            receipt.update(phase='interrupted', errorType=type(error).__name__)
                         reply('426 Transfer interrupted')
                     finally:
                         if data:
@@ -296,7 +310,14 @@ def exercise(cli):
             result = subprocess.run([str(cli), server.url(name), str(target), str(state), *options],
                                     capture_output=True, text=True, timeout=35, creationflags=flags,
                                     env=cli_environment)
-            assert (result.returncode == 0) == expected, (result.returncode, result.stdout, result.stderr)
+            assert (result.returncode == 0) == expected, (
+                result.returncode, result.stdout, result.stderr,
+                dict(mode=server.mode, ssl=ssl.OPENSSL_VERSION,
+                     destinationPublished=target.exists(),
+                     cacheBytes=sum(path.stat().st_size for path in (state / 'parts').rglob('*') if path.is_file()),
+                     commandVerbs=[verb for verb, _ in server.commands],
+                     transfers=server.transfers, tlsData=server.tls_data_events,
+                     sessionReuse=server.tls_session_reuse, reuseRejections=server.tls_reuse_rejections))
             if expected:
                 assert target.read_bytes() == server.files[name]
             else:
