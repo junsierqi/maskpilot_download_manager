@@ -231,7 +231,7 @@ Windows x64, Visual Studio 2022 C++ desktop tools/Windows SDK, CMake ≥3.25, Ni
 Full tests need `ffmpeg`/`ffprobe` on PATH for owned video fixtures. They are not ordinary TS/FLV runtime dependencies; complex HLS needs a trusted processor. Install Python dependencies before CMake, preferably in a venv. CI pins/checksums media tools in `.github/workflows/windows.yml`; optional login-media cases need a trusted parser. See [scenarios](docs/testing/scenarios.md).
 
 ```powershell
-$env:QT_ROOT_DIR = 'C:/Qt/6.11.3/msvc2022_64'
+$env:QT_ROOT_DIR = '<Qt-installation>/6.11.3/msvc2022_64' # Replace with your absolute SDK path.
 $env:VCPKG_ROOT = 'C:/Tools/vcpkg'
 python -m pip install -r tests/requirements.txt
 ./scripts/build.ps1 -Configuration Debug
