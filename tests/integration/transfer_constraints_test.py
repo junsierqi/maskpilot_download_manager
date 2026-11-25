@@ -255,13 +255,19 @@ def exercise(executable):
                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             processes.append(process)
             stack.callback(stop, process)
+            checkpoint_evidence = {}
             def checkpoint():
                 if process.poll() is not None:
                     raise AssertionError(('Transfer exited before crash checkpoint', process.communicate()))
                 for path in (state / 'parts').glob('*/offset-*'):
+                    if not re.fullmatch(r'offset-[0-9]+', path.name):
+                        continue
                     try:
                         value = int(path.read_text())
-                        if 0 < value < len(LARGE):
+                        part = path.with_name('part-' + path.name[len('offset-'):])
+                        if 0 < value < len(LARGE) and part.is_file() and part.stat().st_size >= value:
+                            checkpoint_evidence.update(name=path.name, offset=value,
+                                                       partBytes=part.stat().st_size)
                             return True
                     except (ValueError, OSError):
                         pass
@@ -285,7 +291,8 @@ def exercise(executable):
                                     capture_output=True, text=True, timeout=35)
             completed(result, target, LARGE, state)
             assert any(int(item['range'].split('=')[1].split('-')[0]) > 0
-                       for item in origin.hits('/slow')[before:] if item['range'])
+                       for item in origin.hits('/slow')[before:] if item['range']), (
+                           checkpoint_evidence, origin.hits('/slow')[before:])
             print('PASS crash recovery, stricter cap preserves cached bytes, restoring cap resumes actual tail', flush=True)
 
             state, target = root / 'collision-state', root / 'collision.bin'
