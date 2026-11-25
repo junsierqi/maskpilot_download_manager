@@ -25,6 +25,7 @@ LARGE = b''.join(hashlib.sha256(n.to_bytes(4, 'little')).digest() * 128 for n in
 
 class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
+    request_queue_size = 128
 
     def __init__(self):
         self.lock = threading.Lock()

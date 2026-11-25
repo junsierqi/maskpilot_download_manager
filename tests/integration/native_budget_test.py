@@ -20,6 +20,7 @@ DATA = bytes(range(256)) * 8193
 
 class Origin(http.server.ThreadingHTTPServer):
     daemon_threads = True
+    request_queue_size = 128
 
     def __init__(self, slow=False):
         self.hits = []

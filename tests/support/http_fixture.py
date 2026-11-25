@@ -73,6 +73,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 class Server(socketserver.ThreadingMixIn,http.server.HTTPServer):
     daemon_threads=True
+    request_queue_size=128
     def handle_error(self, request, client_address):
         if not isinstance(sys.exc_info()[1],(ConnectionResetError,ConnectionAbortedError,BrokenPipeError)):
             super().handle_error(request,client_address)

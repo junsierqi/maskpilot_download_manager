@@ -20,6 +20,7 @@ ETAG = '"metadata-v1"'
 
 class Server(http.server.ThreadingHTTPServer):
     daemon_threads = True
+    request_queue_size = 128  # Accept the eight-connection burst before handlers are scheduled.
 
     def __init__(self):
         self.lock = threading.Lock()
@@ -146,7 +147,9 @@ def exercise(executable):
                 result = subprocess.run([str(executable), server.url(path), str(output), str(state),
                                          '--connections', str(connections)], capture_output=True,
                                         text=True, timeout=35)
-                assert result.returncode == 0, (path, result.stdout, result.stderr)
+                assert result.returncode == 0, (
+                    path, result.stdout, result.stderr,
+                    {'serverAlive': server.thread.is_alive(), 'requests': server.hits(path)})
                 assert output.read_bytes() == data, path
                 observed = task(state)
                 assert observed['state'] == 9
