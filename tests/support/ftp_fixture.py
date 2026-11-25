@@ -455,23 +455,30 @@ def exercise(cli):
             print('PASS FTP force-exit recovery, verified REST, safe restart and REST-denied fallback', flush=True)
         finally:
             plain.close()
-        for mode in ['explicit', 'implicit']:
+        secure_cases = [('explicit', ssl.TLSVersion.TLSv1_2), ('implicit', ssl.TLSVersion.TLSv1_2),
+                        ('explicit', None), ('implicit', None)]
+        for mode, maximum in secure_cases:
             secure = Server(mode, certificate, key, require_tls_session_reuse=True)
             try:
+                case = f'{mode}-tls12' if maximum is not None else mode
+                if maximum is not None:
+                    secure.context.maximum_version = maximum
                 options = ['--ftp-ca', str(certificate)]
                 if mode == 'explicit':
                     options.append('--ftp-explicit-tls')
                 run(secure, options=options)
                 assert secure.transfers[-1][2:] == (True, True)
                 assert secure.tls_session_reuse and secure.tls_session_reuse[-1]
+                if maximum is not None:
+                    assert secure.tls_data_events[-1]['version'] == 'TLSv1.2'
                 untrusted = ['--ftp-explicit-tls'] if mode == 'explicit' else []
                 run(secure, options=untrusted, expected=False)
-                target, state = root / f'hostname-{mode}.bin', root / f'hostname-{mode}'
+                target, state = root / f'hostname-{case}.bin', root / f'hostname-{case}'
                 result = subprocess.run([str(cli), secure.url('file.bin', '127.0.0.1'), str(target),
                                          str(state), *options], capture_output=True, text=True, timeout=35,
                                         creationflags=flags, env=cli_environment)
                 assert result.returncode != 0 and not target.exists()
-                print(f'PASS FTPS {mode}: encrypted control/data, required TLS session reuse, CA trust and hostname rejection', flush=True)
+                print(f'PASS FTPS {case}: encrypted control/data, required TLS session reuse, CA trust and hostname rejection', flush=True)
             finally:
                 secure.close()
 
