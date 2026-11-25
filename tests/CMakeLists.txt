@@ -13,6 +13,9 @@ target_compile_definitions(maskpilot_tests PRIVATE MASKPILOT_TEST_DESKTOP="$<TAR
 add_executable(maskpilot_scan_probe support/scan_probe.cpp)
 target_link_libraries(maskpilot_scan_probe PRIVATE Qt6::Core maskpilot_options)
 if(WIN32)
+  # Keep the private Core DLL from relocating plugin discovery for other Qt tests.
+  set_target_properties(maskpilot_scan_probe PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/scan_probe")
   # The scanner intentionally inherits no SDK PATH; its runtime must be adjacent.
   add_custom_command(TARGET maskpilot_scan_probe POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
