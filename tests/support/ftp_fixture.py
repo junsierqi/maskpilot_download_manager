@@ -293,6 +293,46 @@ def cli_child_environment():
     return environment
 
 
+def ftps_reference_diagnostics(server, certificate):
+    """Compare an owned endpoint without changing the original acceptance result."""
+    if os.name != 'nt' or not os.environ.get('SystemRoot'):
+        return dict(unavailable='Windows reference client only')
+    client = Path(os.environ['SystemRoot']) / 'System32/curl.exe'
+    if not client.is_file():
+        return dict(unavailable='System client missing')
+    version = sys.getwindowsversion()
+    result = dict(windowsBuild=version.build, productType=version.product_type, cases=[])
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                            r'SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL') as key:
+            value, kind = winreg.QueryValueEx(key, 'ClientCacheTime')
+            result['clientCacheTime'] = value if kind == winreg.REG_DWORD else 'non-DWORD'
+    except OSError:
+        result['clientCacheTime'] = 'not configured or unavailable'
+    try:
+        details = subprocess.run([str(client), '--disable', '--version'], capture_output=True,
+                                 text=True, timeout=5, creationflags=subprocess.CREATE_NO_WINDOW)
+        result['clientVersion'] = details.stdout.splitlines()[0][:512] if details.stdout else ''
+        base = [str(client), '--disable', '--silent', '--show-error', '--globoff',
+                '--connect-timeout', '3', '--max-time', '10', '--noproxy', '*', '--proxy', '',
+                '--proto', '=ftp,ftps', '--ssl-reqd', '--cacert', str(certificate),
+                '--output', os.devnull, '--write-out',
+                'code=%{response_code};bytes=%{size_download};verify=%{ssl_verify_result}']
+        for label, options in [('default', []), ('minimum-tls12', ['--tlsv1.2']),
+                               ('tls12', ['--tlsv1.2', '--tls-max', '1.2'])]:
+            before = len(server.tls_data_events)
+            observed = subprocess.run([*base, *options, server.url('file.bin')],
+                                      capture_output=True, text=True, timeout=12,
+                                      creationflags=subprocess.CREATE_NO_WINDOW)
+            result['cases'].append(dict(name=label, tlsOptions=list(options), exitCode=observed.returncode,
+                                        receipt=observed.stdout[:512],
+                                        tlsData=[dict(item) for item in server.tls_data_events[before:]]))
+    except (OSError, subprocess.SubprocessError) as error:
+        result['errorType'] = type(error).__name__
+    return result
+
+
 def exercise(cli):
     cli = cli.resolve(strict=True)
     flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
@@ -316,8 +356,10 @@ def exercise(cli):
                      destinationPublished=target.exists(),
                      cacheBytes=sum(path.stat().st_size for path in (state / 'parts').rglob('*') if path.is_file()),
                      commandVerbs=[verb for verb, _ in server.commands],
-                     transfers=server.transfers, tlsData=server.tls_data_events,
-                     sessionReuse=server.tls_session_reuse, reuseRejections=server.tls_reuse_rejections))
+                     transfers=list(server.transfers), tlsData=[dict(item) for item in server.tls_data_events],
+                     sessionReuse=list(server.tls_session_reuse), reuseRejections=server.tls_reuse_rejections,
+                     reference=ftps_reference_diagnostics(server, certificate)
+                     if expected and server.require_tls_session_reuse and server.tls_reuse_rejections else None))
             if expected:
                 assert target.read_bytes() == server.files[name]
             else:
