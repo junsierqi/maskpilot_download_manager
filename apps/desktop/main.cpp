@@ -43,7 +43,8 @@ int main(int argc, char** argv) {
                           ? QDir(parser.value("data-dir")).absolutePath()
                           : QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
     if (!QDir().mkpath(data)) {
-        QMessageBox::critical(nullptr, "MaskPilot", "Cannot create application data directory.");
+        if (!parser.isSet("background"))
+            QMessageBox::critical(nullptr, "MaskPilot", "Cannot create application data directory.");
         return 1;
     }
     QSettings::setDefaultFormat(QSettings::IniFormat);
@@ -235,7 +236,8 @@ int main(int argc, char** argv) {
             QTimer::singleShot(1500, &window, &maskpilot::MainWindow::requestQuit);
         return application.exec();
     } catch (const std::exception& e) {
-        QMessageBox::critical(nullptr, "MaskPilot", QString::fromUtf8(e.what()));
+        if (!parser.isSet("background"))
+            QMessageBox::critical(nullptr, "MaskPilot", QString::fromUtf8(e.what()));
         return 1;
     }
 }

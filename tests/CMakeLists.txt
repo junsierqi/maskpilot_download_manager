@@ -53,6 +53,10 @@ target_link_libraries(maskpilot_tests PRIVATE maskpilot_application maskpilot_in
 include(GoogleTest)
 gtest_discover_tests(maskpilot_tests DISCOVERY_MODE PRE_TEST WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
+add_test(NAME desktop_startup_failure_product_path COMMAND ${Python3_EXECUTABLE}
+  ${CMAKE_CURRENT_SOURCE_DIR}/integration/desktop_startup_test.py
+  --desktop $<TARGET_FILE:maskpilot>)
+set_tests_properties(desktop_startup_failure_product_path PROPERTIES TIMEOUT 90)
 add_test(NAME macos_ci_fixture COMMAND ${Python3_EXECUTABLE}
   ${CMAKE_CURRENT_SOURCE_DIR}/unit/macos_ci_test.py)
 set_tests_properties(macos_ci_fixture PROPERTIES TIMEOUT 30)

@@ -2,6 +2,8 @@
 
 This describes development code. Frozen 0.2.0 packages keep their original protocol and do not gain new capabilities from this document. Interception/Cookie forwarding default off; existing extensions remain v1 standalone clients.
 
+The native host starts the desktop with `--background`. Initialization errors exit with failure instead of waiting for an error dialog; normal desktop launches retain interactive diagnostics. Failure before durable `prepare` acknowledgement never authorizes cancelling the browser-owned download.
+
 ## Framing and identity
 
 Chromium uses a service-worker manifest; Firefox 150+ uses a module event page with shared code. Firefox ID is `downloads@maskpilot.invalid`; service `com.maskpilot.downloads` uses adjacent `com.maskpilot.downloads.firefox.json`. Host checks absolute manifest path, current executable, and `allowed_extensions`; `native-bridge.json` also needs `allowedFirefoxExtensions`. Source arguments grant neither broker administration nor fingerprint-profile identity.
