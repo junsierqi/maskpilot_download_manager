@@ -122,6 +122,8 @@ Prefer desktop password fields; command arguments may be visible in process list
 
 Enter `sftp://`, a trusted SHA-256 server fingerprint, and password or explicit local private-key login. Common unpadded fingerprints accept optional `SHA256:`. Pins are checked before sending credentials; unknown hosts are never auto-trusted. Keys must be ordinary local files; encrypted-key passphrases work. No SSH agent, ambient keys, or interactive authentication.
 
+The pin must identify the server key negotiated by this client. A server may offer several trusted host-key algorithms, and another SSH client's default selection may differ. Obtain the matching fingerprint through an independently trusted administrator/channel; a mismatch is not permission to disable verification.
+
 Username/password/key passphrase remain in memory and need request/login editing after restart. Only method, fingerprint, and key path persist, not key contents. Single-stream resume needs expected file SHA-256 plus matching URL/pin/length/modification time/cache and final digest; otherwise restart from zero. Queues, rates, native budgets, and scanning apply. HTTP/HTTPS proxies must permit SSH-port CONNECT; SOCKS5 keeps proxy-side DNS, without direct fallback.
 
 ```powershell
@@ -219,6 +221,8 @@ Scanning is not retroactive for completed/published BT content. Previously scann
 ## Media
 
 Tools selects trusted media components. Windows can also download checksum-verified parser/muxer binaries; Linux uses native system/user tools. Optional components are not bundled. Inspect actual audio/video formats and select exact IDs/compatible containers, or use automatic quality caps. MKV/MP4/WebM and M4A/MP3/Opus/FLAC depend on sources/components. Source/network edits invalidate inspection; download revalidates and fails explicitly if selections disappear.
+
+Keep the default/MKV video container when the source reports unknown codecs. Explicit MP4/WebM selection requires compatible codec metadata; refusal leaves the task available for correction without publishing a file.
 
 Inspection is asynchronous, cancellable, and bounded. The parser uses its native downloader; `media_guard/` limits FFmpeg/ffprobe to ordinary files in owned task directories, denying external-download fallback/disguised remote playlists. This is not a hostile-executable sandbox; tools must be trusted. Pause/resume/retry/rate changes redownload. Login follows the origin rules above. On-demand helpers do not record live; the native engine does. DRM is unsupported; site behavior depends on source/components. See [support limits](docs/product/support-matrix.md).
 

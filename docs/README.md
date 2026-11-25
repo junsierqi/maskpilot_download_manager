@@ -17,6 +17,7 @@
 ## Validation and distribution
 
 - [Testing scenarios](testing/scenarios.md): case groups, execution, and evidence requirements.
+- [Current-runtime acceptance](testing/current-acceptance.md): current candidate checks, retained failures, and pending long-duration/integration work.
 - [Linux acceptance](testing/linux-acceptance.md): the tested userspace/kernel, build, and local-package limits.
 - [macOS acceptance entry](testing/macos-acceptance.md): recorded dual-architecture native core CI and remaining manual/release checks.
 - [Historical Windows audit](testing/repository-audit.md) and [candidate acceptance](releases/acceptance.md): evidence for specific versions/environments, not qualification of every later commit.

@@ -2,7 +2,7 @@
 
 ## macOS native core entry
 
-GitHub `macOS` builds all arm64/x86_64 targets and passes the selected 320 core/platform cases per architecture, extension units, and a six-case prerequisite gate. `macos_platform_product_path` exercises real keychain/no-replace/local-torrent/process-tree checks. Disposable keychains restore original search/default settings even on failure. `macos_ci_fixture` proves simulated script failure/recovery only. Native visual, clean deployment, optional media tools, and browser installation require separate acceptance; see [macOS](macos-acceptance.md).
+GitHub `macOS` builds all arm64/x86_64 targets and runs selected core/platform cases, extension units, and a six-case prerequisite gate. See [current-runtime acceptance](current-acceptance.md) for the latest verified counts; the snapshot below is historical. `macos_platform_product_path` exercises real keychain/no-replace/local-torrent/process-tree checks. Disposable keychains restore original search/default settings even on failure. `macos_ci_fixture` proves simulated script failure/recovery only. Native visual, clean deployment, optional media tools, and browser installation require separate acceptance; see [macOS](macos-acceptance.md).
 
 ## Hosted CI snapshot
 
