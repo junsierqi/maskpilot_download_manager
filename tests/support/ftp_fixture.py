@@ -29,8 +29,11 @@ class Server(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = True
 
-    def __init__(self, mode='plain', certificate=None, key=None):
+    def __init__(self, mode='plain', certificate=None, key=None, require_tls_session_reuse=False):
         self.mode = mode
+        self.require_tls_session_reuse = require_tls_session_reuse
+        self.tls_session_reuse = []
+        self.tls_reuse_rejections = 0
         self.context = None
         if certificate:
             self.context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -183,6 +186,16 @@ class Handler(socketserver.BaseRequestHandler):
                         data.settimeout(10)
                         if protected:
                             data = self.server.context.wrap_socket(data, server_side=True)
+                            reused = data.session_reused
+                            self.server.tls_session_reuse.append(reused)
+                            if self.server.require_tls_session_reuse and not reused:
+                                self.server.tls_reuse_rejections += 1
+                                try:
+                                    data.unwrap().close()
+                                except (OSError, ssl.SSLError):
+                                    pass
+                                reply('425 TLS session resumption required')
+                                continue
                         body = self.server.files[name]
                         if name == 'short.bin':
                             body = body[:len(body) // 2]
@@ -380,13 +393,14 @@ def exercise(cli):
         finally:
             plain.close()
         for mode in ['explicit', 'implicit']:
-            secure = Server(mode, certificate, key)
+            secure = Server(mode, certificate, key, require_tls_session_reuse=True)
             try:
                 options = ['--ftp-ca', str(certificate)]
                 if mode == 'explicit':
                     options.append('--ftp-explicit-tls')
                 run(secure, options=options)
                 assert secure.transfers[-1][2:] == (True, True)
+                assert secure.tls_session_reuse and secure.tls_session_reuse[-1]
                 untrusted = ['--ftp-explicit-tls'] if mode == 'explicit' else []
                 run(secure, options=untrusted, expected=False)
                 target, state = root / f'hostname-{mode}.bin', root / f'hostname-{mode}'
@@ -394,7 +408,7 @@ def exercise(cli):
                                          str(state), *options], capture_output=True, text=True, timeout=35,
                                         creationflags=flags, env=cli_environment)
                 assert result.returncode != 0 and not target.exists()
-                print(f'PASS FTPS {mode}: encrypted control/data, CA trust and hostname rejection', flush=True)
+                print(f'PASS FTPS {mode}: encrypted control/data, required TLS session reuse, CA trust and hostname rejection', flush=True)
             finally:
                 secure.close()
 
