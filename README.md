@@ -232,7 +232,7 @@ Full tests need `ffmpeg`/`ffprobe` on PATH for owned video fixtures. They are no
 
 ```powershell
 $env:QT_ROOT_DIR = '<Qt-installation>/6.11.3/msvc2022_64' # Replace with your absolute SDK path.
-$env:VCPKG_ROOT = 'C:/Tools/vcpkg'
+$env:VCPKG_ROOT = '<Vcpkg-installation>' # Replace with your absolute repository path.
 python -m pip install -r tests/requirements.txt
 ./scripts/build.ps1 -Configuration Debug
 ./scripts/verify.ps1 -Configuration Release
