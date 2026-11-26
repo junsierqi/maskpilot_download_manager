@@ -38,7 +38,9 @@ bool containsAscii(std::string_view text, std::string_view value) {
 }
 bool requiresSessionReuse(std::string_view text) {
     if (containsAscii(text, "no session reuse required") ||
-        containsAscii(text, "no session resumption required"))
+        containsAscii(text, "no session resumption required") ||
+        containsAscii(text, "no session reuse is required") ||
+        containsAscii(text, "no session resumption is required"))
         return false;
     return containsAscii(text, "session resumption required") ||
            containsAscii(text, "session reuse required") ||

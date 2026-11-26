@@ -571,6 +571,8 @@ def exercise(cli):
             print('PASS FTPS compatibility revalidates CA before credentials and never retries an untrusted replacement', flush=True)
 
             for message in ['425 Data connection unavailable', '425 No session reuse required',
+                            '425 No session resumption required', '425 No session reuse is required',
+                            '425 No session resumption is required', '425 Session reuse is not required',
                             '426 TLS session resumption required']:
                 secure = Server('explicit', certificate, key, require_tls_session_reuse=True)
                 secure.context.num_tickets = 0
