@@ -204,6 +204,72 @@ def task_line(process):
     return fields[1]
 
 
+def fresh_cache_io(executable, root, processes):
+    if os.name != 'nt':
+        return
+
+    class IoCounters(ctypes.Structure):
+        _fields_ = [(name, ctypes.c_ulonglong) for name in (
+            'read_operations', 'write_operations', 'other_operations',
+            'read_bytes', 'write_bytes', 'other_bytes')]
+
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.GetProcessIoCounters.argtypes = [ctypes.c_void_p, ctypes.POINTER(IoCounters)]
+    kernel.GetProcessIoCounters.restype = ctypes.c_int
+
+    class EmptyOrigin(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            self.server.requests += 1
+            self.send_response(416)
+            self.send_header('Content-Range', 'bytes */0')
+            self.send_header('Content-Length', '0')
+            self.send_header('Connection', 'close')
+            self.end_headers()
+
+    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), EmptyOrigin)
+    server.requests = 0
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        deltas = []
+        for pair in range(3):
+            counters = []
+            for control in (True, False):
+                name = f'empty-io-{pair}-' + ('control' if control else 'download')
+                target, state = root / (name + '.bin'), root / (name + '-state')
+                command = [str(executable), f'http://127.0.0.1:{server.server_port}/empty',
+                           str(target), str(state), '1', hashlib.sha256(b'').hexdigest()]
+                if control:
+                    command.append('--origin-auth-required')
+                before = server.requests
+                process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                           text=True, creationflags=subprocess.CREATE_NO_WINDOW)
+                processes.append(process)
+                output, error = process.communicate(timeout=30)
+                observed = IoCounters()
+                # Popen retains its Windows process handle after communicate(), until released.
+                if not kernel.GetProcessIoCounters(int(process._handle), ctypes.byref(observed)):
+                    raise ctypes.WinError(ctypes.get_last_error())
+                counters.append(observed.other_operations)
+                if control:
+                    assert process.returncode != 0 and not target.exists(), (output, error)
+                    assert server.requests == before, 'Missing source login contacted the origin'
+                else:
+                    assert process.returncode == 0, (output, error)
+                    assert target.read_bytes() == b''
+                    assert server.requests == before + 1, 'Empty transfer did not use its real probe'
+            deltas.append(counters[1] - counters[0])
+        # Isolate transfer work from process/storage startup without a machine-speed assertion.
+        # The old 1,024 absent-file deletes exceed this broad bound on every measured pair.
+        assert max(deltas) < 768, ('Fresh empty-transfer I/O amplification', deltas)
+        print(f'PASS actual Windows empty-cache I/O bound: deltas={deltas}, limit=768', flush=True)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def exercise(executable):
     server = Server()
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -212,6 +278,7 @@ def exercise(executable):
         with tempfile.TemporaryDirectory(prefix='maskpilot-adaptive-') as temporary, owned_processes(processes):
             root = Path(temporary)
             base = f'http://127.0.0.1:{server.server_port}'
+            fresh_cache_io(executable, root, processes)
 
             def start(route, name, connections):
                 state, target = root / (name + '-state'), root / (name + '.bin')
@@ -333,12 +400,33 @@ def exercise(executable):
             folder.joinpath('identity.new').write_text('MPHTTP 2\nnot authoritative')
             folder.joinpath('part-255').write_bytes(b'wrong resource')
             folder.joinpath('offset-255').write_text('14')
+            temporary_names = ('part-0.new', 'offset-0.new', 'part-255.new', 'offset-255.new')
+            for name in temporary_names:
+                folder.joinpath(name).write_bytes(b'uncommitted stale extent')
+            unrelated_names = ('part-256', 'offset-256.new', 'part-01', 'offset--1',
+                               'part-1.new.new', 'identity.new.new')
+            for name in unrelated_names:
+                folder.joinpath(name).write_bytes(b'unrelated namespace')
+            folder.joinpath('notes').mkdir()
+            folder.joinpath('notes', 'part-255').write_bytes(b'unrelated nested file')
+            case_variant = folder / 'PaRt-254.NeW'
+            case_variant.write_bytes(b'platform case variant')
+            case_is_owned = folder.joinpath('part-254.new').exists()
             folder.joinpath('notes.txt').write_bytes(b'preserve unrelated cache entry')
             result = run_resume(task, state, '--allow-anonymous', '--connections', '1')
             assert result.returncode == 0, (result.stdout, result.stderr)
             assert hashlib.sha256(target.read_bytes()).hexdigest() == DIGEST
             assert folder.joinpath('notes.txt').read_bytes() == b'preserve unrelated cache entry'
             assert not folder.joinpath('part-255').exists()
+            for name in temporary_names:
+                assert not folder.joinpath(name).exists(), name
+            for name in unrelated_names:
+                assert folder.joinpath(name).read_bytes() == b'unrelated namespace', name
+            assert folder.joinpath('notes', 'part-255').read_bytes() == b'unrelated nested file'
+            if case_is_owned:
+                assert not case_variant.exists()
+            else:
+                assert case_variant.read_bytes() == b'platform case variant'
             print('PASS unknown layout and uncommitted metadata restart safely; high IDs cleaned, unrelated file preserved', flush=True)
 
             if os.name == 'nt':
@@ -365,6 +453,28 @@ def exercise(executable):
                 assert result.returncode == 0, (result.stdout, result.stderr)
                 assert hashlib.sha256(target.read_bytes()).hexdigest() == DIGEST
                 print('PASS actual Windows manifest replacement failure preserves authoritative layout and recoverable bytes', flush=True)
+
+                task, state, target, folder = seeded(
+                    'locked-reset', '/adaptive/locked-reset', lambda _: 'MPHTTP 99\n')
+                blocked = folder / 'part-255'
+                blocked.write_bytes(b'locked old resource')
+                old = folder.joinpath('identity').read_bytes()
+                before = len(server.snapshot('/adaptive/locked-reset'))
+                handle = kernel.CreateFileW(str(blocked), 0x80000000, 3, None, 3, 0, None)
+                assert handle not in (None, ctypes.c_void_p(-1).value), ctypes.get_last_error()
+                try:
+                    result = run_resume(task, state, '--allow-anonymous', '--connections', '1')
+                    assert result.returncode != 0 and not target.exists(), (result.stdout, result.stderr)
+                    assert folder.joinpath('identity').read_bytes() == old
+                    assert blocked.read_bytes() == b'locked old resource'
+                    assert not any(not item['probe'] for item in
+                                   server.snapshot('/adaptive/locked-reset')[before:])
+                finally:
+                    assert kernel.CloseHandle(handle)
+                result = run_resume(task, state, '--connections', '1')
+                assert result.returncode == 0, (result.stdout, result.stderr)
+                assert hashlib.sha256(target.read_bytes()).hexdigest() == DIGEST
+                print('PASS locked high-ID reset blocks identity replacement and payload; unlock resumes safely', flush=True)
     finally:
         for process in processes:
             if process.poll() is None:

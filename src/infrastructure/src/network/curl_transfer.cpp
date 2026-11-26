@@ -13,6 +13,8 @@
 #include <map>
 #include <maskpilot/infrastructure/adapters.h>
 #include <mutex>
+#include <optional>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <thread>
@@ -351,6 +353,42 @@ bool strongEtag(const std::string& etag) {
     return etag.size() >= 2 && etag.front() == '"' && etag.back() == '"' &&
            etag.find_first_of("\r\n") == std::string::npos;
 }
+
+std::optional<std::string> canonicalExtentArtifact(const std::filesystem::path& filename) {
+    const auto native = filename.native();
+    // Longest canonical name: offset-255.new.
+    if (native.size() > 14)
+        return std::nullopt;
+    std::string name;
+    name.reserve(native.size());
+    for (const auto unit : native) {
+        const auto value = static_cast<std::uint32_t>(unit);
+        if (value > 0x7f)
+            return std::nullopt;
+        auto ch = static_cast<char>(value);
+        if (ch >= 'A' && ch <= 'Z')
+            ch = static_cast<char>(ch + ('a' - 'A'));
+        name.push_back(ch);
+    }
+    std::string_view digits(name);
+    if (digits.ends_with(".new"))
+        digits.remove_suffix(4);
+    if (digits.starts_with("part-"))
+        digits.remove_prefix(5);
+    else if (digits.starts_with("offset-"))
+        digits.remove_prefix(7);
+    else
+        return std::nullopt;
+    if (digits.empty() || digits.size() > 3 || (digits.size() > 1 && digits.front() == '0'))
+        return std::nullopt;
+    int id = 0;
+    for (const auto digit : digits) {
+        if (digit < '0' || digit > '9')
+            return std::nullopt;
+        id = id * 10 + (digit - '0');
+    }
+    return id < maxRecoveryExtents ? std::optional<std::string>(std::move(name)) : std::nullopt;
+}
 bool retryStatus(long status) {
     return status == 408 || status == 429 || status == 500 || status == 502 || status == 503 || status == 504;
 }
@@ -599,10 +637,15 @@ class CurlTransfer final : public ITransferTransport {
         bool integrityFailure = false, retryable = false;
         try {
             std::filesystem::create_directories(work);
+            const auto checkResetStop = [&] {
+                if (control.pause || control.cancel)
+                    throw std::runtime_error("HTTP recovery reset interrupted.");
+            };
             auto removeExtentArtifacts = [&](int id) {
                 for (const auto* prefix : {"part-", "offset-"}) {
                     auto path = work / (std::string(prefix) + std::to_string(id));
                     for (int temporary = 0; temporary < 2; ++temporary) {
+                        checkResetStop();
                         std::error_code error;
                         std::filesystem::remove(path, error);
                         if (error)
@@ -630,9 +673,27 @@ class CurlTransfer final : public ITransferTransport {
             if (!reuse) {
                 // Never install a new identity while any old numeric checkpoint can
                 // be mistaken for one of its stable IDs. Unrelated files are untouched.
-                for (std::size_t id = 0; id < maxRecoveryExtents; ++id)
-                    removeExtentArtifacts(static_cast<int>(id));
+                // Snapshot actual entries instead of probing 1,024 absent paths for
+                // every fresh task. Do not invalidate a live directory iterator.
+                std::set<std::string> present;
+                for (const auto& entry : std::filesystem::directory_iterator(work)) {
+                    checkResetStop();
+                    if (const auto name = canonicalExtentArtifact(entry.path().filename()))
+                        present.insert(*name);
+                }
+                for (const auto& name : present) {
+                    checkResetStop();
+                    std::error_code error;
+                    // Canonical paths preserve the old namespace across case-insensitive
+                    // and case-sensitive directories. Keep distinct uppercase files when
+                    // their lowercase aliases do not exist.
+                    std::filesystem::remove(work / name, error);
+                    if (error)
+                        throw std::runtime_error("Cannot reset owned HTTP recovery files. Close files "
+                                                 "using this task and retry.");
+                }
                 for (const auto* name : {"identity", "identity.new"}) {
+                    checkResetStop();
                     std::error_code error;
                     std::filesystem::remove(work / name, error);
                     if (error)
@@ -640,6 +701,7 @@ class CurlTransfer final : public ITransferTransport {
                             "Cannot reset HTTP recovery identity. Existing files were preserved.");
                 }
                 if (resumable) {
+                    checkResetStop();
                     const int count = remote.total >= 1024 * 1024 ? task.spec.connections : 1;
                     layout = http::initialLayout(remote.etag, remote.effectiveUrl, remote.total, count);
                     http::saveLayout(metadata, layout);

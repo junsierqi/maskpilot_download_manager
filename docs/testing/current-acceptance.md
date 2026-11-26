@@ -2,9 +2,30 @@
 
 This record qualifies a local validation candidate, not a formal release. Historical 0.2.0/0.3.0 packages keep their original evidence; they do not qualify newer code.
 
-Status on 2026-11-25: **in progress**. The original native cohort passed its full long-duration gate. Windows FTPS interoperability repair remains open; actual eD2k support is queued after existing-feature acceptance, followed by formal browser integration and maintained site compatibility.
+Status on 2026-11-26: **in progress**. The FTPS repair passed local and all four hosted checks, but its fresh long-duration run failed during HTTP recovery-cache reset. That narrow repair and renewed full-duration qualification remain mandatory before actual eD2k support, formal browser integration and maintained site compatibility.
 
-## Candidate and verified scope
+## Latest repair cohort and retained long-run failure
+
+Commit `f722441d4735212eead941b9f52fdff1b8f7f806`, before the HTTP cache repair, passed 344/344 local cases in 1260.46 seconds and the expanded FTP/FTPS fixture in 226.79 seconds. Its hosted checks all passed:
+
+| Environment | Native cases | Extension cases | Hosted job |
+|---|---:|---:|---|
+| Windows x64 | 341/341 | 48/48 | [Windows](https://github.com/junsierqi/maskpilot_download_manager/actions/runs/45745854635/job/139661612432) |
+| Linux x64 | 330/330 | 48/48 | [Linux](https://github.com/junsierqi/maskpilot_download_manager/actions/runs/45745854592/job/139661612649) |
+| macOS arm64 | 321/321 plus 6 prerequisites | 48/48 | [ARM](https://github.com/junsierqi/maskpilot_download_manager/actions/runs/45745854613/job/139661613275) |
+| macOS x86_64 | 321/321 plus 6 prerequisites | 48/48 | [Intel](https://github.com/junsierqi/maskpilot_download_manager/actions/runs/45745854613/job/139661612972) |
+
+Its fresh ZIP SHA-256 was `0b9bae3b701e11bdebd1b8f9e11f5c3331bfbe7084e52f7d3724ed5e023713ff`. Scrubbed deployment/offline recovery, isolated Chromium/Firefox, legacy migration, public HTTPS/FTP/FTPS/media, authorized SFTP and an actual 4,294,967,553-byte transfer passed. The five-minute preflight also passed with before/after baseline and cleanup checks.
+
+The subsequent long run **failed after 9,456.09 seconds**, when cycle 283 exceeded its unchanged 180-second deadline. It had verified 28,200 files, completed 849 pause/resume operations and 29 media cycles, and reached eight active tasks. Owned processes were cleaned; failed workload files, database and thread dump were deliberately retained. The after-cleanup baseline gate did not pass, and this run is not eight-hour qualification.
+
+All eight remaining worker stacks were inside the HTTP reset loop's filesystem deletion calls, although their private cache directories were empty. That loop checked 1,024 possible numeric artifact paths per reset. The exact cause of the unusually slow OS calls is unproven. A new real-client empty-file regression independently fails on the old native binary: three startup-normalized I/O deltas were 1,298, 1,308 and 1,305, above its broad 768-operation bound.
+
+The narrow repair enumerates present canonical owned artifacts before replacing identity and checks pause/cancel between operations. Its rebuilt Windows native passed 344/344 cases in 1239.41 seconds, including the expanded adaptive fixture in 48.23 seconds; extension units passed 48/48 with none skipped. Source and CLI hashes were unchanged throughout validation. The new empty-cache I/O deltas were 284, 280 and 274, below the unchanged 768-operation bound. Locked/high-ID temporary files, unrelated names and platform case behavior passed. Current-repair hosted CI and renewed eight-hour qualification remain pending; the preserved run above remains failed. No benchmark deadline, resource threshold, route or integrity check is relaxed.
+
+The following sections retain the original cohort's historical evidence and boundaries; they do not qualify this changed native code.
+
+## Original native cohort and verified scope
 
 Native source is bound to commit d36b711112e852989e535878d800574d8dfd9ab1. The Windows Release uses Qt 6.11.3, MSVC 14.44, and portable x64 dependencies. The candidate ZIP SHA-256 is c796703bdcdd26c2b6779f6562ae42eea499746b3d9e69d2ad294be9b4097fb5.
 
