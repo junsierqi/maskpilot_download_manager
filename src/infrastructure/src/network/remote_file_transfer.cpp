@@ -14,6 +14,7 @@
 #include <mutex>
 #include <sstream>
 #include <stdexcept>
+#include <string_view>
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -22,6 +23,67 @@ namespace maskpilot {
 namespace {
 using Clock = std::chrono::steady_clock;
 namespace files = transfer_files;
+
+#ifdef _WIN32
+constexpr bool nativeFtpsCompatibility = true;
+#else
+constexpr bool nativeFtpsCompatibility = false;
+#endif
+
+bool containsAscii(std::string_view text, std::string_view value) {
+    return std::search(text.begin(), text.end(), value.begin(), value.end(),
+                       [](unsigned char left, unsigned char right) {
+                           return (left >= 'A' && left <= 'Z' ? left + ('a' - 'A') : left) == right;
+                       }) != text.end();
+}
+bool requiresSessionReuse(std::string_view text) {
+    if (containsAscii(text, "no session reuse required") ||
+        containsAscii(text, "no session resumption required"))
+        return false;
+    return containsAscii(text, "session resumption required") ||
+           containsAscii(text, "session reuse required") ||
+           containsAscii(text, "session reuse is required") ||
+           containsAscii(text, "session of data connection not resumed") ||
+           containsAscii(text, "tls session not resumed");
+}
+struct FtpReply {
+    int multiline = 0;
+    bool multilineRequiresReuse = false, requiresReuse = false, resumeAccepted = false;
+
+    void receive(std::string_view line) {
+        if (line.size() > 65536) {
+            multiline = 0;
+            multilineRequiresReuse = requiresReuse = false;
+            return;
+        }
+        const auto digit = [](char value) { return value >= '0' && value <= '9'; };
+        const bool reply = line.size() >= 4 && digit(line[0]) && digit(line[1]) && digit(line[2]) &&
+                           (line[3] == ' ' || line[3] == '-');
+        const int code = reply ? (line[0] - '0') * 100 + (line[1] - '0') * 10 + line[2] - '0' : 0;
+        if (multiline) {
+            if (multiline == 425 || multiline == 522)
+                multilineRequiresReuse = multilineRequiresReuse || requiresSessionReuse(line);
+            if (code == multiline && line[3] == ' ') {
+                if (code == 350)
+                    resumeAccepted = true;
+                requiresReuse = (code == 425 || code == 522) && multilineRequiresReuse;
+                multiline = 0;
+                multilineRequiresReuse = false;
+            }
+            return;
+        }
+        if (!reply)
+            return;
+        if (code == 350 && line[3] == ' ')
+            resumeAccepted = true;
+        requiresReuse = false;
+        if (line[3] == '-') {
+            multiline = code;
+            multilineRequiresReuse = (code == 425 || code == 522) && requiresSessionReuse(line);
+        } else
+            requiresReuse = (code == 425 || code == 522) && requiresSessionReuse(line);
+    }
+};
 
 struct Easy {
     CURL* value = curl_easy_init();
@@ -32,6 +94,10 @@ struct Easy {
     ~Easy() { curl_easy_cleanup(value); }
     Easy(const Easy&) = delete;
     Easy& operator=(const Easy&) = delete;
+};
+struct ResumeCommand {
+    curl_slist* value = nullptr;
+    ~ResumeCommand() { curl_slist_free_all(value); }
 };
 struct File {
     FILE* value = nullptr;
@@ -279,7 +345,12 @@ Result transfer(TransferKind expectedKind, const Task& task, const std::filesyst
         identity << ' ' << std::quoted(canonicalSftpHostKey(task.spec.sftp.hostKeySha256));
     files::atomicText(work / "identity", identity.str());
     const auto part = work / "part-0";
-    for (int attempt = 0; attempt < 2; ++attempt) {
+    const bool protectedFtp = nativeFtpsCompatibility && !sftp &&
+                              (task.spec.ftpExplicitTls || task.spec.url.starts_with("ftps://"));
+    bool restarted = false, tls12 = false, transferred = false;
+    CURLcode refusedSessionCode = CURLE_OK;
+    // REST restart and a protocol-version transition are independent one-shot operations.
+    for (int attempt = 0; attempt < 3; ++attempt) {
         if (offset > 0)
             std::filesystem::resize_file(part, offset);
         File output;
@@ -291,13 +362,38 @@ Result transfer(TransferKind expectedKind, const Task& task, const std::filesyst
             std::int64_t bytes, limit;
             bool failed = false;
             TransferControl* control;
-        } sink{output.value, offset, remote.size, false, &control};
+            const FtpReply* reply;
+            bool requiresResume;
+        } sink{output.value, offset, remote.size, false, &control, nullptr, protectedFtp && offset > 0};
+        FtpReply reply; // Outlive Easy: cleanup may still deliver a control reply.
+        sink.reply = &reply;
+        ResumeCommand resume; // Outlive Easy, which retains the command list.
         Easy easy;
         configure(easy.value, task.spec, control);
+        if (protectedFtp) {
+            // Own metadata/Sink/final checks enforce length; let curl read the final FTP reply.
+            option(easy.value, CURLOPT_IGNORE_CONTENT_LENGTH, 1L);
+            option(easy.value, CURLOPT_HEADERFUNCTION,
+                   +[](char* data, size_t size, size_t count, void* context) -> size_t {
+                       if (count && size > std::numeric_limits<size_t>::max() / count)
+                           return 0;
+                       const auto bytes = size * count;
+                       static_cast<FtpReply*>(context)->receive(std::string_view(data, bytes));
+                       return bytes;
+                   });
+            option(easy.value, CURLOPT_HEADERDATA, &reply);
+            if (tls12)
+                option(easy.value, CURLOPT_SSLVERSION,
+                       static_cast<long>(CURL_SSLVERSION_TLSv1_2 | CURL_SSLVERSION_MAX_TLSv1_2));
+        }
         option(
             easy.value, CURLOPT_WRITEFUNCTION,
             +[](char* data, size_t size, size_t count, void* opaque) -> size_t {
                 auto& out = *static_cast<Sink*>(opaque);
+                if (out.requiresResume && !out.reply->resumeAccepted) {
+                    out.failed = true;
+                    return 0;
+                }
                 if (count && size > std::numeric_limits<size_t>::max() / count) {
                     out.failed = true;
                     return 0;
@@ -325,8 +421,18 @@ Result transfer(TransferKind expectedKind, const Task& task, const std::filesyst
                 return bytes;
             });
         option(easy.value, CURLOPT_WRITEDATA, &sink);
-        if (offset > 0)
-            option(easy.value, CURLOPT_RESUME_FROM_LARGE, static_cast<curl_off_t>(offset));
+        if (offset > 0) {
+            if (protectedFtp) {
+                // Ignoring FTP SIZE bypasses curl's normal resume state. Issue REST
+                // explicitly and require its 350 reply before accepting any payload.
+                const auto command = "REST " + std::to_string(offset);
+                resume.value = curl_slist_append(nullptr, command.c_str());
+                if (!resume.value)
+                    throw std::runtime_error("Cannot configure remote file resume.");
+                option(easy.value, CURLOPT_PREQUOTE, resume.value);
+            } else
+                option(easy.value, CURLOPT_RESUME_FROM_LARGE, static_cast<curl_off_t>(offset));
+        }
         auto checkpointTime = Clock::now(), speedTime = checkpointTime;
         auto checkpointBytes = offset, speedBytes = offset;
         auto checkpoint = [&] {
@@ -360,15 +466,29 @@ Result transfer(TransferKind expectedKind, const Task& task, const std::filesyst
         if (sink.failed)
             return {TransferOutcome::Attention,
                     "Remote file output exceeded the expected length or could not be written."};
-        if (offset > 0 && attempt == 0 &&
+        long response = 0;
+        if (protectedFtp && !tls12 && code != CURLE_OK && sink.bytes == offset && reply.requiresReuse &&
+            curl_easy_getinfo(easy.value, CURLINFO_RESPONSE_CODE, &response) == CURLE_OK &&
+            (response == 425 || response == 522)) {
+            tls12 = true;
+            refusedSessionCode = code;
+            continue;
+        }
+        if (offset > 0 && !restarted &&
             (code == CURLE_RANGE_ERROR || code == CURLE_BAD_DOWNLOAD_RESUME ||
-             code == CURLE_FTP_COULDNT_USE_REST)) {
+             code == CURLE_FTP_COULDNT_USE_REST ||
+             (protectedFtp && code == CURLE_QUOTE_ERROR))) {
             // Some servers advertise a file but reject REST. Discard uncertain data and retry once.
+            restarted = true;
             offset = 0;
             continue;
         }
-        if (code != CURLE_OK)
+        if (code != CURLE_OK) {
+            if (tls12 && refusedSessionCode != CURLE_OK &&
+                (code == CURLE_SSL_CONNECT_ERROR || code == CURLE_USE_SSL_FAILED))
+                return failure(refusedSessionCode, sftp);
             return failure(code, sftp);
+        }
         if (remote.size >= 0 && sink.bytes != remote.size)
             return {TransferOutcome::Failed,
                     "Remote file source ended before the expected length was received.", true};
@@ -381,8 +501,11 @@ Result transfer(TransferKind expectedKind, const Task& task, const std::filesyst
             (remote.modified >= 0 && after.modified != remote.modified))
             return {TransferOutcome::Attention,
                     "Remote file source changed during transfer. Restart the task."};
+        transferred = true;
         break;
     }
+    if (!transferred)
+        return {TransferOutcome::Failed, "Remote file protocol negotiation did not complete."};
     event.phase = TaskState::Verifying;
     event.total = event.downloaded;
     event.speed = 0;

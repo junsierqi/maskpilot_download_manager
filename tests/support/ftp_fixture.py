@@ -4,6 +4,7 @@ The bounded server implements only the commands used by the download adapter; it
 never accesses arbitrary filesystem paths. Certificates are generated per run.
 """
 import argparse
+from contextlib import closing
 import datetime
 import hashlib
 import os
@@ -11,6 +12,7 @@ from pathlib import Path
 import shutil
 import socket
 import socketserver
+import sqlite3
 import ssl
 import subprocess
 import sys
@@ -35,6 +37,12 @@ class Server(socketserver.ThreadingTCPServer):
         self.tls_session_reuse = []
         self.tls_reuse_rejections = 0
         self.tls_data_events = []
+        self.greeting = '220 Local transfer fixture ready'
+        self.tls_reuse_reply = '425 TLS session resumption required'
+        self.reject_reused_data = False
+        self.reject_after_payload = False
+        self.next_control_context = None
+        self.rest_reject_tls_version = None
         self.context = None
         if certificate:
             self.context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -82,7 +90,13 @@ class Handler(socketserver.BaseRequestHandler):
             def reply(value):
                 control.sendall((value + '\r\n').encode('utf-8'))
 
-            reply('220 Local transfer fixture ready')
+            def rejects_rest(name):
+                return name == 'norest.bin' and (
+                    self.server.rest_reject_tls_version is None or
+                    isinstance(control, ssl.SSLSocket) and
+                    control.version() == self.server.rest_reject_tls_version)
+
+            reply(self.server.greeting)
             while True:
                 line = reader.readline(65537)
                 if not line or len(line) > 65536:
@@ -156,7 +170,7 @@ class Handler(socketserver.BaseRequestHandler):
                         active = (host, port)
                         reply('200 Active connection accepted')
                 elif verb == 'REST':
-                    if last_name == 'norest.bin':
+                    if rejects_rest(last_name):
                         self.server.rest_rejections += 1
                         offset = 0
                         reply('502 Restart not supported')
@@ -170,7 +184,7 @@ class Handler(socketserver.BaseRequestHandler):
                     if self.server.mode != 'plain' and not protected:
                         reply('534 Data protection required')
                         continue
-                    if name == 'norest.bin' and offset:
+                    if rejects_rest(name) and offset:
                         reply('550 Restart refused')
                         offset = 0
                         continue
@@ -187,13 +201,13 @@ class Handler(socketserver.BaseRequestHandler):
                             raise RuntimeError('No data connection')
                         data.settimeout(10)
                         if protected:
-                            receipt = dict(phase='handshake', sentBytes=0)
+                            receipt = dict(phase='handshake', sentBytes=0, offset=offset)
                             self.server.tls_data_events.append(receipt)
                             data = self.server.context.wrap_socket(data, server_side=True)
                             reused = data.session_reused
                             receipt.update(phase='payload', version=data.version(), reused=reused)
                             self.server.tls_session_reuse.append(reused)
-                            if self.server.require_tls_session_reuse and not reused:
+                            if self.server.require_tls_session_reuse and (not reused or self.server.reject_reused_data):
                                 self.server.tls_reuse_rejections += 1
                                 receipt['phase'] = 'rejected'
                                 try:
@@ -201,7 +215,10 @@ class Handler(socketserver.BaseRequestHandler):
                                     receipt['tlsShutdownComplete'] = True
                                 except (OSError, ssl.SSLError) as error:
                                     receipt['tlsShutdownError'] = type(error).__name__
-                                reply('425 TLS session resumption required')
+                                if self.server.next_control_context is not None:
+                                    self.server.context = self.server.next_control_context
+                                    self.server.next_control_context = None
+                                reply(self.server.tls_reuse_reply)
                                 continue
                         body = self.server.files[name]
                         if name == 'short.bin':
@@ -222,7 +239,8 @@ class Handler(socketserver.BaseRequestHandler):
                             except (OSError, ssl.SSLError) as error:
                                 receipt['tlsShutdownError'] = type(error).__name__
                             receipt['phase'] = 'complete'
-                        reply('226 Transfer complete')
+                        reply(self.server.tls_reuse_reply if self.server.reject_after_payload
+                              else '226 Transfer complete')
                     except (OSError, RuntimeError) as error:
                         if receipt is not None:
                             receipt.update(phase='interrupted', errorType=type(error).__name__)
@@ -366,11 +384,11 @@ def exercise(cli):
                 assert not target.exists(), 'Failed transfer published a final file'
             return target, state, result
 
-        def recover(server, name, digest=True, mutate=False):
+        def recover(server, name, digest=True, mutate=False, options=(), prepare_resume=None):
             nonlocal sequence
             sequence += 1
             target, state = root / f'recovery-{sequence}.bin', root / f'recovery-{sequence}'
-            arguments = ['--sha256', SHA] if digest else []
+            arguments = list(options) + (['--sha256', SHA] if digest else [])
             process = subprocess.Popen([str(cli), server.url(name), str(target), str(state), *arguments],
                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                                        creationflags=flags, env=cli_environment)
@@ -395,11 +413,17 @@ def exercise(cli):
                 if mutate:
                     server.files[name] = bytes(reversed(DATA))
                     server.modified = '20260201000000'
+                if prepare_resume:
+                    prepare_resume(server, state, task_id)
                 before = len(server.transfers)
+                before_tls = len(server.tls_data_events)
                 rejections = server.rest_rejections
                 result = subprocess.run([str(cli), '--resume', task_id, str(state)], capture_output=True,
                                         text=True, timeout=35, creationflags=flags, env=cli_environment)
-                assert result.returncode == 0, (result.stdout, result.stderr)
+                assert result.returncode == 0, (result.stdout, result.stderr,
+                                                dict(commands=list(server.commands),
+                                                     transfers=list(server.transfers),
+                                                     tlsData=list(server.tls_data_events)))
                 assert target.read_bytes() == server.files[name]
                 resumed = server.transfers[before:]
                 if not digest or mutate:
@@ -408,7 +432,16 @@ def exercise(cli):
                     assert any(offset > 0 for _, offset, _, _ in resumed), resumed
                 else:
                     assert server.rest_rejections > rejections, 'REST-denied branch was not exercised'
-                    assert resumed and all(offset == 0 for _, offset, _, _ in resumed), resumed
+                    if prepare_resume:
+                        # A TLS refusal may precede REST denial. Its nonzero-offset
+                        # attempt must send no payload; actual restarted bytes start at zero.
+                        events = server.tls_data_events[before_tls:]
+                        assert resumed and resumed[-1][1] == 0, resumed
+                        assert events and any(event['sentBytes'] > 0 for event in events), events
+                        assert all(event['offset'] == 0 or event['sentBytes'] == 0
+                                   for event in events), events
+                    else:
+                        assert resumed and all(offset == 0 for _, offset, _, _ in resumed), resumed
                 return resumed
             finally:
                 if process.poll() is None:
@@ -481,6 +514,123 @@ def exercise(cli):
                 print(f'PASS FTPS {case}: encrypted control/data, required TLS session reuse, CA trust and hostname rejection', flush=True)
             finally:
                 secure.close()
+
+        if sys.platform == 'win32':
+            for mode in ['explicit', 'implicit']:
+                secure = Server(mode, certificate, key, require_tls_session_reuse=True)
+                secure.context.num_tickets = 0
+                try:
+                    options = ['--ftp-ca', str(certificate)]
+                    if mode == 'explicit':
+                        options.append('--ftp-explicit-tls')
+                    run(secure, options=options + ['--sha256', SHA])
+                    first, last = secure.tls_data_events[0], secure.tls_data_events[-1]
+                    assert first['version'] == 'TLSv1.3' and not first['reused'] and first['sentBytes'] == 0
+                    assert last['version'] == 'TLSv1.2' and last['reused'] and last['sentBytes'] == len(DATA)
+                    assert all(tls and protected for _, _, tls, protected in secure.transfers)
+                    run(secure, 'empty.bin', options)
+                    run(secure, options=options + ['--sha256', '0' * 64], expected=False)
+                    recover(secure, 'slow.bin', options=options)
+                    print(f'PASS FTPS {mode}: verified compatibility, empty file, bad digest and nonzero REST recovery', flush=True)
+                finally:
+                    secure.close()
+
+            for message in ['425-Data connection rejected\r\n TLS session reuse is required\r\n425 Retry encrypted data',
+                            '522 SSL connection failed: session reuse required']:
+                secure = Server('explicit', certificate, key, require_tls_session_reuse=True)
+                secure.context.num_tickets = 0
+                secure.tls_reuse_reply = message
+                try:
+                    run(secure, options=['--ftp-ca', str(certificate), '--ftp-explicit-tls'])
+                    assert secure.tls_data_events[-1]['version'] == 'TLSv1.2'
+                    assert secure.tls_data_events[-1]['reused']
+                finally:
+                    secure.close()
+            print('PASS FTPS multiline and 522 session-refusal replies', flush=True)
+
+            untrusted_root = root / 'untrusted-retry'
+            untrusted_root.mkdir()
+            untrusted_certificate, untrusted_key = certificates(untrusted_root)
+            secure = Server('explicit', certificate, key, require_tls_session_reuse=True)
+            secure.context.num_tickets = 0
+            replacement = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            replacement.minimum_version = ssl.TLSVersion.TLSv1_2
+            replacement.load_cert_chain(untrusted_certificate, untrusted_key)
+            secure.next_control_context = replacement
+            try:
+                _, state, _ = run(secure, options=['--ftp-ca', str(certificate), '--ftp-explicit-tls'],
+                                  expected=False)
+                assert len(secure.tls_data_events) == 1 and secure.tls_data_events[0]['sentBytes'] == 0
+                # Metadata probing and the first transfer authenticate separately;
+                # the replacement control connection must fail before a third login.
+                assert sum(verb == 'USER' for verb, _ in secure.commands) == 2, secure.commands
+                with closing(sqlite3.connect(state / 'tasks.db')) as database:
+                    assert database.execute('SELECT retries FROM tasks').fetchone()[0] == 0
+            finally:
+                secure.close()
+            print('PASS FTPS compatibility revalidates CA before credentials and never retries an untrusted replacement', flush=True)
+
+            for message in ['425 Data connection unavailable', '425 No session reuse required',
+                            '426 TLS session resumption required']:
+                secure = Server('explicit', certificate, key, require_tls_session_reuse=True)
+                secure.context.num_tickets = 0
+                secure.greeting = '220-Local fixture\r\n 425 TLS session resumption required\r\n220 Ready'
+                secure.tls_reuse_reply = message
+                try:
+                    run(secure, options=['--ftp-ca', str(certificate), '--ftp-explicit-tls'], expected=False)
+                    assert len(secure.tls_data_events) == 4, secure.tls_data_events
+                    assert all(event['version'] == 'TLSv1.3' and event['sentBytes'] == 0
+                               for event in secure.tls_data_events)
+                finally:
+                    secure.close()
+            print('PASS FTPS generic, negated, quoted greeting and unrelated status cannot authorize compatibility', flush=True)
+
+            for reject_after_payload in [False, True]:
+                secure = Server('explicit', certificate, key, require_tls_session_reuse=True)
+                secure.context.maximum_version = ssl.TLSVersion.TLSv1_2
+                secure.reject_after_payload = reject_after_payload
+                try:
+                    run(secure, 'short.bin', ['--ftp-ca', str(certificate), '--ftp-explicit-tls'], expected=False)
+                    assert len(secure.tls_data_events) == 4, secure.tls_data_events
+                    assert all(event['sentBytes'] > 0 for event in secure.tls_data_events)
+                finally:
+                    secure.close()
+            print('PASS FTPS truncated and positive-payload refusal retain length checks and original retry budget', flush=True)
+
+            for tls13_only in [False, True]:
+                secure = Server('explicit', certificate, key, require_tls_session_reuse=True)
+                secure.context.num_tickets = 0
+                if tls13_only:
+                    secure.context.minimum_version = ssl.TLSVersion.TLSv1_3
+                else:
+                    secure.reject_reused_data = True
+                try:
+                    run(secure, options=['--ftp-ca', str(certificate), '--ftp-explicit-tls'], expected=False)
+                    assert 1 <= len(secure.tls_data_events) <= 8, secure.tls_data_events
+                    assert all(event['sentBytes'] == 0 for event in secure.tls_data_events)
+                    assert all(tls and protected for _, _, tls, protected in secure.transfers)
+                finally:
+                    secure.close()
+            print('PASS FTPS TLS1.3-only and always-refusing receivers fail bounded without plaintext or publication', flush=True)
+
+            for rest_version in [None, 'TLSv1.2']:
+                secure = Server('explicit', certificate, key, require_tls_session_reuse=True)
+                secure.context.maximum_version = ssl.TLSVersion.TLSv1_2
+                def prepare_resume(server, state, task_id):
+                    server.context.maximum_version = ssl.TLSVersion.MAXIMUM_SUPPORTED
+                    server.context.num_tickets = 0
+                    server.rest_reject_tls_version = rest_version
+                    with closing(sqlite3.connect(state / 'tasks.db')) as database:
+                        assert database.execute('UPDATE tasks SET max_retries=0 WHERE id=?', (task_id,)).rowcount == 1
+                        database.commit()
+                try:
+                    recover(secure, 'norest.bin', options=['--ftp-ca', str(certificate), '--ftp-explicit-tls'],
+                            prepare_resume=prepare_resume)
+                    assert secure.tls_data_events[-1]['version'] == 'TLSv1.2'
+                    assert secure.tls_data_events[-1]['reused']
+                finally:
+                    secure.close()
+            print('PASS FTPS REST and compatibility in both orders without scheduler retries', flush=True)
 
 
 if __name__ == '__main__':

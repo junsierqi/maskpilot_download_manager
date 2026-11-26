@@ -112,6 +112,8 @@ Enter `ftp://`/`ftps://` and configure login, active mode, and private CA on FTP
 
 FTP uses one data connection. REST resume requires expected SHA-256 and matching URL/size/modification time/TLS mode, with final digest verification. Refused resume or insufficient identity restarts safely. File downloads only: no upload/remote directory browser. Extension interception remains HTTP/HTTPS.
 
+On Windows, an explicit 425/522 data-session resumption refusal before new payload permits one retry with verified TLS 1.2. Normal negotiation remains unchanged; generic errors, certificate failures, and partial payloads do not authorize this transition. REST restart and TLS compatibility are independent, with at most three local transfer negotiations; configured task retries still apply.
+
 ```powershell
 maskpilot_cli ftp://example.test/file.zip C:/Downloads/file.zip C:/Downloads/state --ftp-user user --ftp-explicit-tls --sha256 <expected-sha256>
 ```
