@@ -300,19 +300,25 @@ def exercise(executable):
             for count, route in [(2, '/adaptive/basic'), (8, '/eight/basic')]:
                 process, task, state, target = start(route, f'basic-{count}', count)
                 metadata = state / 'parts' / task / 'identity'
+                slow_begin = TOTAL * (count - 1) // count
 
                 def split_seen():
                     assert process.poll() is None, process.communicate()
                     try:
                         value = layout(metadata)
-                        return value if len(value['extents']) > count else None
+                        # Another unfinished extent may be split first on a busy runner.
+                        # Observe the designated tail in its actual committed generation.
+                        if len(value['extents']) > count and any(
+                                identity >= count and slow_begin < begin < TOTAL - 1
+                                for identity, begin, _ in value['extents']):
+                            return value
+                        return None
                     except (FileNotFoundError, PermissionError, AssertionError, ValueError):
                         return None
 
                 snapshot = wait_until(split_seen)
                 finish(process, target)
                 requests = [x for x in server.snapshot(route) if not x['probe']]
-                slow_begin = TOTAL * (count - 1) // count
                 original = next((x for x in requests if x['begin'] == slow_begin and x['end'] == TOTAL - 1), None)
                 assert original is not None, requests
                 fast_finished = min(x['ended'] for x in requests
