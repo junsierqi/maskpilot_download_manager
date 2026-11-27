@@ -198,7 +198,8 @@ class Harness:
 
     def legacy(self, command, expected=True, **fields):
         response = self.query(dict(version=1, requestId=uuid.uuid4().hex, command=command, **fields))
-        assert response['ok'] == expected, 'Legacy command expectation failed: ' + command
+        assert response['ok'] == expected, ('Legacy command expectation failed: ' + command +
+                                            ': ' + str(response.get('error', '')))
         return response
 
     def row(self, task_id):

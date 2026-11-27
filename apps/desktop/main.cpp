@@ -92,6 +92,14 @@ int main(int argc, char** argv) {
         const auto administrativeToken = newToken();
         const auto tokenFile = prepareToken("ipc.token", token);
         const auto administrativeTokenFile = prepareToken("ipc-admin.token", administrativeToken);
+        // This process owns the instance lock. Old tokens must not advertise
+        // readiness or be read by a client connecting before the new commit.
+        for (const auto* filename : {"ipc.token", "ipc-admin.token"}) {
+            const auto path = QDir(data).filePath(filename);
+            const QFileInfo previous(path);
+            if ((previous.exists() || previous.isSymLink()) && !QFile::remove(path))
+                throw std::runtime_error("Cannot retire previous local authentication token.");
+        }
         const auto directory = std::filesystem::path(data.toStdU16String());
         auto store = maskpilot::makeSqliteStore(directory / L"tasks.db");
         auto vault = maskpilot::makeNativeCredentialVault(store.contexts->installationId());

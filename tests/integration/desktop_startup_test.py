@@ -59,6 +59,9 @@ def exercise(desktop):
 
         delayed = root / "delayed-database"
         delayed.mkdir()
+        stale_tokens = {"ipc.token": b"a" * 64, "ipc-admin.token": b"b" * 64}
+        for filename, secret in stale_tokens.items():
+            (delayed / filename).write_bytes(secret)
         with closing(sqlite3.connect(delayed / "tasks.db")) as database:
             database.execute("CREATE TABLE fixture_marker(value TEXT)")
             database.commit()
@@ -71,6 +74,10 @@ def exercise(desktop):
                 while not (delayed / "instance.lock").exists() and process.poll() is None:
                     assert time.monotonic() < deadline, "Delayed startup did not acquire its instance lock"
                     time.sleep(.01)
+                while any((delayed / name).exists() for name in stale_tokens):
+                    assert process.poll() is None, "Desktop exited before retiring stale tokens"
+                    assert time.monotonic() < deadline, "Previous-process tokens advertised startup readiness"
+                    time.sleep(.01)
                 assert process.poll() is None, "Desktop exited before database lock was released"
                 deadline = time.monotonic() + .75
                 while time.monotonic() < deadline:
@@ -82,12 +89,15 @@ def exercise(desktop):
                 assert process.returncode == 0, stderr[-1500:].decode(errors="replace")
                 assert len((delayed / "ipc.token").read_bytes()) == 64
                 assert len((delayed / "ipc-admin.token").read_bytes()) == 64
+                for filename, previous in stale_tokens.items():
+                    assert (delayed / filename).read_bytes() != previous
+                assert (delayed / "ipc.token").read_bytes() != (delayed / "ipc-admin.token").read_bytes()
             finally:
                 database.rollback()
                 if process.poll() is None:
                     process.terminate()
                     process.communicate(timeout=5)
-        print("PASS delayed database initialization never advertises premature bridge readiness", flush=True)
+        print("PASS stale tokens retire before blocked initialization and fresh bridge readiness", flush=True)
 
         healthy = root / "healthy"
         start("Healthy background smoke", healthy, 0, "--smoke-test")
