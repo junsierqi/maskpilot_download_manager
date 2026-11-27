@@ -569,7 +569,9 @@ TEST(Storage, MigratesPreviousSchemaWithoutChangingExistingProtocolsOrFiles) {
                                "live_format",
                                "live_duration",
                                "live_max_bytes",
-                               "media_origins"}) {
+                               "media_origins",
+                               "ed2k_servers",
+                               "ed2k_sources"}) {
         const auto sql = std::string("ALTER TABLE tasks DROP COLUMN ") + column;
         ASSERT_EQ(sqlite3_exec(connection, sql.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
     }

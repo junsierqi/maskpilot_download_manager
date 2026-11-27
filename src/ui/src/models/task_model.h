@@ -78,9 +78,10 @@ inline QString bytes(std::int64_t value) {
 }
 inline QString filenameFor(const QString& url) { return ui::defaultDownloadName(url); }
 inline QString stateText(TaskState state, bool chinese) {
-    static const char* zh[] = {"排队中",   "已计划",   "连接中",     "下载中",   "正在暂停",     "已暂停",
-                               "等待重试", "校验中",   "正在完成",   "已完成",   "失败",         "正在取消",
-                               "已取消",   "需要处理", "获取元数据", "正在做种", "等待选择文件", "等待队列"};
+    static const char* zh[] = {"排队中",   "已计划",       "连接中",   "下载中",   "正在暂停",
+                               "已暂停",   "等待重试",     "校验中",   "正在完成", "已完成",
+                               "失败",     "正在取消",     "已取消",   "需要处理", "获取元数据",
+                               "正在做种", "等待选择文件", "等待队列", "等待来源", "远端排队"};
     const auto index = static_cast<int>(state);
     return chinese && index >= 0 && index < static_cast<int>(std::size(zh))
                ? QString::fromUtf8(zh[index])

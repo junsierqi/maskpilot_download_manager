@@ -47,6 +47,7 @@ struct AddDownloadDialog::Impl {
     QCheckBox *paused, *schedule, *stop;
     QDateTimeEdit *startTime, *stopTime;
     QPlainTextEdit* headers;
+    QPlainTextEdit *ed2kServers, *ed2kSources;
     QComboBox *httpMethod, *postContentType;
     QPlainTextEdit* postBody;
     QCheckBox* postConfirmed;
@@ -115,8 +116,10 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
     auto* basic = new QWidget;
     auto* form = new QFormLayout(basic);
     form->setSpacing(14);
-    impl_->url = new QLineEdit(initialUrl);
+    impl_->url = new QLineEdit;
     impl_->url->setObjectName("downloadUrl");
+    impl_->url->setMaxLength(static_cast<int>(maxEd2kLinkBytes));
+    impl_->url->setText(initialUrl);
     impl_->url->setPlaceholderText("https://example.com/file.zip / ftp://example.com/file.zip");
     auto* sourceRow = new QWidget;
     auto* sourceLayout = new QHBoxLayout(sourceRow);
@@ -492,6 +495,33 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
     torrentNote->setWordWrap(true);
     torrentForm->addRow(torrentNote);
     const auto torrentIndex = tabs->addTab(torrentTab, "BT / Magnet");
+    auto* ed2kTab = new QWidget;
+    auto* ed2kForm = new QFormLayout(ed2kTab);
+    ed2kForm->setSpacing(14);
+    ed2kForm->setFormAlignment(Qt::AlignTop);
+    impl_->ed2kServers = new QPlainTextEdit;
+    impl_->ed2kServers->setObjectName("ed2kServers");
+    impl_->ed2kServers->setPlaceholderText("host:port");
+    impl_->ed2kServers->setMaximumHeight(110);
+    impl_->ed2kServers->setPlainText(QSettings().value("ed2kServers").toString());
+    impl_->ed2kSources = new QPlainTextEdit;
+    impl_->ed2kSources->setObjectName("ed2kSources");
+    impl_->ed2kSources->setPlaceholderText("host:port");
+    impl_->ed2kSources->setMaximumHeight(110);
+    ed2kForm->addRow(t("Index servers", "索引服务器"), impl_->ed2kServers);
+    ed2kForm->addRow(t("Direct sources", "直接来源"), impl_->ed2kSources);
+    auto* ed2kNote = new QLabel(
+        t("One host:port per line, up to 64 of each. Server links are also accepted here. "
+          "Configure a server or a direct source; file links may already contain sources. "
+          "Validated servers are remembered for new tasks. Direct sources belong to this task. "
+          "Standalone downloads only; no Kad, incoming callbacks, uploading or required encryption.",
+          "每行一个主机:端口，每类最多 64 个。服务器栏也接受服务器链接。"
+          "请配置服务器或直接来源；文件链接也可自带来源。"
+          "验证后的服务器会用于新任务，直接来源仅用于当前任务。"
+          "仅支持独立下载，不支持 Kad、入站回调、上传或强制加密。"));
+    ed2kNote->setWordWrap(true);
+    ed2kForm->addRow(ed2kNote);
+    const auto ed2kIndex = tabs->addTab(ed2kTab, "ED2K");
     auto* mediaTab = new QWidget;
     auto* mediaForm = new QFormLayout(mediaTab);
     mediaForm->setSizeConstraint(QLayout::SetMinimumSize);
@@ -612,10 +642,14 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
     connect(impl_->queue, &QComboBox::currentIndexChanged, impl_->selection,
             &ui::MediaSelectionWidget::invalidate);
     connect(impl_->media, &QCheckBox::toggled, impl_->selection, &QWidget::setEnabled);
-    auto updateProtocol = [this, tabs, ftpIndex, sftpIndex, torrentIndex, requestIndex] {
+    auto updateProtocol = [this, tabs, ftpIndex, sftpIndex, torrentIndex, ed2kIndex, requestIndex] {
         const bool ftp = isFtpUrl(impl_->url->text().trimmed().toStdString());
         const bool sftp = isSftpUrl(impl_->url->text().trimmed().toStdString());
         const bool torrent = isTorrentUrl(impl_->url->text().trimmed().toStdString());
+        const bool ed2k = isEd2kUrl(impl_->url->text().trimmed().toStdString());
+        tabs->setTabEnabled(ed2kIndex, ed2k);
+        if (ed2k)
+            impl_->media->setChecked(false);
         tabs->setTabEnabled(ftpIndex, ftp);
         tabs->setTabEnabled(sftpIndex, sftp);
         if (!sftp) {
@@ -623,24 +657,24 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
             impl_->sftpPassword->clear();
             impl_->sftpKeyPassphrase->clear();
         }
-        if ((ftp || sftp || torrent) && impl_->live->isChecked())
+        if ((ftp || sftp || torrent || ed2k) && impl_->live->isChecked())
             impl_->live->setChecked(false);
         tabs->setTabEnabled(torrentIndex, torrent);
         const bool http =
-            !ftp && !sftp && !torrent && !impl_->media->isChecked() && !impl_->live->isChecked();
+            !ftp && !sftp && !torrent && !ed2k && !impl_->media->isChecked() && !impl_->live->isChecked();
         tabs->setTabEnabled(requestIndex, http);
         impl_->postConfirmed->setChecked(false);
         if (!http) {
             impl_->httpMethod->setCurrentIndex(0);
             impl_->postBody->clear();
         }
-        impl_->media->setEnabled(!ftp && !sftp && !torrent);
-        impl_->live->setEnabled(!ftp && !sftp && !torrent);
-        impl_->connections->setEnabled(!ftp && !sftp && !torrent);
-        impl_->referrer->setEnabled(!ftp && !sftp && !torrent);
-        impl_->cookie->setEnabled(!ftp && !sftp && !torrent);
-        impl_->authorization->setEnabled(!ftp && !sftp && !torrent);
-        impl_->headers->setEnabled(!ftp && !sftp && !torrent);
+        impl_->media->setEnabled(!ftp && !sftp && !torrent && !ed2k);
+        impl_->live->setEnabled(!ftp && !sftp && !torrent && !ed2k);
+        impl_->connections->setEnabled(ed2k || (!ftp && !sftp && !torrent));
+        impl_->referrer->setEnabled(!ftp && !sftp && !torrent && !ed2k);
+        impl_->cookie->setEnabled(!ftp && !sftp && !torrent && !ed2k);
+        impl_->authorization->setEnabled(!ftp && !sftp && !torrent && !ed2k);
+        impl_->headers->setEnabled(!ftp && !sftp && !torrent && !ed2k);
         impl_->checksum->setEnabled(!torrent);
     };
     connect(impl_->url, &QLineEdit::textChanged, this,
@@ -680,7 +714,7 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
     updateProtocol();
     const auto updateSourceRequirement = [this] {
         const auto source = impl_->url->text().toStdString();
-        const bool torrent = isTorrentUrl(source);
+        const bool torrent = isTorrentUrl(source) || isEd2kUrl(source);
         const bool material =
             isFtpUrl(source)
                 ? (!impl_->ftpUsername->text().isEmpty() || !impl_->ftpPassword->text().isEmpty())
@@ -719,8 +753,19 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
     layout->addWidget(buttons);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     connect(buttons, &QDialogButtonBox::accepted, this, [this, t] {
-        auto spec = specification();
+        DownloadSpec spec;
+        try {
+            spec = specification();
+        } catch (const std::exception& error) {
+            QMessageBox::warning(this, t("Check download", "请检查下载信息"),
+                                 QString::fromUtf8(error.what()));
+            return;
+        }
         auto error = validateSpec(spec);
+        if (error.empty() && isEd2kUrl(spec.url) && !spec.startPaused && spec.ed2k.servers.empty() &&
+            spec.ed2k.sources.empty() && parseEd2kFileLink(spec.url).sources.empty())
+            error =
+                "Configure an ED2K index server or direct source in the ED2K tab, or add this task paused.";
         if (error.empty() && !spec.startPaused)
             error = validateMediaOrigins(spec, true);
         if (error.empty() && !spec.startPaused)
@@ -744,6 +789,9 @@ AddDownloadDialog::AddDownloadDialog(bool chinese, QWidget* parent, QString init
             current.setValue("mediaDownloader", impl_->downloader->text());
             current.setValue("mediaMuxer", impl_->muxer->text());
         }
+        if (isEd2kUrl(spec.url))
+            QSettings().setValue("ed2kServers",
+                                 QString::fromStdString(formatEd2kEndpointList(spec.ed2k.servers)));
         accept();
     });
     impl_->url->setFocus();
@@ -842,6 +890,17 @@ DownloadSpec AddDownloadDialog::specification() const {
             s.sftp.keyPassphrase = impl_->sftpKeyPassphrase->text().toUtf8().toStdString();
         }
     }
+    if (isEd2kUrl(s.url)) {
+        s.kind = TransferKind::Ed2k;
+        s.referrer.clear();
+        s.cookie.clear();
+        s.authorization.clear();
+        s.headers.clear();
+        s.originAuthenticationRequired = false;
+        s.audioOnly = false;
+        s.ed2k.servers = parseEd2kEndpointList(impl_->ed2kServers->toPlainText().toStdString(), true);
+        s.ed2k.sources = parseEd2kEndpointList(impl_->ed2kSources->toPlainText().toStdString());
+    }
     s.originAuthenticationRequired = s.originAuthenticationRequired || hasOriginMaterial(s);
     if (s.kind != TransferKind::Media)
         s.mediaSelection = {};
@@ -859,6 +918,8 @@ void AddDownloadDialog::setSpecification(const DownloadSpec& spec) {
     const QSignalBlocker selectionBlock(impl_->selection);
     impl_->selection->invalidate();
     impl_->url->setText(QString::fromStdString(spec.url));
+    impl_->ed2kServers->setPlainText(QString::fromStdString(formatEd2kEndpointList(spec.ed2k.servers)));
+    impl_->ed2kSources->setPlainText(QString::fromStdString(formatEd2kEndpointList(spec.ed2k.sources)));
     impl_->category->setCurrentText(QString::fromStdString(spec.category));
     impl_->connections->setValue(spec.connections);
     impl_->speed->setValue(static_cast<int>(std::min<std::int64_t>(1000000, spec.speedLimit / 1024)));

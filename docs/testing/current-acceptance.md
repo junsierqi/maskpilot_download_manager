@@ -2,7 +2,15 @@
 
 This record qualifies a local validation candidate, not a formal release. Historical 0.2.0/0.3.0 packages keep their original evidence; they do not qualify newer code.
 
-Status on 2026-11-26: **in progress**. The FTPS repair passed local and all four hosted checks, but its fresh long-duration run failed during HTTP recovery-cache reset. That narrow repair and renewed full-duration qualification remain mandatory before actual eD2k support, formal browser integration and maintained site compatibility.
+Status on 2026-11-26: **in progress**. The FTPS repair passed local and all four hosted checks, but its fresh long-duration run failed during HTTP recovery-cache reset. The user subsequently prioritized ED2K implementation and deferred remaining long qualification. The IPC/soak failure remains unaccepted; formal browser integration and maintained site compatibility remain separate follow-up work.
+
+## ED2K development cohort
+
+Native ED2K is now integrated with standalone Qt/CLI tasks, schema 20 storage and strict version 2 task-list endpoint arrays. The actual native engine downloaded legal 3-byte, 9,728,001-byte and 19,456,001-byte payloads from an isolated independent peer; the largest paused after one verified part and resumed in a new process with exact bytes and independently generated auxiliary hashes. Public CLI direct/index discovery, two concurrent unified-service downloads sharing endpoint arbitration, native quota exhaustion, safe removal, upgrade/backup and Qt controls/import-export have local Windows evidence. See [ED2K scenarios](scenarios.md#native-ed2k).
+
+Windows validation: the initial full run passed 370 of 376 cases in 461.49 seconds. Its six failures were stale historical-schema fixtures/expected-version assertions; their corrected inputs and original assertions all passed on rerun. The final build passed 46 focused checks in 29.53 seconds, including 31 native ED2K cases, both protocol/product fixtures, all six migration cases and affected request/UI paths. One added file-identity edit regression brings discovery to 377 cases. These are a full run plus focused final reruns, not a fresh 377-case single-cohort pass.
+
+This cohort uses Qt 6.11.3/MSVC 14.44 on Windows. Previous hosted/core qualification below does not qualify this new engine on other platforms. macOS CI now selects its bounded peer and unified-product fixtures; configuration alone is not a passing run. Kad, low-ID callbacks, uploading, required encryption, IPv6, web-source fallback, a complete >4-GiB ED2K transfer, public-network compatibility and long-duration acceptance remain unqualified or unsupported as documented. The prior failed long run is retained below, and no eight-hour pass is claimed.
 
 ## Latest repair cohort and retained long-run failure
 

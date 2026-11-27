@@ -205,6 +205,7 @@ void MainWindow::Impl::refresh() {
                       (task.state == TaskState::Failed || task.state == TaskState::NeedsAttention ||
                        task.state == TaskState::AwaitingSelection)) ||
                      (filter == "torrent" && task.spec.kind == TransferKind::BitTorrent) ||
+                     (filter == "ed2k" && task.spec.kind == TransferKind::Ed2k) ||
                      (filter == "seeding" && task.state == TaskState::Seeding) ||
                      (filter.startsWith("category:") && qs(task.spec.category) == filter.mid(9));
         const auto owner = contextFilter ? contextFilter->currentData().toString() : QString{};
@@ -422,6 +423,7 @@ MainWindow::MainWindow(DownloadService& service, QWidget* parent)
     addFilter(p.t("Needs attention", "需要处理"), "attention", ui::Icon::Alert);
     addGroup(p.t("BITTORRENT", "种子传输"));
     addFilter(p.t("BT / Magnet", "BT / 磁力"), "torrent", ui::Icon::Torrent);
+    addFilter("ED2K", "ed2k", ui::Icon::Download);
     addFilter(p.t("Seeding", "正在做种"), "seeding", ui::Icon::Upload);
     addGroup(p.t("FILE TYPES", "文件分类"));
     for (const auto& [key, label] : {std::pair{"Documents", p.t("Documents", "文档")},
@@ -915,11 +917,12 @@ void MainWindow::newDownload(QString url) {
     if (url.isEmpty()) {
         auto clipboard = QApplication::clipboard()->text().trimmed();
         if (clipboard.startsWith("http://") || clipboard.startsWith("https://") ||
-            isFtpUrl(clipboard.toStdString()) || isTorrentUrl(clipboard.toStdString()))
+            isFtpUrl(clipboard.toStdString()) || isTorrentUrl(clipboard.toStdString()) ||
+            isEd2kUrl(clipboard.toStdString()))
             url = clipboard;
     }
     const auto owner = impl_->contextFilter->currentData().toString();
-    if (!owner.isEmpty() && owner != "standalone") {
+    if (!owner.isEmpty() && owner != "standalone" && !isEd2kUrl(url.toStdString())) {
         impl_->newContextDownload(url);
         return;
     }
@@ -927,6 +930,8 @@ void MainWindow::newDownload(QString url) {
     dialog.setMediaInspector(impl_->mediaInspector);
     dialog.setQueues(impl_->knownQueues, impl_->selectedQueueId());
     if (dialog.exec() == QDialog::Accepted) {
+        if (isEd2kUrl(dialog.specification().url))
+            impl_->contextFilter->setCurrentIndex(impl_->contextFilter->findData("standalone"));
         impl_->queueFilter->setCurrentIndex(impl_->queueFilter->findData(qs(dialog.queueId())));
         enqueue(dialog.specification(), {}, {}, dialog.rememberProxyCredentials(), dialog.queueId());
     }
@@ -965,7 +970,7 @@ void MainWindow::dropEvent(QDropEvent* event) {
                     ? event->mimeData()->urls().first().toString()
                     : event->mimeData()->text().trimmed();
     if (text.startsWith("https://") || text.startsWith("http://") || isFtpUrl(text.toStdString()) ||
-        isTorrentUrl(text.toStdString())) {
+        isTorrentUrl(text.toStdString()) || isEd2kUrl(text.toStdString())) {
         newDownload(text);
         event->acceptProposedAction();
     }

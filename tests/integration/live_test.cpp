@@ -143,6 +143,8 @@ TEST(LiveStorage, StrictPublicConfigurationCodecAndActualVersionSeventeenMigrati
     sqlite3* db = nullptr;
     ASSERT_EQ(sqlite3_open(database.string().c_str(), &db), SQLITE_OK);
     ASSERT_EQ(sqlite3_exec(db,
+                           "ALTER TABLE tasks DROP COLUMN ed2k_servers;"
+                           "ALTER TABLE tasks DROP COLUMN ed2k_sources;"
                            "ALTER TABLE tasks DROP COLUMN media_origins;"
                            "UPDATE tasks SET kind=0;"
                            "ALTER TABLE tasks DROP COLUMN live_format;"

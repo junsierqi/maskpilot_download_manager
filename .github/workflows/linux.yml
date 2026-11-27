@@ -18,7 +18,7 @@ jobs:
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             ca-certificates git build-essential cmake ninja-build pkg-config \
             qt6-base-dev qt6-svg-dev libcurl4-openssl-dev libssh2-1-dev \
-            libtorrent-rasterbar-dev libxml2-dev libsqlite3-dev libgtest-dev libssl-dev openssl \
+            libtorrent-rasterbar-dev libxml2-dev libsqlite3-dev libgtest-dev libssl-dev zlib1g-dev openssl \
             libsecret-1-dev gnome-keyring dbus-x11 python3-venv ffmpeg tini \
             xvfb xauth fonts-noto-cjk
       - uses: actions/checkout@v6

@@ -6,6 +6,7 @@
     { "name": "libtorrent", "default-features": false },
     { "name": "libxml2", "default-features": false },
     "sqlite3",
+    "zlib",
     "gtest"
   ]
 }

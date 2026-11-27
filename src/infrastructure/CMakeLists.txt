@@ -1,4 +1,13 @@
 add_library(maskpilot_infrastructure
+    src/ed2k/protocol.cpp
+    src/ed2k/integrity.cpp
+    src/ed2k/connection.cpp
+    src/ed2k/messages.cpp
+    src/ed2k/checkpoint.cpp
+    src/ed2k/verification.cpp
+    src/ed2k/peer.cpp
+    src/ed2k/transport.cpp
+    src/ed2k/identity.cpp
     src/scheduling/queue_civil_time.cpp
     src/network/curl_transfer.cpp
     src/network/http_layout.cpp
@@ -29,8 +38,10 @@ qt_add_resources(maskpilot_infrastructure "media_scope"
     PREFIX "/maskpilot/media" BASE "${CMAKE_CURRENT_SOURCE_DIR}/src/media"
     FILES src/media/scoped_requests.py)
 find_package(OpenSSL REQUIRED)
+find_package(ZLIB REQUIRED)
 target_link_libraries(maskpilot_infrastructure PUBLIC maskpilot_application Qt6::Core
     PRIVATE CURL::libcurl OpenSSL::Crypto unofficial::sqlite3::sqlite3 LibtorrentRasterbar::torrent-rasterbar LibXml2::LibXml2 Qt6::Network)
+target_link_libraries(maskpilot_infrastructure PRIVATE ZLIB::ZLIB)
 if(WIN32)
   target_link_libraries(maskpilot_infrastructure PRIVATE bcrypt advapi32)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")

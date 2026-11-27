@@ -57,7 +57,8 @@ bool readOptions(maskpilot::DownloadSpec& spec, int argc, char** argv, int start
         const std::string option = argv[n];
         if (option == "--live-hls" || option == "--live-flv") {
             spec.kind = maskpilot::TransferKind::Live;
-            spec.live.format = option == "--live-hls" ? maskpilot::LiveFormat::HlsTs : maskpilot::LiveFormat::Flv;
+            spec.live.format =
+                option == "--live-hls" ? maskpilot::LiveFormat::HlsTs : maskpilot::LiveFormat::Flv;
         } else if (option == "--media")
             spec.kind = maskpilot::TransferKind::Media;
         else if (option == "--inspect-media") {
@@ -108,7 +109,8 @@ bool readOptions(maskpilot::DownloadSpec& spec, int argc, char** argv, int start
                     throw std::invalid_argument("Live duration must be 1..172800 seconds.");
                 spec.live.durationSeconds = static_cast<int>(duration);
             } else if (option == "--source-cookie-env" || option == "--source-authorization-env") {
-                (option == "--source-cookie-env" ? spec.cookie : spec.authorization) = credentialFromEnvironment(value);
+                (option == "--source-cookie-env" ? spec.cookie : spec.authorization) =
+                    credentialFromEnvironment(value);
             } else if (option == "--media-origins-env" || option == "--live-origins-env") {
                 if (!value.starts_with("MASKPILOT_MEDIA_"))
                     throw std::invalid_argument(
@@ -199,6 +201,11 @@ bool readOptions(maskpilot::DownloadSpec& spec, int argc, char** argv, int start
                     spec.mediaSelection.container = Container::Flac;
                 else
                     throw std::invalid_argument("Unknown media output container.");
+            } else if (option == "--ed2k-server" || option == "--ed2k-source") {
+                auto& endpoints = option == "--ed2k-server" ? spec.ed2k.servers : spec.ed2k.sources;
+                if (endpoints.size() >= maskpilot::maxEd2kSources)
+                    throw std::invalid_argument("Too many ED2K endpoints.");
+                endpoints.push_back(maskpilot::parseEd2kEndpoint(value, option == "--ed2k-server"));
             } else if (option == "--sftp-host-key") {
                 spec.sftp.hostKeySha256 = value;
             } else if (option == "--sftp-auth") {
@@ -371,6 +378,8 @@ int runClient(int argc, char** argv) {
                      "       --proxy-user USER --proxy-password PASS (visible in process arguments)\n";
         std::cout << "Source: --origin-auth-required preserves a missing-login requirement; "
                      "--allow-anonymous explicitly clears it when no source credentials are supplied.\n";
+        std::cout
+            << "ED2K: quoted ed2k:// file URI; repeat --ed2k-server HOST:PORT or --ed2k-source HOST:PORT.\n";
         std::cout << "Torrent: local.torrent or magnet:? URI, destination is a new directory.\n"
                      "         --choose-files --select-files 0,2 --all-files --seed --no-seed --upload-limit "
                      "BYTES\n"
@@ -448,6 +457,8 @@ int runClient(int argc, char** argv) {
                 spec.sftp.keyPassphrase.clear();
                 if (!maskpilot::isSftpUrl(spec.url))
                     spec.sftp = {};
+                if (!maskpilot::isEd2kUrl(spec.url))
+                    spec.ed2k = {};
                 spec.kind = maskpilot::sourceKind(spec);
                 if (!maskpilot::isFtpUrl(spec.url)) {
                     spec.ftpExplicitTls = false;

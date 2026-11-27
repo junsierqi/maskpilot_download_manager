@@ -74,6 +74,9 @@ QByteArray encodeTaskList(const std::vector<Task>& tasks) {
     qsizetype estimatedBytes = 0;
     for (const auto& task : tasks) {
         const auto& spec = task.spec;
+        if (isEd2kUrl(spec.url) ? (!validateSpec(spec).empty() || task.ownerId != "standalone")
+                                : spec.ed2k != Ed2kOptions{})
+            invalid();
         if (!validateMediaOrigins(spec).empty())
             invalid();
         if (!validateSftpOptions(spec.sftp, isSftpUrl(spec.url)).empty())
@@ -110,8 +113,16 @@ QByteArray encodeTaskList(const std::vector<Task>& tasks) {
             invalid();
         if (spec.kind == TransferKind::Live)
             object.insert("live", QJsonObject{{"format", static_cast<int>(spec.live.format)},
-                {"durationSeconds", spec.live.durationSeconds},
-                {"maxBytes", static_cast<double>(spec.live.maxBytes)}});
+                                              {"durationSeconds", spec.live.durationSeconds},
+                                              {"maxBytes", static_cast<double>(spec.live.maxBytes)}});
+        if (isEd2kUrl(spec.url)) {
+            QJsonArray servers, sources;
+            for (const auto& endpoint : spec.ed2k.servers)
+                servers.append(text(formatEd2kEndpoint(endpoint)));
+            for (const auto& endpoint : spec.ed2k.sources)
+                sources.append(text(formatEd2kEndpoint(endpoint)));
+            object.insert("ed2k", QJsonObject{{"servers", servers}, {"sources", sources}});
+        }
         if (isSftpUrl(spec.url))
             object.insert("sftp",
                           QJsonObject{{"authentication", static_cast<int>(spec.sftp.authentication)},
@@ -210,6 +221,7 @@ DecodedTaskList decodeTaskList(const QByteArray& bytes,
                       "httpMethod",
                       "postContentType",
                       "sftp",
+                      "ed2k",
                       "live",
                       "mediaOrigins"});
         if (version != 2 && (object.contains("maxStoredBytes") || object.contains("sameOriginRedirectOnly")))
@@ -222,7 +234,9 @@ DecodedTaskList decodeTaskList(const QByteArray& bytes,
         if (method == "GET" && object.contains("postContentType"))
             invalid();
         const auto url = string(object, "url");
-        if (url.isEmpty() || url.size() > 32768)
+        if (url.isEmpty() ||
+            url.toUtf8().size() >
+                static_cast<qsizetype>(isEd2kUrl(url.toStdString()) ? maxEd2kLinkBytes : 32768))
             invalid();
         auto spec = defaults(url);
         spec.url = url.toStdString();
@@ -235,6 +249,27 @@ DecodedTaskList decodeTaskList(const QByteArray& bytes,
         }
         spec.httpRequest = {};
         spec.sftp = {};
+        spec.ed2k = {};
+        if (object.contains("ed2k")) {
+            if (version != 2 || !isEd2kUrl(spec.url) || !object["ed2k"].isObject())
+                invalid();
+            const auto options = object["ed2k"].toObject();
+            keys(options, {"servers", "sources"});
+            for (const auto* key : {"servers", "sources"}) {
+                if (!options.contains(key))
+                    continue;
+                if (!options[key].isArray() ||
+                    options[key].toArray().size() > static_cast<qsizetype>(maxEd2kSources))
+                    invalid();
+                auto& endpoints = std::string_view(key) == "servers" ? spec.ed2k.servers : spec.ed2k.sources;
+                for (const auto& endpoint : options[key].toArray()) {
+                    if (!endpoint.isString())
+                        invalid();
+                    endpoints.push_back(parseEd2kEndpoint(endpoint.toString().toStdString(),
+                                                          std::string_view(key) == "servers"));
+                }
+            }
+        }
         if (object.contains("sftp")) {
             if (version != 2 || !isSftpUrl(spec.url) || !object["sftp"].isObject())
                 invalid();
@@ -285,8 +320,8 @@ DecodedTaskList decodeTaskList(const QByteArray& bytes,
             spec.live.format = static_cast<LiveFormat>(integer(live, "format", -1, 0, 1));
             spec.live.durationSeconds = integer(live, "durationSeconds", 0, 1, 172800);
             const auto n = live["maxBytes"].toDouble(-1);
-            if (!live["maxBytes"].isDouble() || !std::isfinite(n) || std::floor(n) != n ||
-                n < 1048576 || n > 1099511627776.0)
+            if (!live["maxBytes"].isDouble() || !std::isfinite(n) || std::floor(n) != n || n < 1048576 ||
+                n > 1099511627776.0)
                 invalid();
             spec.live.maxBytes = static_cast<std::int64_t>(n);
         }

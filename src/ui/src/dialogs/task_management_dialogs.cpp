@@ -31,20 +31,41 @@ void MainWindow::Impl::details() {
         auto safe = QUrl(qs(it->spec.url));
         safe.setQuery(QString());
         safe.setFragment({});
-        text->setPlainText(
-            t("File: ", "文件：") + pathString(it->spec.destination) + "\n\n" + t("Source: ", "来源：") +
-            safe.toDisplayString() + "\n" + t("Status: ", "状态：") + stateText(it->state, chinese) + "\n" +
-            t("Request: ", "请求：") +
-            (it->spec.httpRequest.method == HttpMethod::Post
-                 ? t("POST; body is never saved; each submission requires confirmation",
-                     "POST；请求体从不保存，每次提交需要确认")
-                 : QStringLiteral("GET")) +
-            "\n" + t("Transferred: ", "已下载：") + bytes(it->downloaded) + " / " + bytes(it->total) + "\n" +
-            t("Connections: ", "连接数：") + QString::number(it->spec.connections) + "\n" +
-            t("Resume identity: ", "续传身份验证：") +
-            (it->resumable ? t("Validated", "已验证") : t("Not available", "不可用")) + "\n" +
-            t("Retries: ", "重试次数：") + QString::number(it->retries) + "\n" +
-            t("Completion scan: ", "完成后扫描：") + scanText(*it, chinese) + "\n\n" + qs(it->error));
+        // File-link separators are not a normal URL authority; preserve the ED2K display explicitly.
+        auto displayedSource =
+            it->spec.kind == TransferKind::Ed2k ? qs(it->spec.url) : safe.toDisplayString();
+        QString ed2kDetails;
+        if (it->spec.kind == TransferKind::Ed2k) {
+            try {
+                const auto link = parseEd2kFileLink(it->spec.url);
+                ed2kDetails = "\nED2K MD4: " + qs(link.hash) + "\n" +
+                              t("Connected sources: ", "已连接来源：") + QString::number(it->peers) + "\n" +
+                              t("Configured servers: ", "已配置服务器：") +
+                              QString::number(it->spec.ed2k.servers.size()) + "\n" +
+                              t("Direct sources: ", "直接来源：") +
+                              QString::number(it->spec.ed2k.sources.size() + link.sources.size()) + "\n";
+                if (!link.aichRoot.empty())
+                    ed2kDetails += "AICH: " + qs(link.aichRoot) + "\n";
+            } catch (const std::invalid_argument&) {
+                ed2kDetails = t("\nInvalid saved ED2K link\n", "\n已保存的 ED2K 链接无效\n");
+            }
+        }
+        text->setPlainText(t("File: ", "文件：") + pathString(it->spec.destination) + "\n\n" +
+                           t("Source: ", "来源：") + displayedSource + "\n" + t("Status: ", "状态：") +
+                           stateText(it->state, chinese) + "\n" + t("Request: ", "请求：") +
+                           (it->spec.kind == TransferKind::Ed2k ? t("ED2K verified parts", "ED2K 分块校验")
+                            : it->spec.httpRequest.method == HttpMethod::Post
+                                ? t("POST; body is never saved; each submission requires confirmation",
+                                    "POST；请求体从不保存，每次提交需要确认")
+                                : QStringLiteral("GET")) +
+                           "\n" + t("Transferred: ", "已下载：") + bytes(it->downloaded) + " / " +
+                           bytes(it->total) + "\n" + t("Connections: ", "连接数：") +
+                           QString::number(it->spec.connections) + "\n" +
+                           t("Resume identity: ", "续传身份验证：") +
+                           (it->resumable ? t("Validated", "已验证") : t("Not available", "不可用")) + "\n" +
+                           t("Retries: ", "重试次数：") + QString::number(it->retries) + "\n" +
+                           t("Completion scan: ", "完成后扫描：") + scanText(*it, chinese) + ed2kDetails +
+                           "\n\n" + qs(it->error));
     };
     update();
     auto* tick = new QTimer(dialog);

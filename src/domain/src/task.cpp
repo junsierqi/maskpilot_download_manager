@@ -68,6 +68,8 @@ TransferKind sourceKind(const DownloadSpec& spec) {
         return TransferKind::Live;
     if (spec.kind == TransferKind::Media)
         return TransferKind::Media;
+    if (isEd2kUrl(spec.url))
+        return TransferKind::Ed2k;
     if (isTorrentUrl(spec.url))
         return TransferKind::BitTorrent;
     if (isSftpUrl(spec.url))
@@ -120,8 +122,26 @@ std::string validateSpec(const DownloadSpec& spec) {
     if (sftp && (spec.kind == TransferKind::Media || !spec.cookie.empty() || !spec.authorization.empty() ||
                  !spec.headers.empty() || !spec.referrer.empty()))
         return "SFTP cannot use media mode or HTTP request credentials and headers.";
+    const bool ed2k = isEd2kUrl(spec.url);
+    if (auto error = validateEd2kOptions(spec.ed2k); !error.empty())
+        return error;
+    if (!ed2k && spec.ed2k != Ed2kOptions{})
+        return "ED2K options require an ed2k:// file link.";
+    if (spec.kind == TransferKind::Ed2k && !ed2k)
+        return "ED2K tasks require an ed2k:// file link.";
+    if (ed2k) {
+        if ((spec.kind != TransferKind::Http && spec.kind != TransferKind::Ed2k) ||
+            spec.originAuthenticationRequired || hasOriginMaterial(spec) || !spec.referrer.empty() ||
+            spec.audioOnly)
+            return "ED2K requires a file task without origin credentials or media options.";
+        try {
+            parseEd2kFileLink(spec.url);
+        } catch (const std::invalid_argument& error) {
+            return error.what();
+        }
+    }
     const bool torrent = isTorrentUrl(spec.url);
-    if (static_cast<int>(spec.kind) < 0 || static_cast<int>(spec.kind) > 5)
+    if (static_cast<int>(spec.kind) < 0 || static_cast<int>(spec.kind) > 6)
         return "Invalid transfer kind.";
     if (spec.kind == TransferKind::BitTorrent && !torrent)
         return "BitTorrent tasks require a magnet link or local torrent source.";
@@ -183,11 +203,13 @@ std::string validateSpec(const DownloadSpec& spec) {
     }
     if (spec.mediaFormat.size() > 1000 || spec.mediaFormat.find_first_of("\r\n\0", 0, 3) != std::string::npos)
         return "Invalid media format selection.";
-    if (!(spec.url.starts_with("https://") || spec.url.starts_with("http://") || ftp || sftp || torrent))
-        return "Use an HTTP, HTTPS, FTP, FTPS, SFTP, magnet or local torrent source.";
-    if (spec.url.size() > 32768 || spec.url.find_first_of("\r\n\0", 0, 3) != std::string::npos)
+    if (!(spec.url.starts_with("https://") || spec.url.starts_with("http://") || ftp || sftp || torrent ||
+          ed2k))
+        return "Use an HTTP, HTTPS, FTP, FTPS, SFTP, ED2K, magnet or local torrent source.";
+    if (spec.url.size() > (ed2k ? maxEd2kLinkBytes : 32768) ||
+        spec.url.find_first_of("\r\n\0", 0, 3) != std::string::npos)
         return "Invalid URL.";
-    if (!torrent) {
+    if (!torrent && !ed2k) {
         auto hostBegin = spec.url.find("://") + 3;
         auto authorityEnd = spec.url.find_first_of("/?#", hostBegin);
         auto authority = spec.url.substr(
@@ -258,15 +280,16 @@ bool isActive(TaskState state) {
     return state == TaskState::Probing || state == TaskState::Downloading || state == TaskState::Pausing ||
            state == TaskState::Verifying || state == TaskState::Finalizing ||
            state == TaskState::Cancelling || state == TaskState::FetchingMetadata ||
-           state == TaskState::Seeding;
+           state == TaskState::Seeding || state == TaskState::SourceWaiting ||
+           state == TaskState::RemoteQueued;
 }
 bool isTerminal(TaskState state) { return state == TaskState::Completed || state == TaskState::Cancelled; }
 const char* stateName(TaskState state) {
     static constexpr const char* names[] = {
-        "Queued",  "Scheduled",     "Probing",          "Downloading",     "Pausing",
-        "Paused",  "Retry waiting", "Verifying",        "Finalizing",      "Completed",
-        "Failed",  "Cancelling",    "Cancelled",        "Needs attention", "Fetching metadata",
-        "Seeding", "Select files",  "Waiting for queue"};
+        "Queued",  "Scheduled",     "Probing",           "Downloading",         "Pausing",
+        "Paused",  "Retry waiting", "Verifying",         "Finalizing",          "Completed",
+        "Failed",  "Cancelling",    "Cancelled",         "Needs attention",     "Fetching metadata",
+        "Seeding", "Select files",  "Waiting for queue", "Waiting for sources", "Remote queue"};
     auto index = static_cast<int>(state);
     return index >= 0 && index < static_cast<int>(std::size(names)) ? names[index] : "Invalid";
 }

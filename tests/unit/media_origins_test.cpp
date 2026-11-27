@@ -173,7 +173,7 @@ TEST(MediaOrigins, MigratesActualSchema18WithBackupAndRejectsUnknownFutureSchema
     EXPECT_TRUE(backup);
     ASSERT_EQ(sqlite3_open(path.string().c_str(), &raw), SQLITE_OK);
     close.reset(raw);
-    ASSERT_EQ(sqlite3_exec(raw, "PRAGMA user_version=20", nullptr, nullptr, nullptr), SQLITE_OK);
+    ASSERT_EQ(sqlite3_exec(raw, "PRAGMA user_version=21", nullptr, nullptr, nullptr), SQLITE_OK);
     close.reset();
     EXPECT_THROW(makeSqliteStore(path), std::runtime_error);
 }

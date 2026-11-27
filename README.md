@@ -1,6 +1,6 @@
 # MaskPilot Download Manager
 
-A C++20/Qt 6 Widgets download manager with native Windows, Linux, and macOS builds. HTTP/HTTPS, FTP/FTPS, SFTP, native live recording, media adapters, and an independent BT engine share task scheduling and persistence across desktop, CLI, and browser entry points. See the [Linux guide](docs/testing/linux-acceptance.md) for the tested systems/libraries; support is not universal across distributions.
+A C++20/Qt 6 Widgets download manager with native Windows, Linux, and macOS builds. HTTP/HTTPS, FTP/FTPS, SFTP, standalone ED2K, native live recording, media adapters, and an independent BT engine share task scheduling and persistence across desktop, CLI, and browser entry points. See the [Linux guide](docs/testing/linux-acceptance.md) for the tested systems/libraries; support is not universal across distributions.
 
 **Current `master`** contains completed increments, including browser-assisted link/login recovery, periodic site synchronization, rolling native-payload budgets, and optional completion scanning. Daily work uses current `master` and focused verified commits, not divergent long-lived feature branches. Frozen 0.2.0/0.3.0 packages remain separate: their long-run evidence does not qualify current development code. Local validation/candidate packages are the present scope; online updates and formal release are deferred. See [features and gaps](docs/product/feature-matrix.md).
 
@@ -19,6 +19,18 @@ Native macOS builds and core/platform tests pass on macOS 15 Apple Silicon and I
 The desktop defaults to **English**, including on a Chinese-language system when no preference is saved. Choose English or Simplified Chinese in **Settings → Language (restart)**, save, and restart. Existing saved choices remain in effect; upgrades do not reset Chinese preferences. Canonical repository documentation and contribution templates are English. This is two-language desktop support, not a claim that every language or diagnostic is localized.
 
 ## Usage
+
+### ED2K file downloads
+
+Paste an `ed2k://|file|...|/` link into **New download**. In the **ED2K** tab, enter index servers or direct sources, one `host:port` per line (up to 64 of each). The server field also accepts `ed2k://|server|HOST|PORT|/` links. Validated servers are remembered for new tasks; direct sources stay with the task. No public server list is installed or fetched automatically. Inline sources are also accepted. A file link without any configured source/server can be added paused.
+
+The native engine discovers sources through configured TCP index servers, handles remote queues, verifies MD4 part/file identities and optional AICH/SHA-256, and resumes only verified cached parts after restart. It shares normal scheduling, proxy routes, speed limits, native payload budgets, completion scanning and no-replace publication. **Waiting for sources** and **Remote queue** remain active, pausable states. Import/export preserves public endpoints and creates paused tasks. Sources and servers can be edited while paused; changing the file hash or size requires a new task. ED2K is a standalone feature; browser profile/login grants do not extend to peers.
+
+```powershell
+maskpilot_cli.exe "ed2k://|file|example.bin|3|a448017aaf21d8525fc10ae87aa6729d|/" "D:\Downloads\example.bin" ".\ed2k-data" --ed2k-server "index.example:4661"
+```
+
+Repeat `--ed2k-server` or `--ed2k-source` for additional endpoints. Use trusted endpoints. File links are bounded to 3 MiB; very large inline part-hash lists should be imported from a task-list file because OS command-line/IPC limits still apply. Unsupported: Kad, inbound/low-ID callbacks, uploading/seeding, required encryption/obfuscation, IPv6 peer addresses and HTTP web-source fallback. Optional web-source metadata is preserved but never used for an unverified fallback. Availability depends on reachable TCP sources. Local native interoperability and deterministic product-path checks do not establish public-network or long-run qualification.
 
 ### Live recording
 
@@ -259,7 +271,7 @@ Scripts choose the newest installed MSVC toolset. After Qt/toolset changes, run 
 
 ### Linux
 
-Qualified userspace is Ubuntu 26.04 x64. Full helper protection needs Linux 6.9+; source requires Qt ≥6.8, libxml2 ≥2.14, and HTTP/HTTPS/FTP/FTPS/SFTP curl. Prepare native SDK/test prerequisites as an ordinary user:
+Qualified userspace is Ubuntu 26.04 x64. Full helper protection needs Linux 6.9+; source requires Qt ≥6.8, libxml2 ≥2.14, zlib development headers, and HTTP/HTTPS/FTP/FTPS/SFTP curl. Prepare native SDK/test prerequisites as an ordinary user:
 
 ```sh
 python3 -m venv out/python-linux

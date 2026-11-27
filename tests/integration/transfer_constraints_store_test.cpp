@@ -83,7 +83,7 @@ TEST(TransferConstraintStorage, MigratesRealVersionTenWithDefaultPolicyAndOrigin
         EXPECT_TRUE(loaded[0].responseUrl.empty());
         EXPECT_EQ(loaded[0].spec.url, "https://example.test/legacy");
     }
-    EXPECT_EQ(version(open(path).get()), 19);
+    EXPECT_EQ(version(open(path).get()), 20);
     int backups = 0;
     for (const auto& entry : std::filesystem::directory_iterator(temporary.path)) {
         if (entry.path().filename().string().find(".before-v11-") != std::string::npos) {

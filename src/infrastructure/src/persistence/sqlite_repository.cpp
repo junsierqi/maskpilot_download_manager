@@ -65,8 +65,13 @@ void validateTransferConstraints(const Task& task) {
         (isSftpUrl(spec.url) && (task.ownerId != "standalone" || spec.kind == TransferKind::Media ||
                                  spec.kind == TransferKind::BitTorrent)) ||
         (spec.kind == TransferKind::Sftp && !isSftpUrl(spec.url)) || static_cast<int>(spec.kind) < 0 ||
-        static_cast<int>(spec.kind) > 5)
+        static_cast<int>(spec.kind) > 6)
         throw std::invalid_argument("Invalid persistent SFTP configuration.");
+    if (!validateEd2kOptions(spec.ed2k).empty() || (!isEd2kUrl(spec.url) && spec.ed2k != Ed2kOptions{}) ||
+        (spec.kind == TransferKind::Ed2k && !isEd2kUrl(spec.url)) ||
+        (isEd2kUrl(spec.url) && (task.ownerId != "standalone" || !task.projectId.empty() ||
+                                 !task.originGrantId.empty() || !validateSpec(spec).empty())))
+        throw std::invalid_argument("Invalid persistent ED2K configuration.");
     if (!validateLiveRecording(spec.live).empty() ||
         (spec.kind != TransferKind::Live && spec.live != LiveRecordingOptions{}) ||
         (spec.kind == TransferKind::Live &&
@@ -259,12 +264,12 @@ class Backend {
             int schemaVersion = 0;
             {
                 Statement version(db_, "PRAGMA user_version");
-                if (sqlite3_step(version.value) != SQLITE_ROW || sqlite3_column_int(version.value, 0) > 19 ||
+                if (sqlite3_step(version.value) != SQLITE_ROW || sqlite3_column_int(version.value, 0) > 20 ||
                     sqlite3_column_int(version.value, 0) < 0)
                     throw std::runtime_error("Database was created by a newer version.");
                 schemaVersion = sqlite3_column_int(version.value, 0);
             }
-            if (schemaVersion > 0 && schemaVersion < 19) {
+            if (schemaVersion > 0 && schemaVersion < 20) {
                 auto backupPath = path;
                 backupPath += L".before-v" + std::to_wstring(schemaVersion + 1) + L"-" +
                               std::filesystem::path(newTaskId()).wstring() + L".db";
@@ -451,6 +456,13 @@ ALTER TABLE tasks ADD COLUMN media_origins TEXT NOT NULL DEFAULT '';
 PRAGMA user_version=19;
 COMMIT;)sql");
 
+            if (schemaVersion < 20)
+                execute(R"sql(BEGIN IMMEDIATE;
+ALTER TABLE tasks ADD COLUMN ed2k_servers TEXT NOT NULL DEFAULT '';
+ALTER TABLE tasks ADD COLUMN ed2k_sources TEXT NOT NULL DEFAULT '';
+PRAGMA user_version=20;
+COMMIT;)sql");
+
             Statement installation(
                 db_, "INSERT OR IGNORE INTO store_metadata(key,value) VALUES('installation_id',?)");
             installation.text(1, newTaskId());
@@ -609,6 +621,11 @@ COMMIT;)sql");
             if (sqlite3_column_type(q.value, 68) != SQLITE_TEXT)
                 throw std::runtime_error("Saved media origins have an invalid type.");
             t.spec.mediaOrigins = decodeMediaOrigins(text(68));
+            if (sqlite3_column_type(q.value, 69) != SQLITE_TEXT ||
+                sqlite3_column_type(q.value, 70) != SQLITE_TEXT)
+                throw std::runtime_error("Saved ED2K endpoints have invalid types.");
+            t.spec.ed2k.servers = parseEd2kEndpointList(text(69), true);
+            t.spec.ed2k.sources = parseEd2kEndpointList(text(70));
             if (const auto message = validateCompletionScanRecord(t); !message.empty())
                 throw std::runtime_error(message);
             validateTransferConstraints(t);
@@ -643,8 +660,8 @@ speed_limit,scheduled_at,stop_at,state,downloaded,total,created_at,updated_at,re
 media,audio_only,media_format,media_downloader,media_muxer,ftp_tls,ftp_active,ftp_ca,kind,bt_all,bt_selection,
 bt_seed,bt_upload_limit,bt_metadata,bt_published,bt_uploaded,proxy_auth_required,owner_id,request_id,
 context_revision,proxy_credential_ref,origin_auth_required,request_name,queue_id,run_intent,
-media_selection_mode,media_primary_format,media_audio_format,media_container,max_stored_bytes,same_origin_redirect_only,response_url,response_content_type,project_id,project_revision,scan_required,scan_state,scan_at,http_method,post_content_type,sftp_authentication,sftp_host_key_sha256,sftp_private_key,live_format,live_duration,live_max_bytes,media_origins)
-VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+media_selection_mode,media_primary_format,media_audio_format,media_container,max_stored_bytes,same_origin_redirect_only,response_url,response_content_type,project_id,project_revision,scan_required,scan_state,scan_at,http_method,post_content_type,sftp_authentication,sftp_host_key_sha256,sftp_private_key,live_format,live_duration,live_max_bytes,media_origins,ed2k_servers,ed2k_sources)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(id) DO UPDATE SET
 url=excluded.url,destination=excluded.destination,category=excluded.category,referrer=excluded.referrer,
 user_agent=excluded.user_agent,proxy=excluded.proxy,expected_sha256=excluded.expected_sha256,
@@ -668,7 +685,8 @@ scan_state=excluded.scan_state,scan_at=excluded.scan_at,
 http_method=excluded.http_method,post_content_type=excluded.post_content_type,
 sftp_authentication=excluded.sftp_authentication,sftp_host_key_sha256=excluded.sftp_host_key_sha256,
 sftp_private_key=excluded.sftp_private_key,live_format=excluded.live_format,
-live_duration=excluded.live_duration,live_max_bytes=excluded.live_max_bytes,media_origins=excluded.media_origins
+live_duration=excluded.live_duration,live_max_bytes=excluded.live_max_bytes,media_origins=excluded.media_origins,
+ed2k_servers=excluded.ed2k_servers,ed2k_sources=excluded.ed2k_sources
 WHERE tasks.owner_id=excluded.owner_id AND tasks.project_id=excluded.project_id AND tasks.project_revision=excluded.project_revision)sql");
         q.text(1, t.id);
         q.text(2, t.spec.url);
@@ -747,6 +765,8 @@ WHERE tasks.owner_id=excluded.owner_id AND tasks.project_id=excluded.project_id 
         q.number(67, t.spec.live.durationSeconds);
         q.number(68, t.spec.live.maxBytes);
         q.text(69, encodeMediaOrigins(t.spec.mediaOrigins));
+        q.text(70, formatEd2kEndpointList(t.spec.ed2k.servers));
+        q.text(71, formatEd2kEndpointList(t.spec.ed2k.sources));
         if (sqlite3_step(q.value) != SQLITE_DONE || sqlite3_changes(db_) != 1)
             throw std::runtime_error("Cannot save task ownership or request identity.");
     }

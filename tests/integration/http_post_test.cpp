@@ -274,6 +274,8 @@ TEST(HttpPost, MigratesSchema15WithBackupAndRejectsMalformedSavedMethod) {
     const auto bytes = path.u8string();
     ASSERT_EQ(sqlite3_open(reinterpret_cast<const char*>(bytes.c_str()), &database), SQLITE_OK);
     ASSERT_EQ(sqlite3_exec(database,
+                           "ALTER TABLE tasks DROP COLUMN ed2k_servers;"
+                           "ALTER TABLE tasks DROP COLUMN ed2k_sources;"
                            "ALTER TABLE tasks DROP COLUMN media_origins;"
                            "ALTER TABLE tasks DROP COLUMN http_method;"
                            "ALTER TABLE tasks DROP COLUMN post_content_type;"

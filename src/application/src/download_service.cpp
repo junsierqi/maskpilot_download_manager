@@ -156,6 +156,9 @@ struct DownloadService::Impl {
         if (const auto message = validateSpec(spec); !message.empty())
             throw std::invalid_argument(message);
         spec.kind = sourceKind(spec);
+        if (spec.kind == TransferKind::Ed2k &&
+            (task.ownerId != "standalone" || !task.projectId.empty() || !task.originGrantId.empty()))
+            throw std::invalid_argument("ED2K downloads require the standalone context.");
         if (!requestId.empty() && !isOpaqueId(requestId))
             throw std::invalid_argument("Invalid request ID.");
         if (task.ownerId != "standalone" && !contexts->enabled(task.ownerId))
@@ -279,12 +282,21 @@ struct DownloadService::Impl {
                                          spec.torrent.selectedFiles != old.spec.torrent.selectedFiles))
                 throw std::invalid_argument("Published torrent selection cannot be changed.");
         }
+        if (old.spec.kind == TransferKind::Ed2k && isEd2kUrl(spec.url)) {
+            const auto previous = parseEd2kFileLink(old.spec.url);
+            const auto replacement = parseEd2kFileLink(spec.url);
+            if (previous.hash != replacement.hash || previous.size != replacement.size)
+                throw std::invalid_argument("Create a new task when changing an ED2K file identity.");
+        }
         spec.destination = old.spec.destination;
         spec.proxyAuthenticationRequired =
             spec.proxyAuthenticationRequired || !spec.proxyUsername.empty() || !spec.proxyPassword.empty();
         if (const auto validationError = validateSpec(spec); !validationError.empty())
             throw std::invalid_argument(validationError);
         spec.kind = sourceKind(spec);
+        if (spec.kind == TransferKind::Ed2k &&
+            (old.ownerId != "standalone" || !old.projectId.empty() || !old.originGrantId.empty()))
+            throw std::invalid_argument("ED2K downloads require the standalone context.");
         if (!old.projectId.empty() &&
             (spec.kind != TransferKind::Http || spec.httpRequest.method != HttpMethod::Get ||
              spec.maxStoredBytes <= 0 || !spec.sameOriginRedirectOnly))
@@ -438,6 +450,20 @@ struct DownloadService::Impl {
     }
     void clearOwnedParts(const Task& task) {
         const auto folder = workDirectory / task.id;
+        // ED2K owns its cache and stage by native file identity. Never use generic stage removal.
+        if (isEd2kUrl(task.spec.url) || task.spec.kind == TransferKind::Ed2k) {
+            if (!validateSpec(task.spec).empty())
+                return;
+            try {
+                factory()->discard(task, folder);
+                std::error_code ignored;
+                std::filesystem::remove(folder, ignored);
+            } catch (const std::exception&) {
+                std::lock_guard lock(mutex);
+                error = "Some ED2K recovery files could not be removed. Unknown files were preserved.";
+            }
+            return;
+        }
         std::error_code ignored;
         // Completed tasks usually had their cache reclaimed already. Avoid dozens
         // of redundant delete requests per record during bulk history removal.

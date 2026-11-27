@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <filesystem>
+#include <maskpilot/domain/ed2k.h>
 #include <maskpilot/domain/http_request.h>
 #include <maskpilot/domain/live.h>
 #include <maskpilot/domain/media.h>
@@ -15,7 +16,7 @@
 #include <vector>
 
 namespace maskpilot {
-enum class TransferKind { Http, Ftp, Media, BitTorrent, Sftp, Live };
+enum class TransferKind { Http, Ftp, Media, BitTorrent, Sftp, Live, Ed2k };
 enum class TaskState {
     Queued,
     Scheduled,
@@ -35,6 +36,8 @@ enum class TaskState {
     Seeding,
     AwaitingSelection,
     PolicyWaiting,
+    SourceWaiting,
+    RemoteQueued,
     Count
 };
 struct DownloadSpec {
@@ -69,6 +72,7 @@ struct DownloadSpec {
     bool startPaused = false;
     TransferKind kind = TransferKind::Http;
     TorrentOptions torrent;
+    Ed2kOptions ed2k;
     bool audioOnly = false;
     std::string mediaFormat = "bestvideo+bestaudio/best";
     std::filesystem::path mediaDownloader;

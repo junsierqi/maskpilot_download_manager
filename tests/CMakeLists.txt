@@ -1,4 +1,8 @@
 add_executable(maskpilot_tests unit/domain_test.cpp integration/engine_test.cpp integration/credential_vault_test.cpp integration/context_test.cpp unit/context_ui_test.cpp unit/task_list_test.cpp)
+target_sources(maskpilot_tests PRIVATE unit/ed2k_test.cpp unit/ed2k_ui_test.cpp)
+target_sources(maskpilot_tests PRIVATE integration/ed2k_test.cpp)
+add_executable(maskpilot_ed2k_probe support/ed2k_probe.cpp)
+target_link_libraries(maskpilot_ed2k_probe PRIVATE maskpilot_infrastructure)
 target_sources(maskpilot_tests PRIVATE unit/http_layout_test.cpp)
 target_sources(maskpilot_tests PRIVATE unit/browser_recovery_test.cpp)
 target_sources(maskpilot_tests PRIVATE unit/browser_recovery_ui_test.cpp)
@@ -53,6 +57,9 @@ target_link_libraries(maskpilot_tests PRIVATE maskpilot_application maskpilot_in
 include(GoogleTest)
 gtest_discover_tests(maskpilot_tests DISCOVERY_MODE PRE_TEST WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
+add_test(NAME ed2k_peer_product_path COMMAND ${Python3_EXECUTABLE}
+  ${CMAKE_CURRENT_SOURCE_DIR}/integration/ed2k_peer_test.py --probe $<TARGET_FILE:maskpilot_ed2k_probe>)
+set_tests_properties(ed2k_peer_product_path PROPERTIES TIMEOUT 180)
 add_test(NAME desktop_startup_failure_product_path COMMAND ${Python3_EXECUTABLE}
   ${CMAKE_CURRENT_SOURCE_DIR}/integration/desktop_startup_test.py
   --desktop $<TARGET_FILE:maskpilot>)
@@ -154,3 +161,7 @@ if(WIN32)
     -SourceRoot ${CMAKE_SOURCE_DIR})
   set_tests_properties(browser_registration_ownership PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE)
 endif()
+
+add_test(NAME ed2k_product_path COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/integration/ed2k_product_test.py
+  --exercise $<TARGET_FILE:maskpilot_cli> --probe $<TARGET_FILE:maskpilot_ed2k_probe>)
+set_tests_properties(ed2k_product_path PROPERTIES TIMEOUT 180)

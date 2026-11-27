@@ -10,6 +10,13 @@ namespace maskpilot::ui {
 inline QString defaultDownloadName(const QString& url) {
     auto name = url.startsWith("torrent:") ? QFileInfo(url.mid(8)).completeBaseName()
                                            : QFileInfo(QUrl(url).path()).fileName();
+    if (isEd2kUrl(url.toStdString())) {
+        try {
+            name = QString::fromStdString(parseEd2kFileLink(url.toStdString()).filename);
+        } catch (const std::invalid_argument&) {
+            name.clear();
+        }
+    }
     if (url.startsWith("magnet:?"))
         name = QUrlQuery(QUrl(url)).queryItemValue("dn");
     if (isTorrentUrl(url.toStdString()) && name.isEmpty())

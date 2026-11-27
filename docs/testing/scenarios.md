@@ -155,3 +155,11 @@ drift checks. Synthetic binaries and mocked signature/version seams are fixture
 evidence only. Packaging independently audits actual runtime files and the final
 ZIP against the selected Qt SDK and Microsoft CRT source directory. Qualification
 hashes include CMake presets, overlay patches and audit/build policy inputs.
+
+## Native ED2K
+
+`Ed2k*` native cases cover bounded links/frames/hashsets, independent hash vectors, checkpoint ownership and restart rehash, schema-19 to 20 upgrade/backup, strict endpoint persistence, task-list roundtrip and actual new-download controls. `ed2k_peer_product_path` drives the compiled transport against owned loopback peers/indexes, including queueing, malformed/corrupt failover, compression, pause/reopen, large-offset requests, quota/rate, proxy DNS/failure and scan/no-clobber checks. `ed2k_product_path` drives the public CLI and actual unified service, including two concurrent files through the shared factory and persistent quota exhaustion.
+
+An isolated independent peer also served exact 3-byte, 9,728,001-byte and 19,456,001-byte legal payloads. The last case paused after a verified part and resumed in a new process; final bytes and independently produced auxiliary hashes matched. This qualifies the native peer path, not public index availability, WAN throughput, a complete >4-GiB transfer, new cross-platform CI or long-duration operation. Earlier failed soak/IPC evidence remains unresolved and is not replaced by these checks. Long qualification is deferred while implementing ED2K at the user's request.
+
+Local Windows integration verification: the initial full 376-case run passed 370; six old schema fixtures/assertions were corrected for schema 20 and all passed on rerun. Final focused 46/46 passed in 29.53 seconds, including 31 native ED2K cases and both ED2K product fixtures; the new immutable-identity regression brings discovery to 377. This is combined run/rerun evidence, not a new single 377-case pass. Normal/narrow new-download controls were also inspected with the actual Windows platform and product stylesheet. The macOS script simulator passed 18/18; native macOS ED2K and new hosted runs remain unexecuted here.
