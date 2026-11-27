@@ -35,6 +35,7 @@ class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
         self.requests = []
         self.initial_ranges = {route: (count, threading.Event(), set()) for count, route in
                                ((2, '/adaptive/basic'), (8, '/eight/basic'))}
+        self.tail_children = {route: threading.Event() for route in self.initial_ranges}
         super().__init__(('127.0.0.1', 0), Handler)
 
     def snapshot(self, route):
@@ -105,6 +106,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             # observed before a fast response can trigger early repartitioning.
             assert initial[1].wait(10), 'Initial Range workers never reached the owned origin'
         slow_start = TOTAL * 7 // 8 if self.path.startswith('/eight/') else TOTAL // 2
+        if initial and not initial_request and begin > slow_start:
+            self.server.tail_children[self.path].set()
         next_due = time.monotonic()
         try:
             for offset in range(begin, end + 1, 16384):
@@ -113,6 +116,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.wfile.flush()
                 with self.server.lock:
                     item['sent'] += length
+                if initial_request and begin == slow_start and offset == begin:
+                    # A real stalled response keeps this tail unfinished regardless
+                    # of runner speed. Only an actual child Range releases it.
+                    assert self.server.tail_children[self.path].wait(10), (
+                        'Owned origin never received a child Range for its stalled tail')
                 if not probe and begin >= slow_start:
                     next_due += .008
                     # Preserve the intended rate without accumulating OS sleep jitter.
@@ -486,6 +494,8 @@ def exercise(executable):
             if process.poll() is None:
                 process.kill()
                 process.communicate(timeout=10)
+        for ready in server.tail_children.values():
+            ready.set()
         server.shutdown()
         server.server_close()
 
