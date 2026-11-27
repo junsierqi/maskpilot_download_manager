@@ -125,6 +125,7 @@ class Ed2kTransfer final : public ITransferTransport {
         while (checkpoint.verifiedBytes() < link.size) {
             if (control.pause || control.cancel)
                 throw std::runtime_error("ED2K transfer stopped.");
+            bool receivedThisTurn = false, verifiedThisTurn = false;
             const auto now = Clock::now();
             const auto limit = std::max<std::int64_t>(0, control.speedLimit.load());
             tokens = limit ? std::min<double>(static_cast<double>(limit),
@@ -237,6 +238,7 @@ class Ed2kTransfer final : public ITransferTransport {
                         limit && data ? static_cast<std::size_t>(std::min(16384.0, std::floor(tokens)))
                                       : 16384;
                     const auto read = it->peer->tick(control, allowance != 0, traffic, allowance);
+                    receivedThisTurn = receivedThisTurn || read != 0;
                     if (limit && data)
                         tokens = std::max(0.0, tokens - static_cast<double>(read));
                 } catch (const std::exception& error) {
@@ -251,6 +253,7 @@ class Ed2kTransfer final : public ITransferTransport {
                     if (auto part = it->peer->takePart()) {
                         try {
                             checkpoint.commitPart(part->index, part->bytes);
+                            verifiedThisTurn = true;
                             yield = resources_->peerWaiting(it->endpointKey);
                         } catch (const std::invalid_argument& error) {
                             status = error.what();
@@ -289,7 +292,8 @@ class Ed2kTransfer final : public ITransferTransport {
                             break;
                         }
                 }
-            if (now - lastEvent >= std::chrono::milliseconds(200)) {
+            // A verified part is also a control boundary for fast transfers.
+            if (verifiedThisTurn || now - lastEvent >= std::chrono::milliseconds(200)) {
                 std::uint64_t received = checkpoint.verifiedBytes();
                 for (const auto& peer : peers)
                     received += peer.peer->received();
@@ -314,7 +318,12 @@ class Ed2kTransfer final : public ITransferTransport {
                 callback(event);
                 lastEvent = now;
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            // Keep draining ready sockets in bounded turns. Sleeping after every
+            // read imposed a timer-resolution-dependent cap even without a rate limit.
+            if (receivedThisTurn)
+                std::this_thread::yield();
+            else
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
         peers.clear();
         indexes.clear();

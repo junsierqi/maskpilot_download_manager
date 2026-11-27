@@ -22,6 +22,7 @@
 #include <maskpilot/infrastructure/media_tools.h>
 #include <maskpilot/ui/completion_scan_settings.h>
 #include <maskpilot/ui/main_window.h>
+#include <memory>
 
 int main(int argc, char** argv) {
     QApplication application(argc, argv);
@@ -76,17 +77,21 @@ int main(int argc, char** argv) {
             if (!found.isEmpty())
                 settings.setValue(pair.first, QFileInfo(found).absoluteFilePath());
         }
-        const auto writeToken = [&](const QString& filename) {
-            const auto secret = (QUuid::createUuid().toRfc4122() + QUuid::createUuid().toRfc4122()).toHex();
-            QSaveFile file(QDir(data).filePath(filename));
-            if (!file.open(QIODevice::WriteOnly) ||
-                !file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner) ||
-                file.write(secret) != secret.size() || !file.commit())
-                throw std::runtime_error("Cannot create local authentication token.");
-            return secret;
+        const auto newToken = [] {
+            return (QUuid::createUuid().toRfc4122() + QUuid::createUuid().toRfc4122()).toHex();
         };
-        const auto token = writeToken("ipc.token");
-        const auto administrativeToken = writeToken("ipc-admin.token");
+        const auto prepareToken = [&](const QString& filename, const QByteArray& secret) {
+            auto file = std::make_unique<QSaveFile>(QDir(data).filePath(filename));
+            if (!file->open(QIODevice::WriteOnly) ||
+                !file->setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner) ||
+                file->write(secret) != secret.size())
+                throw std::runtime_error("Cannot prepare local authentication token.");
+            return file;
+        };
+        const auto token = newToken();
+        const auto administrativeToken = newToken();
+        const auto tokenFile = prepareToken("ipc.token", token);
+        const auto administrativeTokenFile = prepareToken("ipc-admin.token", administrativeToken);
         const auto directory = std::filesystem::path(data.toStdU16String());
         auto store = maskpilot::makeSqliteStore(directory / L"tasks.db");
         auto vault = maskpilot::makeNativeCredentialVault(store.contexts->installationId());
@@ -223,6 +228,10 @@ int main(int argc, char** argv) {
                     QTimer::singleShot(0, client, consume);
             }
         });
+        // The ordinary token is the external readiness signal. Publish it last,
+        // only once storage, services and the local listener/callbacks are ready.
+        if (!administrativeTokenFile->commit() || !tokenFile->commit())
+            throw std::runtime_error("Cannot publish local authentication token.");
         if (parser.isSet("url"))
             QTimer::singleShot(0, &window, [&] { window.newDownload(parser.value("url")); });
         if (parser.isSet("screenshot"))

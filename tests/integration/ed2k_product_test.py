@@ -57,6 +57,7 @@ def main():
                      strict_identity=True, active=0, maximum_active=0, active_lock=threading.Lock()) as peer:
             endpoint = f'127.0.0.1:{peer.server_address[1]}'
             target, work = root/'parallel.bin', root/'parallel'
+            started = time.monotonic()
             result = invoke([probe, '--service', '--url', f'ed2k://|file|zero.bin|{PART+1}|{ZERO_FILE}|/',
                              '--destination', str(target), '--work', str(work), '--source', endpoint])
             answer = json.loads(result.stdout.strip().splitlines()[-1])
@@ -66,7 +67,7 @@ def main():
             assert peer.maximum_active == 1 and peer.rejected_identities == 0, vars(peer)
             with closing(sqlite3.connect(work/'tasks.db')) as db:
                 assert db.execute('SELECT COUNT(*) FROM tasks WHERE kind=6 AND state=9').fetchone()[0] == 2
-        print('PASS two concurrent actual service tasks, shared identity/endpoint arbitration and exact bytes', flush=True)
+        print(f'PASS two concurrent actual service tasks, shared identity/endpoint arbitration and exact bytes ({time.monotonic()-started:.2f}s)', flush=True)
         with running() as peer:
             target = root/'budget.bin'
             result = invoke([probe, '--service', '--url', link, '--destination', str(target),

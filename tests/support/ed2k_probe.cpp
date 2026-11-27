@@ -1,5 +1,6 @@
 #include <QCommandLineParser>
 #include <QCoreApplication>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <algorithm>
@@ -122,7 +123,17 @@ int main(int argc, char** argv) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
             } while (std::chrono::steady_clock::now() < deadline);
             const auto usage = service.queueTraffic(maskpilot::defaultQueueId).get();
-            const QJsonObject result{{"complete", complete},
+            QJsonArray observations;
+            for (const auto& observed : tasks)
+                observations.append(
+                    QJsonObject{{"state", QString::fromLatin1(maskpilot::stateName(observed.state))},
+                                {"downloaded", static_cast<qint64>(observed.downloaded)},
+                                {"total", static_cast<qint64>(observed.total)},
+                                {"peers", observed.peers},
+                                {"error", QString::fromStdString(observed.error)}});
+            const QJsonObject result{{"tasks", observations},
+                                     {"serviceError", QString::fromStdString(service.lastError())},
+                                     {"complete", complete},
                                      {"waiting", waiting},
                                      {"payload", static_cast<qint64>(usage.charged)},
                                      {"count", static_cast<int>(tasks.size())}};

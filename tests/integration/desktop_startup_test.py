@@ -7,6 +7,7 @@ from pathlib import Path
 import sqlite3
 import subprocess
 import tempfile
+import time
 
 
 def exercise(desktop):
@@ -55,6 +56,38 @@ def exercise(desktop):
         start("Future database schema", future_data, 1)
         assert hashlib.sha256(future_database.read_bytes()).digest() == before
         print("PASS future-schema refusal exits unattended and preserves database bytes", flush=True)
+
+        delayed = root / "delayed-database"
+        delayed.mkdir()
+        with closing(sqlite3.connect(delayed / "tasks.db")) as database:
+            database.execute("CREATE TABLE fixture_marker(value TEXT)")
+            database.commit()
+            database.execute("BEGIN EXCLUSIVE")
+            process = subprocess.Popen(
+                [str(desktop), "--background", "--smoke-test", "--data-dir", str(delayed)],
+                env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=flags)
+            try:
+                deadline = time.monotonic() + 5
+                while not (delayed / "instance.lock").exists() and process.poll() is None:
+                    assert time.monotonic() < deadline, "Delayed startup did not acquire its instance lock"
+                    time.sleep(.01)
+                assert process.poll() is None, "Desktop exited before database lock was released"
+                deadline = time.monotonic() + .75
+                while time.monotonic() < deadline:
+                    assert not (delayed / "ipc.token").exists(), "Token advertised readiness before storage"
+                    assert process.poll() is None, "Desktop failed while waiting for bounded database lock"
+                    time.sleep(.01)
+                database.rollback()
+                stdout, stderr = process.communicate(timeout=15)
+                assert process.returncode == 0, stderr[-1500:].decode(errors="replace")
+                assert len((delayed / "ipc.token").read_bytes()) == 64
+                assert len((delayed / "ipc-admin.token").read_bytes()) == 64
+            finally:
+                database.rollback()
+                if process.poll() is None:
+                    process.terminate()
+                    process.communicate(timeout=5)
+        print("PASS delayed database initialization never advertises premature bridge readiness", flush=True)
 
         healthy = root / "healthy"
         start("Healthy background smoke", healthy, 0, "--smoke-test")

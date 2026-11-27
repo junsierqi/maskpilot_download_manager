@@ -4,6 +4,14 @@ This record qualifies a local validation candidate, not a formal release. Histor
 
 Status on 2026-11-26: **in progress**. The FTPS repair passed local and all four hosted checks, but its fresh long-duration run failed during HTTP recovery-cache reset. The user subsequently prioritized ED2K implementation and deferred remaining long qualification. The IPC/soak failure remains unaccepted; formal browser integration and maintained site compatibility remain separate follow-up work.
 
+## Hosted CI repair in progress
+
+The `e84d09f` hosted builds compiled successfully on all four architectures. Linux passed; Windows failed its final-report failure fixture at the initial native handshake, and both macOS jobs failed the concurrent ED2K product case. These failures are not successful platform qualification.
+
+A controlled local exclusive-database lock reproduced premature `ipc.token` publication in the original desktop. The repair stages secure token writes early and publishes them only after storage, services and IPC callbacks are ready. The unchanged report failure case, existing native/scoped bridge checks and extended actual-startup regression all passed locally (4/4, 74.03 seconds). This is the local startup-repair snapshot, not a hosted pass. Hosted qualification for a follow-up commit is determined by its complete Windows, Linux and both macOS workflow jobs.
+
+The ED2K loop also slept after every bounded read, imposing an artificial throughput cap. Its repair preserves the 16 KiB read/frame/quota/rate bounds, yields on receive progress and sleeps only when idle. Verified parts report progress immediately so fast transfers retain pause control. Original 25-second deadlines, byte/hash checks and exclusive-source assertions are unchanged; safe task-state diagnostics and phase timings are emitted by the fixture. The dual 9,728,001-byte service case improved from 20.55 to 2.84 seconds locally, and the combined original ED2K/startup/bridge/report selection passed 37/37 in 52.69 seconds. These local results are evidence for the repair, not a substitute for hosted platform results; see the repository's [Actions](https://github.com/junsierqi/maskpilot_download_manager/actions) for the matching commit.
+
 ## ED2K development cohort
 
 Native ED2K is now integrated with standalone Qt/CLI tasks, schema 20 storage and strict version 2 task-list endpoint arrays. The actual native engine downloaded legal 3-byte, 9,728,001-byte and 19,456,001-byte payloads from an isolated independent peer; the largest paused after one verified part and resumed in a new process with exact bytes and independently generated auxiliary hashes. Public CLI direct/index discovery, two concurrent unified-service downloads sharing endpoint arbitration, native quota exhaustion, safe removal, upgrade/backup and Qt controls/import-export have local Windows evidence. See [ED2K scenarios](scenarios.md#native-ed2k).
