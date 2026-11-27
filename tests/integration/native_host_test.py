@@ -159,6 +159,21 @@ def run(host,desktop,parser=None,muxer=None):
             while not (data/'ipc.token').exists() and time.monotonic()<deadline:
                 assert process.poll() is None,process.communicate();time.sleep(.05)
             ping=query('ping');assert ping['ok'],ping;print('PASS native host to desktop authenticated connection',flush=True)
+            # Keep the real desktop listener live while delaying its token publication.
+            token=data/'ipc.token';held=data/'held-ipc.token';token.rename(held)
+            restore=threading.Timer(.35,lambda:held.rename(token));restore.start()
+            try:
+                delayed=query('ping');assert delayed['ok'],delayed
+            finally:
+                restore.join()
+                if held.exists():held.rename(token)
+            print('PASS connected native host waits for desktop token publication',flush=True)
+            original_token=token.read_bytes()
+            try:
+                token.write_bytes(b'invalid')
+                invalid=query('ping');assert not invalid['ok'] and 'invalid' in invalid['error'].lower(),invalid
+            finally:token.write_bytes(original_token)
+            print('PASS malformed desktop token remains rejected',flush=True)
             desktop_autostart(host,desktop,root,environment)
             if os.name != 'nt':
                 config_path=isolated/'native-bridge.json'

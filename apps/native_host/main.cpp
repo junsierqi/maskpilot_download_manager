@@ -285,6 +285,11 @@ int main(int argc, char** argv) {
     if (broker || version == 1) {
         // Ordinary version 2 never opens either administrative or legacy token file.
         QFile tokenFile(QDir(data).filePath(broker ? "ipc-admin.token" : "ipc.token"));
+        // The listener is bound before startup publishes its atomic token files.
+        // Connection and publication share one startup budget; never send an
+        // unauthenticated request or retry a command already sent.
+        while (!tokenFile.exists() && timeout.elapsed() < 9500)
+            QThread::msleep(25);
         if (!tokenFile.open(QIODevice::ReadOnly) || tokenFile.size() > 128)
             return fail("Desktop authentication token is unavailable.");
         forwardedToken = tokenFile.readAll().trimmed();

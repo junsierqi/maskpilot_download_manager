@@ -317,7 +317,12 @@ TEST(CompletionScanUi, ActualDesktopStartupLoadsPersistedPolicyAndMissingToolRem
                               {"--background", "--data-dir", directory});
         ASSERT_TRUE(desktop.process.waitForStarted(5000));
         ASSERT_TRUE(until(
-            [&] { return storedScanState(root / L"tasks.db", available) == (available ? 3 : 1); }, 20000));
+            [&] {
+                // Service state can be persisted before GUI/IPC initialization finishes.
+                return QFile::exists(directory + "/ipc.token") &&
+                       storedScanState(root / L"tasks.db", available) == (available ? 3 : 1);
+            },
+            20000));
         EXPECT_EQ(desktop.process.state(), QProcess::Running);
         if (available) {
             QFile final(directory + "/final.bin");
